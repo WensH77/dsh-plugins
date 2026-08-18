@@ -1,0 +1,27 @@
+{
+  "name": "dsh-plugin-command-setting",
+  "version": "0.3.0",
+  "description": "dsh web 命令设置：从 “+” / “/” 命令菜单中隐藏/显示指定 slash 命令（默认 export/feedback/permission），在设置页新增「命令设置」区，支持隐藏/显示/新增；并外置 plan mode 切换按钮（点击调用 /plan）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": false
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "license": "MIT"
+}
