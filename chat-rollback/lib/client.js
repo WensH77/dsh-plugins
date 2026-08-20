@@ -86,14 +86,6 @@ window.__ModuleLoader__.load({
 		const ICON_CONFLICT = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.2 5.6a2.3 2.3 0 1 1 3.6 1.9c-.7.6-1.3 1.2-1.3 2.1"/><path d="M8 12.7v.1"/></svg>';
 		const ICON_LOADING = '<svg class="crb-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.6 A5.4 5.4 0 0 1 13.4 8"></path></svg>';
 
-		function extractText(content) {
-			if (!Array.isArray(content)) return '';
-			return content
-				.filter((block) => block?.type === 'text' && typeof block.text === 'string')
-				.map((block) => block.text)
-				.join('');
-		}
-
 		/** One under-bubble control: icon button + transient note. */
 		function createControl(t) {
 			const button = document.createElement('button');

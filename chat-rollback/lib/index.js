@@ -51,10 +51,54 @@ function runSh(cmd) {
   });
 }
 
+/** shell 单引号转义（runSh 的命令体是 sh -c 字符串，排除模式必须引起来防通配符被 shell 展开）。 */
+function shq(value) {
+  return "'" + String(value).replace(/'/gu, "'\\''") + "'";
+}
+
+/** 判断相对路径是否命中任一排除项：不含 / 的排除项作为**任意路径段**出现即命中
+ * （.git / node_modules 在 cwd 下任意层级都排除，含嵌套仓库；.gitignore 这类
+ * 名字不同的工作文件不受影响）；含 / 的排除项按相对路径前缀匹配。
+ * hash、tar 快照、恢复剪枝共用同一判定，保证三者对"哪些文件属于工作目录"一致。 */
+function isExcluded(rel, excludes) {
+  for (const pattern of excludes) {
+    const name = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
+    if (name === '') continue;
+    if (name.includes('/')) {
+      if (rel === name || rel.startsWith(name + '/')) return true;
+      continue;
+    }
+    if (rel === name) return true;
+    for (const segment of rel.split('/')) {
+      if (segment === name) return true;
+    }
+  }
+  return false;
+}
+
+/** 由排除项生成 tar --exclude 参数：裸名（bsdtar/libarchive 按 basename 匹配任意
+ * 层级）+ 通配形态（GNU tar 需显式匹配嵌套路径）。全部单引号包裹防 shell 展开。 */
+function tarExcludeArgs(excludes) {
+  const args = [];
+  for (const pattern of excludes) {
+    const name = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
+    if (name === '') continue;
+    if (name.includes('/')) {
+      args.push('--exclude=' + shq(name));
+      continue;
+    }
+    args.push('--exclude=' + shq(name));
+    args.push('--exclude=' + shq('*/' + name));
+    args.push('--exclude=' + shq(name + '/*'));
+    args.push('--exclude=' + shq('*/' + name + '/*'));
+  }
+  return args.join(' ');
+}
+
 /** Full-tree snapshot of cwd into a tar.zst file (best-effort, excludes applied). */
 async function snapshotWorkspace(cwd, targetFile, excludes) {
   await fs.mkdir(dirname(targetFile), { recursive: true });
-  const excl = excludes.map((p) => '--exclude=' + p).join(' ');
+  const excl = tarExcludeArgs(excludes);
   return runSh('tar -C "' + cwd + '" ' + excl + ' -cf - . | zstd -q -o "' + targetFile + '"');
 }
 
@@ -66,7 +110,7 @@ async function snapshotWorkspace(cwd, targetFile, excludes) {
  * silently rewind the repository, and node_modules must never be clobbered.
  * Destructive. */
 async function restoreWorkspace(cwd, snapshotFile, excludes) {
-  const excl = excludes.map((p) => '--exclude=' + p).join(' ');
+  const excl = tarExcludeArgs(excludes);
   const unpack = await runSh('zstd -dc "' + snapshotFile + '" | tar ' + excl + ' -C "' + cwd + '" -xf -');
   if (!unpack.ok) return unpack;
   const listing = await runSh('tar -tf "' + snapshotFile + '"');
@@ -78,14 +122,14 @@ async function restoreWorkspace(cwd, snapshotFile, excludes) {
   }
   const files = await runSh('find "' + cwd + '" -type f');
   if (!files.ok) return files;
-  const exPrefixes = excludes.map((p) => (p.endsWith('/') ? p : p + '/'));
   let removed = 0;
   for (const line of files.stdout.split('\n')) {
     const abs = line.trim();
     if (abs === '') continue;
     const rel = abs.slice(cwd.length).replace(/^\//, '');
     if (kept.has(rel)) continue;
-    if (excludes.includes(rel) || exPrefixes.some((p) => rel.startsWith(p))) continue;
+    // 排除项（.git/node_modules 任意层级）不在快照里、也绝不剪枝删除
+    if (isExcluded(rel, excludes)) continue;
     try {
       await fs.rm(abs, { force: true });
       removed += 1;
@@ -105,19 +149,26 @@ async function backupWorkspace(cwd, targetFile) {
 
 /** Per-file SHA-256 manifest of the tracked (non-excluded) files under cwd:
  * { <relpath>: <hex> }, or null when the walk fails. Exclude semantics mirror
- * restoreWorkspace's prune side (prefix match), so hashing and pruning agree on
- * which files are "in" the workspace. */
+ * restoreWorkspace's prune side (isExcluded), so hashing and pruning agree on
+ * which files are "in" the workspace. The find walk prunes excluded directories
+ * (.git / node_modules at any depth) so huge metadata trees are neither walked
+ * nor hashed. */
 async function hashWorkspace(cwd, excludes) {
-  const files = await runSh('find "' + cwd + '" -type f');
+  // 无括号写法（find 的 -prune 按项短路，等价于括号分组；也避开 JS 字符串里
+  // 反斜杠转义被吞的坑）：-name X -prune -o -name Y -prune -o -type f -print
+  const pruneArgs = excludes
+    .filter((p) => !p.includes('/'))
+    .map((p) => '-name ' + shq(p.endsWith('/') ? p.slice(0, -1) : p) + ' -prune');
+  const pruneExpr = pruneArgs.length > 0 ? pruneArgs.join(' -o ') + ' -o ' : '';
+  const files = await runSh('find "' + cwd + '" ' + pruneExpr + '-type f -print');
   if (!files.ok) return null;
-  const exPrefixes = excludes.map((p) => (p.endsWith('/') ? p : p + '/'));
   const map = {};
   for (const line of files.stdout.split('\n')) {
     const abs = line.trim();
     if (abs === '') continue;
     const rel = abs.slice(cwd.length).replace(/^\//, '');
     if (rel === '' || rel.endsWith('/')) continue;
-    if (excludes.includes(rel) || exPrefixes.some((p) => rel.startsWith(p))) continue;
+    if (isExcluded(rel, excludes)) continue;
     try {
       map[rel] = createHash('sha256').update(await fs.readFile(abs)).digest('hex');
     } catch {}
@@ -136,11 +187,18 @@ async function writeManifest(cwd, manifestFile, excludes) {
   return { ok: true };
 }
 
-/** Read a manifest into { relpath: hash }, or null when missing/corrupt. */
-async function loadManifest(file) {
+/** Read a manifest into { relpath: hash }, or null when missing/corrupt.
+ * 传入 excludes 时剔除被排除的条目：升级前旧快照/清单可能记录了 .git 等路径，
+ * 与修复后的新清单对比会产生假冲突，统一在载入时过滤掉。 */
+async function loadManifest(file, excludes = []) {
   try {
     const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (excludes.length > 0) {
+      for (const key of Object.keys(parsed)) {
+        if (isExcluded(key, excludes)) delete parsed[key];
+      }
+    }
     return parsed;
   } catch {
     return null;
@@ -419,7 +477,7 @@ async function handlePreflight(req, res, env) {
       return;
     }
     const snapDir = join(env.snapRoot, sessionId);
-    const targetMap = await loadManifest(join(snapDir, 'turn-' + (target.turn + 1) + '.files.json'));
+    const targetMap = await loadManifest(join(snapDir, 'turn-' + (target.turn + 1) + '.files.json'), env.excludes);
     if (targetMap === null) {
       // Legacy/foreign dirs without manifests: cannot compare, so no gate.
       sendJson(res, 200, { ok: true, conflict: false, files: [], reason: 'no-manifest', sourceTurn: target.turn });
@@ -438,14 +496,14 @@ async function handlePreflight(req, res, env) {
     let lastWriteProvenance = 'end';
     const endFile = await latestManifestFile(snapDir, END_MANIFEST);
     if (endFile !== null) {
-      lastWriteMap = await loadManifest(endFile);
+      lastWriteMap = await loadManifest(endFile, env.excludes);
     } else {
       const startFile = await latestManifestFile(snapDir, (entry) => {
         const m = /^turn-(\d+)\.files\.json$/.exec(entry);
         return m === null ? null : (Number(m[1]) > target.turn + 1 ? Number(m[1]) : null);
       });
       if (startFile !== null) {
-        lastWriteMap = await loadManifest(startFile);
+        lastWriteMap = await loadManifest(startFile, env.excludes);
         lastWriteProvenance = 'start';
       } else {
         lastWriteProvenance = 'unknown';
