@@ -412,6 +412,15 @@ window.__ModuleLoader__.load({
 					for (const dispose of disposers) dispose();
 				};
 			}, "command-setting: menu filter sync");
+
+			// Restore the shadowed command surface on dispose so a stop/start cycle
+			// never stacks the browser-side filter and a stopped plugin leaves the
+			// command menu exactly as it found it.
+			return () => {
+				commandUi.candidates = originalCandidates;
+				commandUi.matchEnter = originalMatchEnter;
+				commandUi.matchSpace = originalMatchSpace;
+			};
 		}
 
 		exports.CommandsSettingController = CommandsSettingController;

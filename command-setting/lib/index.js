@@ -41,19 +41,57 @@ function readBody(req) {
   });
 }
 
+/**
+ * 注册 webServer 路由并容忍 re-init 时残留的同路径旧路由（停用/重载后旧 handler
+ * 已随旧 ctx 失效，probe 会报 inactive context）：命中 duplicate 先清掉旧路由
+ * 再重新注册，保证「停用后重新启用」幂等。
+ */
+function registerWebRoute(ctx, route) {
+  // 把路由绑定到插件 ctx 生命周期：停用（ctx dispose）时 cordis 自动执行清理
+  // 注销路由，重新启用再注册不会撞 duplicate route（实测停用后旧路由会残留，
+  // 旧 handler 已随旧 ctx 失效）。兜底：命中 duplicate 时清掉残留路由后重注册。
+  return ctx.effect(() => {
+    try {
+      return ctx.webServer.register(route);
+    } catch (error) {
+      if (!/duplicate/.test(String(error?.message ?? error))) throw error;
+      const table = route.kind === 'exact' ? ctx.webServer.exact : ctx.webServer.prefixes;
+      if (table && typeof table.delete === 'function') table.delete(route.path);
+      return ctx.webServer.register(route);
+    }
+  });
+}
+
 function apply(ctx, config = {}) {
   let hiddenSet = new Set(cleanHidden(Array.isArray(config.hidden) ? config.hidden : DEFAULT_HIDDEN));
   let scope = null;
+  let disposeWatch = null;
+
+  const notifyChange = () => {
+    try {
+      ctx.commands.notifyChange();
+    } catch (error) {
+      ctx.logger.warn('command-setting: notifyChange failed: ' + String(error?.message ?? error));
+    }
+  };
+  // Apply an authoritative hidden list: refresh the filter and tell the browser
+  // directory to re-sync. Used by the settings watcher and the write path alike.
+  const applyHidden = (next) => {
+    hiddenSet = new Set(cleanHidden(Array.isArray(next) ? next : []));
+    notifyChange();
+  };
 
   // Instance-level shadow: the Typert gateway resolves RPC methods on the live
   // service instance (Reflect.get(receiver, implementation)), so this own
-  // property is exactly what remote.commands.list ends up calling.
+  // property is exactly what remote.commands.list ends up calling. The original
+  // is restored on dispose so a stop/start cycle never stacks filters and a
+  // stopped plugin leaves the menu exactly as it found it.
   const service = ctx.commands;
   const original = service.list.bind(service);
   service.list = (agent) => original(agent).filter((descriptor) => !hiddenSet.has(descriptor.name));
 
   const disposers = [
-    ctx.webServer.register({
+    registerWebRoute(ctx, {
       kind: 'exact',
       path: '/command-setting/catalog',
       handler: (req, res) => {
@@ -91,7 +129,7 @@ function apply(ctx, config = {}) {
         sendJson(res, 200, { ok: true, commands, hidden: cleanHidden([...hiddenSet]), protected: PROTECTED });
       }
     }),
-    ctx.webServer.register({
+    registerWebRoute(ctx, {
       kind: 'exact',
       path: '/command-setting/set',
       handler: async (req, res) => {
@@ -114,37 +152,55 @@ function apply(ctx, config = {}) {
           }
           // Protected system commands are dropped before persisting.
           await scope.update({ hidden: cleanHidden(raw) });
-          // scope.watch() below refreshes hiddenSet and notifies the browser.
+          // scope.update refreshes hiddenSet and notifies the browser (the real
+          // registration does it via scope.watch; the leaked-reuse substitute
+          // does it inside its own update).
           sendJson(res, 200, { ok: true, hidden: cleanHidden([...hiddenSet]) });
         } catch (error) {
           sendJson(res, 500, { ok: false, code: 'internal', message: String(error?.message ?? error) });
         }
       }
-    })
+    }),
+    () => {
+      service.list = original;
+    }
   ];
 
   ctx.inject(['settings'], (settingsCtx) => {
-    scope = settingsCtx.settings.register(SETTINGS_NS, z.object({ hidden: z.array(z.string()) }), {
-      base: { hidden: [...hiddenSet] }
-    });
-    hiddenSet = new Set(cleanHidden(scope.get().hidden ?? []));
-    settingsCtx.effect(() => () => {
-      scope = null;
-    }, 'command-setting: settings scope');
-    scope.watch(() => {
-      hiddenSet = new Set(cleanHidden(scope.get().hidden ?? []));
-      try {
-        ctx.commands.notifyChange();
-      } catch (error) {
-        ctx.logger.warn('command-setting: notifyChange failed: ' + String(error?.message ?? error));
-      }
-    });
+    const settings = settingsCtx.settings;
+    try {
+      scope = settings.register(SETTINGS_NS, z.object({ hidden: z.array(z.string()) }), {
+        base: { hidden: [...hiddenSet] }
+      });
+      disposeWatch = scope.watch(() => applyHidden(scope.get()?.hidden));
+    } catch (error) {
+      // settings.register ties the namespace to the SETTINGS PROVIDER's fiber,
+      // not this plugin's — stopping this plugin leaks the registration, so a
+      // later re-activation throws "already registered". Reuse the live
+      // registration through the service's own read/write methods instead of
+      // failing to start. (No watcher exists on this path; the write path still
+      // refreshes through the substitute update below.)
+      const message = String(error?.message ?? error)
+      // 注册绑定在 settings 服务生命周期上，停用后会泄漏；重新启用时 register 抛
+      // "already registered"（或相近措辞）属预期，直接复用现存注册。其余错误
+      // （schema/校验问题）仍 fail loud，避免静默吞掉真问题。
+      if (!/already registered|already exists|duplicate/i.test(message)) throw error;
+      scope = {
+        get: () => settings.get(SETTINGS_NS),
+        update: async (patch) => {
+          await settings.update(SETTINGS_NS, patch);
+          applyHidden(patch?.hidden ?? []);
+        }
+      };
+    }
+    hiddenSet = new Set(cleanHidden(scope.get()?.hidden ?? []));
   });
 
   ctx.logger.info('command-setting: hiding /' + [...hiddenSet].join(', /') + ' from the command menu (settings namespace ' + SETTINGS_NS + ')');
 
   return () => {
     for (const dispose of disposers) dispose();
+    if (disposeWatch) disposeWatch();
   };
 }
 

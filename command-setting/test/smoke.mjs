@@ -40,6 +40,12 @@ function makeCtx(routes, extraConfig) {
   };
   const ctx = {
     logger: { info: () => {}, warn: () => {} },
+    // cordis ctx.effect: runs the callback now, returns its disposer (lib binds
+    // webServer routes to the plugin lifecycle through it)
+    effect: (fn) => {
+      const dispose = fn();
+      return typeof dispose === "function" ? dispose : () => {};
+    },
     commands: {
       list: (agent) => {
         if (agent === void 0) return DESCRIPTORS.slice();
@@ -116,6 +122,78 @@ r = await request(routes2, "/command-setting/catalog");
 body = JSON.parse(r._body);
 check("config hidden merges", body.ok && body.hidden.includes("export"));
 check("settings scope wins over config base", body.ok && body.hidden.includes("feedback"));
+
+// ── context 4: stop → start (settings registration leaks across stop; re-apply must not throw) ──
+function makeLeakySettings() {
+  const registrations = new Map(); // leaks: mimic dsh-settings tying the namespace to the provider's fiber
+  return {
+    register(ns, schema, opts) {
+      if (registrations.has(ns)) throw new Error('settings namespace "' + ns + '" is already registered');
+      const reg = { value: { hidden: ['export', 'feedback', 'permission'] }, watchers: [] };
+      registrations.set(ns, reg);
+      return {
+        get: () => reg.value,
+        watch: (cb) => { reg.watchers.push(cb); return () => {}; },
+        update: async (patch) => { reg.value = { ...reg.value, ...patch }; }
+      };
+    },
+    get: (ns) => registrations.get(ns)?.value,
+    update: (ns, patch) => { const reg = registrations.get(ns); reg.value = { ...reg.value, ...patch }; return Promise.resolve(); }
+  };
+}
+
+function makeRestartCtx(routes) {
+  const settings = makeLeakySettings();
+  const commands = {
+    list: () => DESCRIPTORS.slice(),
+    notifyChange: () => {}
+  };
+  const ctx = {
+    logger: { info: () => {}, warn: () => {} },
+    // cordis ctx.effect shim (see makeCtx): run now, hand back the disposer so
+    // dispose() still unregisters the routes
+    effect: (fn) => {
+      const dispose = fn();
+      return typeof dispose === "function" ? dispose : () => {};
+    },
+    commands,
+    agents: { get: () => void 0 },
+    webServer: {
+      register: ({ path, handler }) => {
+        routes.set(path, handler);
+        return () => routes.delete(path);
+      }
+    },
+    inject: (names, cb) => { cb({ settings }); return { dispose: () => {} }; }
+  };
+  return ctx;
+}
+
+{
+  const routes = new Map();
+  const ctx = makeRestartCtx(routes);
+  const dispose1 = apply(ctx, {});
+  let r = await request(routes, "/command-setting/catalog");
+  check("restart: first apply catalog ok", r.status === 200 && JSON.parse(r._body).ok === true);
+  check("restart: first apply filters list", ctx.commands.list().every((d) => !["export", "feedback", "permission"].includes(d.name)));
+
+  dispose1(); // stop
+
+  // After stop the list shadow must be restored (menu unfiltered again).
+  check("restart: list restored after stop", ctx.commands.list().some((d) => d.name === "export"));
+
+  // start again: must NOT throw "already registered"
+  let threw = false;
+  try {
+    apply(ctx, {});
+  } catch (_reapplyFailure) {
+    threw = true;
+  }
+  check("restart: re-apply does not throw", !threw);
+  r = await request(routes, "/command-setting/catalog");
+  check("restart: second apply catalog ok", r.status === 200 && JSON.parse(r._body).ok === true);
+  check("restart: second apply filters list", ctx.commands.list().every((d) => !["export", "feedback", "permission"].includes(d.name)));
+}
 
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
 process.exit(failed === 0 ? 0 : 1);
