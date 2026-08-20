@@ -9,17 +9,19 @@
 |---|---|---|
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
-| **model-arena** | [`model-arena/`](model-arena/README.md) | 模型竞技场开关：以普通 `/arena` 命令形式出现，切换竞技场启用标记（开发中） |
-| **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab，展示已安装插件、管理可编辑保存的 GitHub 插件源，检查更新/安装/更新/卸载，通道可选 npm / git / auto |
+| **model-arena** | [`model-arena/`](model-arena/README.md) | 模型竞技场开关：以普通 `/arena` 命令形式出现，切换竞技场启用标记（**开发中**） |
+| **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab——两阶段安装（隔离拉取 + 分层安全审查 + 确认安装，任务可视化、可中断）、检查更新/更新（git 通道，更新附带与本地已装代码的差异审查）、卸载、开关、仓库地址管理（保存用户填写的仓库）、待重启提示、清理缓存 |
 
-各插件目录内有完整的独立 README（功能、原理、安装、配置、测试、已知限制）。
+各插件目录内有完整的独立 README（功能、原理、安装、配置、已知限制）。
 
 ## 快速安装（dsh web）
 
 前置：`dsh plugin` 命令会把参数转发给 **PATH 上的 pnpm**（`npm i -g pnpm` 或 corepack）。仓库是**公开**的，直接安装即可，无需任何凭据或配置。
 
+**chat-rollback / command-setting**（普通插件，git 通道安装）：
+
 ```bash
-# 1) 安装两个插件（公开仓库，HTTPS 拉取，无需 SSH key；跟随默认分支最新提交）
+# 安装两个插件（公开仓库，HTTPS 拉取，无需 SSH key；跟随默认分支最新提交）
 dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:chat-rollback'
 dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:command-setting'
 ```
@@ -28,8 +30,19 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 > `dsh plugin --profile web add 'github:WensH77/dsh-plugins#path:chat-rollback'`
 > （command-setting 同理）
 
+**plugin-market**（插件管理器本身，建议本地/克隆安装，安装后可管理其它插件）：
+
+```bash
+git clone https://github.com/WensH77/dsh-plugins.git
+dsh plugin --profile web add ./plugin-market
+```
+
+**model-arena**：开发中，暂不安装。
+
+安装后在补丁层启用（chat-rollback / command-setting 示例；plugin-market 为 bundle 包，无需此步，重启即加载）：
+
 ```yaml
-# 2) ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
+# ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
 - insert:
     - id: chat-rollback
       name: dsh-plugin-chat-rollback
@@ -40,7 +53,7 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 ```
 
 ```bash
-# 3) 重启 dsh web
+# 重启 dsh web
 dsh web
 ```
 
@@ -62,7 +75,7 @@ dsh plugin --profile web remove dsh-plugin-chat-rollback     # 卸载（并移�
 git clone https://github.com/WensH77/dsh-plugins.git   # 公开仓库，HTTPS 即可
 cd dsh-plugins
 
-# 依赖解析（两个插件 import @deepseek-ai/*，仓库根需要能解析到它们；
+# 依赖解析（插件 import @deepseek-ai/*，仓库根需要能解析到它们；
 # 若本机已安装 dsh，可软链其 node_modules）
 ln -s <dsh 安装路径>/node_modules node_modules
 
@@ -70,7 +83,10 @@ ln -s <dsh 安装路径>/node_modules node_modules
 node --test chat-rollback/test/fork-rollback.mjs     # chat-rollback 测试（4 项：快照/继承/回滚/恢复保护）
 node command-setting/test/smoke.mjs                  # command-setting node 端测试
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
+node --check plugin-market/lib/index.js plugin-market/lib/client.js   # plugin-market 语法检查
 ```
+
+> plugin-market host 端（lib/index.js）改动需重启 dsh web 生效；client 端（lib/client.js）每次请求实时加载。
 
 ## 仓库结构
 
@@ -85,6 +101,13 @@ dsh-plugins/
 │   ├── lib/index.js        #   Node 端：目录过滤 + catalog/set 端点
 │   ├── lib/client.js       #   浏览器端：设置页 + Plan 按钮
 │   ├── test/               #   smoke 测试
+│   └── package.json
+├── model-arena/            # 模型竞技场开关（开发中）
+│   ├── lib/
+│   └── package.json
+├── plugin-market/          # 插件市场（基础版）
+│   ├── lib/index.js        #   Node 端：清单/开关/安装/更新/卸载/审查/清理 路由
+│   ├── lib/client.js       #   浏览器端：插件市场 tab（任务可视化 + 审查报告弹窗）
 │   └── package.json
 ├── node_modules            # 测试依赖解析（软链，已 gitignore）
 └── .gitignore
