@@ -9,8 +9,8 @@
 |---|---|---|
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
-| **dsh-at-file** | [`dsh-at-file/`](dsh-at-file/README.md) | @ 路径引用（fork 自 [omdsh-dev/dsh-at-file](https://github.com/omdsh-dev/dsh-at-file) v0.6.3）：输入框输入 `@` 搜索当前工作区并插入文件/目录路径引用，不注入文件内容；设置页可管理文件名过滤规则 |
 | **model-arena** | [`model-arena/`](model-arena/README.md) | 模型竞技场开关：以普通 `/arena` 命令形式出现，切换竞技场启用标记（开发中） |
+| **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab，展示已安装插件、管理可编辑保存的 GitHub 插件源，检查更新/安装/更新/卸载，通道可选 npm / git / auto |
 
 各插件目录内有完整的独立 README（功能、原理、安装、配置、测试、已知限制）。
 
