@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-command-setting",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "dsh web 命令设置：从 “+” / “/” 命令菜单中隐藏/显示指定 slash 命令（默认 export/feedback/permission），在设置页新增「命令设置」区，支持隐藏/显示/新增；并外置 plan mode 切换按钮（点击调用 /plan）。",
   "type": "module",
   "main": "lib/index.js",

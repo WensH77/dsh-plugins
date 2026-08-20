@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-market",
   "description": "插件市场基础版：设置→插件页新增「插件市场」tab，展示已安装插件、管理可编辑保存的 GitHub 插件源、检查更新并更新插件（走 dsh 自己的 patch/pnpm 机制，HMR/重启生效）",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -35,9 +35,17 @@
     "@deepseek-ai/dsh-client-ui-settings": "*"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": { "optional": true },
-    "@deepseek-ai/dsh-client-runtime": { "optional": true },
-    "@deepseek-ai/dsh-client-locale": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-settings": { "optional": true }
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-runtime": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    }
   }
 }
