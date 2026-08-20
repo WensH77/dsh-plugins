@@ -40,12 +40,15 @@ window.__ModuleLoader__.load({
 			"menu.retry": "重试",
 			"conflict": "与输入框已选模型相同，已清空竞技场选择",
 			"block.reason": "竞技场已开启：请先选择竞技场模型（或关闭竞技场后发送）",
-			"block.challenge": "挑战流程进行中，请等待流程结束",
+			"block.challenge": "流程进行中，请等待流程结束",
 			"block.challenge.answer": "模型1 回答中…",
 			"block.challenge.challenger": "挑战者正在质疑…",
-			"block.challenge.revise": "模型1 修正中…",
+			"block.challenge.revise": "主模型修正中…",
 			"block.challenge.verdict": "挑战者正在终评…",
+			"block.challenge.propose": "主模型产出方案中…",
+			"block.challenge.review": "挑战者审查中…",
 			"scene.label": "场景",
+			"scene.business": "业务探索",
 			"scene.knowledge": "知识沉淀",
 			"scene.qa": "测试用例",
 			"challenge.stop": "停止挑战",
@@ -87,12 +90,15 @@ window.__ModuleLoader__.load({
 			"menu.retry": "Retry",
 			"conflict": "Same as the model selected in the input box — arena selection cleared",
 			"block.reason": "Arena is on: pick the arena model first (or turn the arena off)",
-			"block.challenge": "Challenge in progress — please wait for it to finish",
+			"block.challenge": "Flow in progress — please wait for it to finish",
 			"block.challenge.answer": "Model 1 is answering…",
 			"block.challenge.challenger": "The challenger is questioning…",
-			"block.challenge.revise": "Model 1 is revising…",
+			"block.challenge.revise": "Revising…",
 			"block.challenge.verdict": "The challenger is giving the verdict…",
+			"block.challenge.propose": "Drafting the proposal…",
+			"block.challenge.review": "The reviewer is reviewing…",
 			"scene.label": "Scenario",
+			"scene.business": "Business Exploration",
 			"scene.knowledge": "Knowledge base",
 			"scene.qa": "Test cases",
 			"challenge.stop": "Stop challenge",
@@ -222,9 +228,13 @@ window.__ModuleLoader__.load({
 		// to the arena model (model 2, higher-ranked challenger). The challenge
 		// working language is Chinese; role names follow the user's definitions.
 		const SCENES = {
-			knowledge: { main: "Knowledge Expert", arena: "Challenger" },
-			qa: { main: "QA Expert", arena: "用户" }
+			business: { main: "Technical Expert", arena: "Business Analyst", review: false },
+			knowledge: { main: "Knowledge Expert", arena: "Challenger", review: true },
+			qa: { main: "QA Expert", arena: "用户", review: false }
 		};
+		// The "knowledge" scene runs the review loop; the others keep the
+		// original challenge (question -> revise -> verdict) flow.
+		const isReviewScene = (challenge) => (SCENES[challenge?.scene] ?? SCENES.business).review === true;
 		// {placeholder} substitution (the locale binder does not interpolate).
 		const fmt = (template, vars) => typeof template === "string" ? template.replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m) : "";
 		const looksLikeFile = (path) => typeof path === "string" && path.length > 1 && (/\.[a-z0-9]{1,8}$/i.test(path) || path.includes("/"));
@@ -264,20 +274,31 @@ window.__ModuleLoader__.load({
 			}
 			return lines.join("\n");
 		};
+		// Maximum number of "不认可" (NEEDS_REVISION) reviews before the loop ends.
+		const MAX_REJECTS = 3;
+		// Parse the challenger's review verdict from its `**Overall Verdict**` line.
+		// Returns "READY" | "NEEDS_REVISION" | "NOT_READY" | "" (unparseable).
+		const parseReviewVerdict = (text) => {
+			if (typeof text !== "string") return "";
+			const match = text.match(/\*\*Overall Verdict\*\*:\s*(READY|NEEDS\s*REVISION|NOT\s*READY)\b/i);
+			if (!match) return "";
+			const verdict = match[1].replace(/\s+/g, "_").toUpperCase();
+			return verdict === "READY" || verdict === "NEEDS_REVISION" || verdict === "NOT_READY" ? verdict : "";
+		};
 		// Round prompt assembly: context + a per-stage directive to the arena
-		// session — the challenger's role lives in its system prompt, and each
-		// round explicitly says which SINGLE output is expected (CHALLENGE:
-		// question + answer + file refs + tool trail, then "only your challenge";
-		// FINAL: revised answer + refs + trail, then "only your verdict"). The
-		// stage directive keeps the challenger from front-running the verdict in
-		// the first reply (which would strand the revision without a review).
+		// session. "review" drives the review loop (knowledge scene);
+		// "challenge" / "final" drive the original question -> revise -> verdict flow.
 		const buildRoundPrompt = (kind, challenge, _t) => {
-			const scene = SCENES[challenge?.scene] ?? SCENES.knowledge;
+			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			const arenaRole = scene.arena;
 			const files = extractFileRefs(challenge?.lastMainText ?? "").join("\n") || "（无）";
 			const trail = formatToolTrail(challenge?.lastMainTools);
 			const toolsPart = trail === "" ? "" : "\n" + fmt("{mainRole} 的工具操作记录：\n{tools}", { mainRole, tools: trail });
+			if (kind === "review") {
+				return fmt("用户问题：「{question}」\n{mainRole} 的结构化方案：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
+					+ "\n\n请作为审查者用中文审查上述结构化方案（需求清晰度、设计合理性、风险、任务拆解、相关规格），只输出审查结论：先一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再列出 Action Items（需修正的具体点）。禁止辩论，不要自我称呼角色名。";
+			}
 			if (kind === "final") {
 				return fmt("{mainRole}修正后的回答：「{mainText}」\n提到的文件：{files}", { mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 					+ "\n\n修正已完成，请不再质疑，仅给出最终评审结论（认可或仍存疑）。禁止辩论，只输出你的结论，不要提出新的质疑。";
@@ -305,25 +326,36 @@ window.__ModuleLoader__.load({
 				.replace(/\n{3,}/g, "\n\n")
 				.trim();
 		};
-		// The challenger's objection injected into the MAIN conversation as a
-		// plain user message (no wrappers — the revise rule lives in the main
-		// model's system prompt).
-		const buildReviseMessage = (arenaText, _challenge, _t) => stripMarkdown(arenaText ?? "");
+		// The challenger's feedback injected into the MAIN conversation as a plain
+		// user message. Review mode: the main model revises per the action items;
+		// challenge mode: the raw objection (the revise rule lives in the system prompt).
+		const buildReviseMessage = (arenaText, challenge, _t) => {
+			if (isReviewScene(challenge)) {
+				return "审查结论：不认可，需修正。请按以下审查意见修正你的结构化方案（仅修正，不要重新回答用户问题）：\n\n" + stripMarkdown(arenaText ?? "");
+			}
+			return stripMarkdown(arenaText ?? "");
+		};
 		// Challenger role seed: injected into the arena session's system prompt
 		// via the persona map (syncPersona → settings → system-prompt waterfall),
 		// not as a chat message — the arena chat stays empty until the first
 		// round prompt.
 		const buildRoleSeed = (challenge, _t) => {
-			const scene = SCENES[challenge?.scene] ?? SCENES.knowledge;
+			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			const arenaRole = scene.arena;
+			if (scene.review === true) {
+				return fmt("你是{arenaRole}，身份高于{mainRole}。在审查流程中，你作为审查者负责审查{mainRole}产出的结构化方案，并给出 **Overall Verdict**: READY（认可）或 NEEDS_REVISION（不认可）的结论。禁止辩论，只按指示输出。", { arenaRole, mainRole });
+			}
 			return fmt("你是{arenaRole}，身份高于{mainRole}。接下来的挑战流程中，你将负责用中文质疑并给出终评。禁止辩论，只按指示输出。", { arenaRole, mainRole });
 		};
 		// Main-session role seed: same persona channel, active from the first
-		// turn so model 1 carries its identity while answering the user.
+		// turn so model 1 carries its identity while producing the proposal.
 		const buildMainRoleSeed = (challenge, _t) => {
-			const scene = SCENES[challenge?.scene] ?? SCENES.knowledge;
+			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
+			if (scene.review === true) {
+				return fmt("你是{mainRole}。在审查流程中，你作为方案提出者：先产出结构化方案回答用户问题，再根据审查者的审查意见修正方案，直到认可或达到最大修正次数。请用中文回答。禁止辩论。", { mainRole });
+			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
 
@@ -477,7 +509,7 @@ window.__ModuleLoader__.load({
 				const stateFor = (sessionId) => {
 					let state = stateBySession.get(sessionId);
 					if (state === void 0) {
-						state = { enabled: false, model: null, scene: "knowledge", challenge: null };
+						state = { enabled: false, model: null, scene: "business", challenge: null };
 						stateBySession.set(sessionId, state);
 					}
 					return state;
@@ -1657,34 +1689,45 @@ window.__ModuleLoader__.load({
 					if (arenaMount === null || arenaMount.sessionId !== sessionId || arenaMount.challenge.active !== true) return null;
 					const c = arenaMount.challenge;
 					if (c.phase === "idle" || c.phase === "done") return null;
-					// Fixed English stage wording (product decision), role names follow
-					// the scene so the header reads e.g. "Knowledge Expert Draft…" or
-					// "QA Expert Draft…".
-					const mainRole = (SCENES[c.scene] ?? SCENES.knowledge).main;
-					const stages = [
-						{ key: "answer", label: mainRole + " Draft…" },
-						{ key: "challenge", label: "Challenging…" },
-						{ key: "revise", label: mainRole + " Revising…" },
-						{ key: "final", label: "Reviewing…" }
-					];
-					const order = ["answer", "challenge", "revise", "final"];
-					const activeIdx = order.indexOf(c.phase);
-					const nodes = [];
-					stages.forEach((stage, i) => {
-						if (i > 0) nodes.push(React.createElement("span", { key: "sep" + i, className: "ma-challengeSep" }, "→"));
-						nodes.push(React.createElement("span", {
-							key: stage.key,
-							className: "ma-challengeStage" + (i < activeIdx ? " done" : i === activeIdx ? " active" : "")
-						}, (i < activeIdx ? "✓ " : "") + stage.label));
-					});
-					nodes.push(React.createElement("button", {
+					const mainRole = (SCENES[c.scene] ?? SCENES.business).main;
+					const stopBtn = React.createElement("button", {
 						type: "button",
 						className: "ma-challengeStop",
 						"data-challenge-stop": "",
 						title: t("challenge.stop"),
 						"aria-label": t("challenge.stop"),
 						onClick: () => { try { abortChallenge(); } catch {} }
-					}, "■"));
+					}, "■");
+					const nodes = [];
+					if ((SCENES[c.scene] ?? SCENES.business).review === true) {
+						// Review loop: current stage + reject counter.
+						const stageLabel = c.phase === "propose" ? mainRole + " Propose…"
+							: c.phase === "review" ? "Review…"
+							: c.phase === "revise" ? mainRole + " Revise…" : "";
+						nodes.push(React.createElement("span", { key: "stage", className: "ma-challengeStage active" }, stageLabel));
+						if (c.rejectCount > 0) {
+							nodes.push(React.createElement("span", { key: "sep", className: "ma-challengeSep" }, "·"));
+							nodes.push(React.createElement("span", { key: "rejects", className: "ma-challengeStage" }, "不认可 " + c.rejectCount + "/3"));
+						}
+					} else {
+						// Original challenge flow: answer -> challenge -> revise -> final.
+						const stages = [
+							{ key: "answer", label: mainRole + " Draft…" },
+							{ key: "challenge", label: "Challenging…" },
+							{ key: "revise", label: mainRole + " Revising…" },
+							{ key: "final", label: "Reviewing…" }
+						];
+						const order = ["answer", "challenge", "revise", "final"];
+						const activeIdx = order.indexOf(c.phase);
+						stages.forEach((stage, i) => {
+							if (i > 0) nodes.push(React.createElement("span", { key: "sep" + i, className: "ma-challengeSep" }, "→"));
+							nodes.push(React.createElement("span", {
+								key: stage.key,
+								className: "ma-challengeStage" + (i < activeIdx ? " done" : i === activeIdx ? " active" : "")
+							}, (i < activeIdx ? "✓ " : "") + stage.label));
+						});
+					}
+					nodes.push(stopBtn);
 					return React.createElement("div", { className: "ma-challengeHeader", "data-challenge-header": "" }, ...nodes);
 				};
 
@@ -1771,6 +1814,34 @@ window.__ModuleLoader__.load({
 						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
 						const order = Array.isArray(snap?.chat?.order) ? snap.chat.order : [];
 						return order.length > 0 ? order[order.length - 1] : null;
+					} catch {
+						return null;
+					}
+				};
+				// Key of the main-session node carrying the last injected round text
+				// (the challenger's feedback injected as a user message). Re-anchoring
+				// to THIS node — instead of the newest node — keeps the turn check
+				// correct when a revision finished while the arena runtime was
+				// unmounted (session switch): the newest node is then the finished
+				// revise turn itself, and anchoring to it would miss it.
+				const injectedNodeKey = (sessionId, text) => {
+					if (typeof text !== "string" || text === "") return null;
+					try {
+						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
+						const chat = snap?.chat;
+						if (chat === void 0 || chat === null) return null;
+						let found = null;
+						for (const key of Array.isArray(chat.order) ? chat.order : []) {
+							let node;
+							try {
+								node = chat.nodes.get(key);
+							} catch {
+								continue;
+							}
+							if (node === void 0) continue;
+							if ((node.kind === "user" || node.kind === "steering") && textOfContent(node.data?.content ?? node.content) === text) found = key;
+						}
+						return found;
 					} catch {
 						return null;
 					}
@@ -1914,7 +1985,9 @@ window.__ModuleLoader__.load({
 						c.active = true;
 						// Model 1's role comes from the system-prompt waterfall (persona
 						// map synced to settings), active from the first turn — no message.
-						c.phase = "answer";
+						c.phase = isReviewScene(c) ? "propose" : "answer";
+						c.rejectCount = 0;
+						c.verdict = "";
 						c.round = 0;
 						c.mainAnchor = lastKeyOfSnapshot(sessionId);
 						c.arenaAnchor = lastKeyOfSnapshot(arenaMount.arenaSessionId);
@@ -1957,29 +2030,101 @@ window.__ModuleLoader__.load({
 					arenaTick.bump();
 				};
 
-				// Round driver: watches both sessions' snapshots and advances the
-				// fixed 1->2->1->2 flow. Bound to both subscriptions; no-op while the
-				// challenge is idle/done. Phase guards + locked composer prevent any
-				// free-form debate.
-				const detectChallengeTurn = () => {
-					if (arenaMount === null || arenaMount.challenge.active !== true) return;
-					const c = arenaMount.challenge;
-					const mainId = arenaMount.sessionId;
-					const arenaId = arenaMount.arenaSessionId;
-					if (arenaId === void 0) return;
+				// Round driver: watches both sessions' snapshots and advances either the
+				// original challenge flow (question -> revise -> verdict) or the
+				// review loop, depending on the scene. Bound to both subscriptions;
+				// no-op while the challenge is idle/done.
+				const advanceChallenge = (c, mainId, arenaId) => {
+					if (c.phase === "answer" || c.phase === "revise") {
+						if (c.pendingAnchor) {
+							// Re-anchor to the INJECTED message node, not the newest
+							// node: after a session-switch catch-up the newest node
+							// may already be the finished revise turn, which would
+							// make the turn check below miss it. Fall through so a
+							// turn that completed while the runtime was unmounted is
+							// advanced in this same pass.
+							const cur = injectedNodeKey(mainId, c.lastInjectedText) ?? lastKeyOfSnapshot(mainId);
+							if (cur !== null && cur !== c.mainAnchor) {
+								c.mainAnchor = cur;
+								c.pendingAnchor = false;
+							} else {
+								return; // the injected message has not landed yet
+							}
+						}
+						const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
+						const running = snap?.running === true;
+						if (c.mainWasRunning && !running && !turnCompleted(snap, c.mainAnchor)) {
+							abortChallenge();
+							return;
+						}
+						c.mainWasRunning = running;
+						if (turnCompleted(snap, c.mainAnchor)) {
+							c.mainAnchor = lastKeyOfSnapshot(mainId);
+							c.lastMainText = extractLastAssistantText(mainId);
+							c.lastMainTools = extractLastAssistantTools(mainId);
+							if (c.phase === "answer") {
+								c.phase = "challenge";
+								c.round += 1;
+								promptSession(arenaId, buildRoundPrompt("challenge", c, t));
+								updateBlock(mainId, stateFor(mainId));
+								syncPersona();
+							} else {
+								c.phase = "final";
+								c.round += 1;
+								updateBlock(mainId, stateFor(mainId));
+								arenaTick.bump();
+								syncPersona();
+								promptSession(arenaId, buildRoundPrompt("final", c, t));
+							}
+						}
+					} else if (c.phase === "challenge" || c.phase === "final") {
+						const snap = ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
+						const running = snap?.running === true;
+						if (c.arenaWasRunning && !running && !turnCompleted(snap, c.arenaAnchor)) {
+							abortChallenge();
+							return;
+						}
+						c.arenaWasRunning = running;
+						if (turnCompleted(snap, c.arenaAnchor)) {
+							c.arenaAnchor = lastKeyOfSnapshot(arenaId);
+							c.lastArenaText = extractLastAssistantText(arenaId);
+							if (c.phase === "challenge") {
+								c.phase = "revise";
+								const injected = buildReviseMessage(c.lastArenaText, c, t);
+								promptSession(mainId, injected);
+								c.lastInjectedText = injected;
+								c.pendingAnchor = true;
+								updateBlock(mainId, stateFor(mainId));
+								arenaTick.bump();
+							} else {
+								c.phase = "done";
+								c.active = false;
+								promptSession(mainId, stripMarkdown(c.lastArenaText));
+								c.lastInjectedText = stripMarkdown(c.lastArenaText);
+								updateBlock(mainId, stateFor(mainId));
+								arenaTick.bump();
+							}
+						}
+					}
+				};
+
+				const advanceReview = (c, mainId, arenaId) => {
 					try {
-						if (c.phase === "answer" || c.phase === "revise") {
+						if (c.phase === "propose" || c.phase === "revise") {
 							// Waiting on the MAIN session (model 1 answer / revision).
 							if (c.pendingAnchor) {
-								// An injection just landed (or is about to): re-anchor to the
-								// newest main-session node once it appears, then wait for
-								// model 1's actual revision turn.
-								const cur = lastKeyOfSnapshot(mainId);
+								// An injection just landed (or is about to): re-anchor to
+								// the injected message node (see injectedNodeKey) once it
+								// appears, then wait for model 1's actual revision turn.
+								// Fall through so a revision that completed while the
+								// runtime was unmounted is advanced in this same pass.
+								const cur = injectedNodeKey(mainId, c.lastInjectedText) ?? lastKeyOfSnapshot(mainId);
 								if (cur !== null && cur !== c.mainAnchor) {
 									c.mainAnchor = cur;
 									c.pendingAnchor = false;
+								} else {
+									return; // the injected message has not landed yet
 								}
-								return;
 							}
 							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
 							// User pressed stop: the main session went idle without producing a
@@ -1994,24 +2139,16 @@ window.__ModuleLoader__.load({
 								c.mainAnchor = lastKeyOfSnapshot(mainId);
 								c.lastMainText = extractLastAssistantText(mainId);
 								c.lastMainTools = extractLastAssistantTools(mainId);
-								if (c.phase === "answer") {
-									c.phase = "challenge";
-									c.round += 1;
-									// First arena prompt: one-time role injection + context.
-									promptSession(arenaId, buildRoundPrompt("challenge", c, t));
-									updateBlock(mainId, stateFor(mainId));
-									syncPersona();
-								} else {
-									c.phase = "final";
-									c.round += 1;
-									updateBlock(mainId, stateFor(mainId));
-									arenaTick.bump();
-									syncPersona();
-									promptSession(arenaId, buildRoundPrompt("final", c, t));
-								}
+								// Hand the proposal (or latest revision) to the challenger for review.
+								c.phase = "review";
+								c.round += 1;
+								promptSession(arenaId, buildRoundPrompt("review", c, t));
+								updateBlock(mainId, stateFor(mainId));
+								syncPersona();
+								arenaTick.bump();
 							}
-						} else if (c.phase === "challenge" || c.phase === "final") {
-							// Waiting on the ARENA session (model 2 challenge / verdict).
+						} else if (c.phase === "review") {
+							// Waiting on the ARENA session (challenger review verdict).
 							const snap = ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
 							// The challenger went idle without producing output (stopped or failed)
 							// — end the challenge so the flow never hangs.
@@ -2024,31 +2161,56 @@ window.__ModuleLoader__.load({
 							if (turnCompleted(snap, c.arenaAnchor)) {
 								c.arenaAnchor = lastKeyOfSnapshot(arenaId);
 								c.lastArenaText = extractLastAssistantText(arenaId);
-								if (c.phase === "challenge") {
-									c.phase = "revise";
-									// Inject the challenger's output into the MAIN session as a
-									// user message (native bubble) + the no-debate revise rule.
-									const injected = buildReviseMessage(c.lastArenaText, c, t);
-									promptSession(mainId, injected);
-									c.lastInjectedText = injected;
-									// The injected user message itself is NOT a completed main
-									// turn: re-anchor once it lands, then wait for model 1's
-									// revision. pendingAnchor defers the turn check for one beat.
-									c.pendingAnchor = true;
-									updateBlock(mainId, stateFor(mainId));
-									arenaTick.bump();
-								} else {
+								const verdict = parseReviewVerdict(c.lastArenaText);
+								c.verdict = verdict === "" ? "NEEDS_REVISION" : verdict;
+								if (verdict === "READY") {
+									// 认可 → 结束审查循环并解锁（后续环节由宿主流程接管，本插件不改动）。
 									c.phase = "done";
 									c.active = false;
-									// Final verdict lands in the main conversation as a user
-									// message, then the composer unlocks for the next round.
 									promptSession(mainId, stripMarkdown(c.lastArenaText));
 									c.lastInjectedText = stripMarkdown(c.lastArenaText);
 									updateBlock(mainId, stateFor(mainId));
 									arenaTick.bump();
+								} else {
+									// 不认可 → 主模型修正；累计 3 次不认可后结束审查循环。
+									c.rejectCount += 1;
+									if (c.rejectCount >= MAX_REJECTS) {
+										c.phase = "done";
+										c.active = false;
+										const note = "审查未通过：累计 " + c.rejectCount + " 次不认可，审查循环结束。";
+										promptSession(mainId, note);
+										c.lastInjectedText = note;
+										updateBlock(mainId, stateFor(mainId));
+										arenaTick.bump();
+									} else {
+										c.phase = "revise";
+										const injected = buildReviseMessage(c.lastArenaText, c, t);
+										promptSession(mainId, injected);
+										c.lastInjectedText = injected;
+										// The injected user message itself is NOT a completed main
+										// turn: re-anchor once it lands, then wait for model 1's
+										// revision. pendingAnchor defers the turn check for one beat.
+										c.pendingAnchor = true;
+										updateBlock(mainId, stateFor(mainId));
+										arenaTick.bump();
+									}
 								}
 							}
 						}
+					} catch (_challengeFailure) {
+						// orchestration must never break the session subscriptions
+					}
+				};
+
+				const detectChallengeTurn = () => {
+					if (arenaMount === null || arenaMount.challenge.active !== true) return;
+					const c = arenaMount.challenge;
+					const mainId = arenaMount.sessionId;
+					const arenaId = arenaMount.arenaSessionId;
+					if (arenaId === void 0) return;
+					try {
+						if (isReviewScene(c)) advanceReview(c, mainId, arenaId);
+						else advanceChallenge(c, mainId, arenaId);
 					} catch (_challengeFailure) {
 						// orchestration must never break the session subscriptions
 					}
@@ -2230,12 +2392,14 @@ window.__ModuleLoader__.load({
 						challenge: state.challenge ?? {
 							active: false,
 							phase: "idle",
-							scene: state.scene ?? "knowledge",
+							scene: state.scene ?? "business",
 							userQuestion: "",
 							mainAnchor: null,
 							arenaAnchor: null,
 							lastMainText: "",
 							lastArenaText: "",
+							rejectCount: 0,
+							verdict: "",
 							round: 0,
 							pendingAnchor: false,
 							lastInjectedText: "",
@@ -2464,6 +2628,8 @@ window.__ModuleLoader__.load({
 						case "challenge": return t("block.challenge.challenger");
 						case "revise": return t("block.challenge.revise");
 						case "final": return t("block.challenge.verdict");
+						case "propose": return t("block.challenge.propose");
+						case "review": return t("block.challenge.review");
 						default: return t("block.challenge");
 					}
 				};
@@ -2523,7 +2689,7 @@ window.__ModuleLoader__.load({
 					const sceneSeg = document.createElement("div");
 					sceneSeg.className = "ma-sceneSeg";
 					const sceneBtns = {};
-					for (const key of ["knowledge", "qa"]) {
+					for (const key of ["business", "knowledge", "qa"]) {
 						const btn = document.createElement("button");
 						btn.type = "button";
 						btn.className = "ma-sceneBtn";
@@ -2727,6 +2893,15 @@ window.__ModuleLoader__.load({
 					syncArena(sessionId);
 					syncViewEntry();
 					syncPersona();
+					// Poll-based catch-up: session live events can be missed while
+					// the arena runtime is unmounted (session switch) or when an
+					// archived arena session drops events — advance the challenge
+					// straight from the current snapshots on every sync tick, so a
+					// round that finished while away is caught up on return and a
+					// conclusion is never silently lost.
+					if (arenaMount !== null && arenaMount.challenge.active === true) {
+						detectChallengeTurn();
+					}
 					} catch (_syncFailure) {
 						// one bad tick must never kill the schedule chain
 					}
@@ -2879,6 +3054,8 @@ window.__ModuleLoader__.load({
 		exports.fmt = fmt;
 		exports.extractFileRefs = extractFileRefs;
 		exports.buildRoundPrompt = buildRoundPrompt;
+		exports.parseReviewVerdict = parseReviewVerdict;
+		exports.MAX_REJECTS = MAX_REJECTS;
 		exports.formatToolTrail = formatToolTrail;
 		exports.toolArgsSummary = toolArgsSummary;
 		exports.buildReviseMessage = buildReviseMessage;

@@ -1,6 +1,6 @@
 # dsh-plugin-model-arena（模型竞技场）
 
-dsh web 模型竞技场插件（挑战模式）：**用户提问一次，流程自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」，模型2 的质疑/终评以用户消息注入主会话原生对话流**（竞技场 tab 保持现状，仅作模型2 后台输出）。
+dsh web 模型竞技场插件（挑战模式）：**按场景分流——「知识沉淀」场景走 review 循环（主模型产出结构化方案，挑战者作为审查者给出 `Overall Verdict` READY / NEEDS_REVISION；不认可则修正后终审，循环直到认可或累计 3 次不认可，随后审查循环结束）；「业务探索」「测试用例」场景保持原有挑战流程（模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评）**。模型2 的输出以用户消息注入主会话原生对话流（竞技场 tab 保持现状，仅作模型2 后台输出）。
 
 - **仅空会话（hero）配置**：空会话时，在「文件夹 + agent 模式」选择旁出现「竞技场」toggle（默认关闭）；开启后出现与输入框同源的两级菜单，选择竞技场模型 + 推理等级（输入框当前模型被排除）
 - **未配置时发送被阻止**：竞技场开启但未选模型时，composer 被平台「会话阻塞」机制禁用（占位符提示先选模型），避免静默退出竞技场变成普通会话
@@ -22,22 +22,26 @@ dsh web 模型竞技场插件（挑战模式）：**用户提问一次，流程�
 - **联动持久化（v4）**：链接写入 node 半段 settings 命名空间（ns model-arena，schema 兼容旧 enabled 字段），重载后 restore 自动重建联动；依赖 dsh web 重启加载新 node 半段
 - **错误重试（tab 内）**：竞技场会话创建失败时「竞技场」tab 内出现错误条（含原因 + 重试按钮），不再静默失败
 - **右栏渲染对齐**：工具调用与左侧同款（名称 + 参数）、工具结果折叠行、图片消息经 readAttachment 转 Blob URL 完整展示；助手文本经平台原生 MarkdownText 渲染（与对话 tab 逐字节一致）；tab 内 paneBody 自滚动（overflow-y:auto）
+- **review 循环（仅知识沉淀场景）**：挑战者仅在审查环节接入、替代主模型执行审查——主模型先产出结构化方案，挑战者输出 `**Overall Verdict**: READY / NEEDS_REVISION`；不认可则主模型修正后终审，循环直到认可或累计 3 次不认可（`MAX_REJECTS = 3`），随后审查循环结束、解锁输入框（后续环节由宿主流程接管，本插件不改动）。
+- **场景分流（新增业务探索）**：新增「业务探索」场景，与「测试用例」一起保持**原有挑战流程**（模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评），只有「知识沉淀」场景启用 review 循环——通过 `SCENES.<scene>.review` 标志 + `isReviewScene()` 在编排器/角色种子/round prompt 各层分流，原有逻辑保持不变。
+- **会话切换韧性（v7）**：修复「挑战者回合中切走会话 → 结论丢失/流程卡死」——三个改动：(1) **轮询兜底**：sync 每 tick 对当前运行时调用一次 `detectChallengeTurn()`，直接读快照推进，不再只依赖会话订阅事件（归档的竞技场会话可能丢 live 事件）；(2) **注入节点锚点**：注入后重锚（pendingAnchor）改为定位 `lastInjectedText` 对应的 user 节点（`injectedNodeKey`）而非「最新节点」，且重锚后**不提前返回**——切走期间主模型已完成修正时，在同一次 catch-up 里直接推进到终评轮，避免永久卡在 revise；(3) 竞技场会话为空时开始挑战（与生产一致），测试复位渲染夹具。效果：切走期间挑战者完成 → 回到该会话即自动补发结论并继续推进；15 分钟长回合可放心切走，每次返回都会 catch-up 一步。
 
 ## 架构
 
 | 文件 | 角色 |
 |---|---|
 | lib/index.js | Node 端：settings 注册（links 持久化 + persona 映射），`system-prompt/assemble` 注入挑战角色（仅 persona 映射中的会话） |
-| lib/client.js | 浏览器端：hero toggle + 两级菜单选择 + 竞技场运行时（镜像、`conversation.view`「竞技场」tab 注册、tab 内渲染）；纯函数（buildModelOptions、buildEffortChoices、conflictsWithInput、findArenaModel、textOfContent、assistantRows、buildRoundPrompt、formatToolTrail、toolArgsSummary、buildRoleSeed、stripMarkdown）独立导出供测试 |
+| lib/client.js | 浏览器端：hero toggle + 两级菜单选择 + 竞技场运行时（镜像、`conversation.view`「竞技场」tab 注册、tab 内渲染）+ review 循环编排；纯函数（buildModelOptions、buildEffortChoices、conflictsWithInput、findArenaModel、textOfContent、assistantRows、buildRoundPrompt、parseReviewVerdict、formatToolTrail、toolArgsSummary、buildRoleSeed、stripMarkdown）独立导出供测试 |
 
 数据流：
 
     hero 配置（toggle + 选场景/模型）
       --> 用户首问 --> 创建竞技场会话（同 workspace，不镜像首问）--> 输入框锁定
-      --> 模型1 回答（原生，角色已在 system prompt）--> 编排器 prompt 竞技场（上下文 + 质疑阶段指令：问题 + 回答 + 文件引用 + 工具记录，只输出质疑）
-      --> 模型2 质疑 --> 提取后注入主会话（user 消息；修正规则在模型1 的 system prompt）
-      --> 模型1 修正（原生）--> 编排器 prompt 竞技场（上下文 + 终评阶段指令：修正回答 + 文件引用 + 工具记录，只输出终评结论）
-      --> 模型2 终评 --> 注入主会话（user 消息）--> 结束解锁，可提新一轮
+      --> 场景分流：知识沉淀走 review 循环；业务探索/测试用例走原有挑战流程
+      --> [review] 主模型产出结构化方案 --> 挑战者审查（Overall Verdict READY/NEEDS_REVISION）
+             不认可 → 审查意见注入主会话 → 主模型修正 → 终审，循环直到 READY 或 3 次不认可
+      --> [challenge] 模型1 回答 --> 模型2 质疑（注入）--> 模型1 修正 --> 模型2 终评（注入）
+      --> 结束解锁（后续环节由宿主流程接管，本插件不改动）
 
 ## 安装（dsh web profile）
 
@@ -55,19 +59,17 @@ dsh web 模型竞技场插件（挑战模式）：**用户提问一次，流程�
 
 1. 新建/打开一个空会话（hero 视图）
 2. 在文件夹、agent 模式选择旁点击「竞技场」toggle（默认关闭）
-3. 开启后面板出现场景选择（知识沉淀 / 测试用例）+「竞技场模型」两级菜单（输入框当前模型不在列表中）
-4. 发送首条消息（你的问题）→ 输入框锁定，挑战流程自动执行：
-   - 模型1 回答你的问题
-   - 模型2（Challenger / 用户）质疑——质疑以**用户消息**出现在主对话
-   - 模型1 修正
-   - 模型2 终评——同样以用户消息收尾
+3. 开启后面板出现场景选择（默认「业务探索」，另有「知识沉淀 / 测试用例」）+「竞技场模型」两级菜单（输入框当前模型不在列表中）
+4. 发送首条消息（你的问题）→ 输入框锁定，按场景分流：
+   - **知识沉淀**：主模型产出结构化方案 → 挑战者作为审查者输出 `**Overall Verdict**: READY`（认可）或 `NEEDS_REVISION`（不认可）+ Action Items；不认可 → 审查意见以**用户消息**注入主对话 → 主模型修正 → 挑战者终审，循环直到认可或累计 3 次不认可，随后审查循环结束、解锁输入框（后续环节由宿主流程接管，本插件不改动）
+   - **业务探索 / 测试用例**（原有逻辑）：模型1 回答 → 模型2 质疑（用户消息注入）→ 模型1 修正 → 模型2 终评（用户消息收尾）
 5. 流程结束解锁输入框，可提新一轮问题
 
 ## 测试
 
     npm test   # = node test/smoke.mjs && node test/client-smoke.mjs
 
-覆盖：hero 开关/菜单/阻塞；竞技场运行时（会话创建、模型选择、open 窗口、提示词镜像、view-ring tab 注册、tab 渲染、问题/审批交互、重入不重发历史、关闭还原）；权限预设应用；链接持久化（保存/恢复/卸载）；挑战编排（1→2→1→2 推进、锚点检测、停止/中止）；纯函数（排除规则、模型挂钩等级、文本/块提取、工具/图片行、工具操作记录格式化）。
+覆盖：hero 开关/菜单/阻塞；竞技场运行时（会话创建、模型选择、open 窗口、提示词镜像、view-ring tab 注册、tab 渲染、问题/审批交互、重入不重发历史、关闭还原）；权限预设应用；链接持久化（保存/恢复/卸载）；场景分流（business/knowledge/qa 的 review 标志）；review 循环编排（propose→review→revise 推进、Overall Verdict 解析、不认可计数与 3 次上限、锚点检测、停止/中止）；原有挑战流程（业务探索场景 answer→challenge→revise→final）；纯函数（排除规则、模型挂钩等级、文本/块提取、工具/图片行、工具操作记录格式化、审查 prompt 与 challenge/final prompt 判定解析）。
 
 ## 已知限制
 

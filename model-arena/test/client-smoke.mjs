@@ -489,23 +489,33 @@ const enOnly = Object.keys(dicts.en).filter((k) => !(k in dicts.zh));
 check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(enOnly).join(","));
 // ── challenge-mode pure helpers (dicts available now) ───────────────────
 check("SCENES exported", loaded.SCENES !== void 0 && loaded.SCENES.knowledge !== void 0 && loaded.SCENES.qa !== void 0);
+check("SCENES has business/knowledge/qa", loaded.SCENES.business !== void 0 && loaded.SCENES.knowledge !== void 0 && loaded.SCENES.qa !== void 0);
+check("knowledge is the review scene", loaded.SCENES.knowledge.review === true);
+check("business/qa keep the original challenge flow", loaded.SCENES.business.review === false && loaded.SCENES.qa.review === false);
+check("MAX_REJECTS exported = 3", loaded.MAX_REJECTS === 3);
 const realT = (k) => (dicts?.zh?.[k]) ?? k;
 const chCtx = { scene: "knowledge", userQuestion: "Q1", lastMainText: "answer with `docs/plan.md`", lastArenaText: "objection" };
-const challengePrompt = loaded.buildRoundPrompt("challenge", chCtx, realT);
-check("challenge prompt has no role identity (persona only)", !challengePrompt.includes("Challenger") && !challengePrompt.includes("身份高于") && challengePrompt.includes("用户问题") && challengePrompt.includes("docs/plan.md"));
-check("challenge prompt: question + answer + file ref", challengePrompt.includes("Q1") && challengePrompt.includes("answer with") && challengePrompt.includes("docs/plan.md"));
-check("challenge directive: challenge only, no verdict", challengePrompt.includes("只输出你的质疑") && challengePrompt.includes("禁止辩论") && !challengePrompt.includes("仅给出最终评审结论"));
-const finalPrompt = loaded.buildRoundPrompt("final", chCtx, realT);
-check("final prompt has NO repeated role injection", !finalPrompt.includes("Challenger") && finalPrompt.includes("修正后的回答"));
-check("final directive: verdict only, no new challenge", finalPrompt.includes("仅给出最终评审结论") && finalPrompt.includes("不再质疑") && !finalPrompt.includes("只输出你的质疑"));
+const reviewPrompt = loaded.buildRoundPrompt("review", chCtx, realT);
+check("review prompt has no role identity (persona only)", !reviewPrompt.includes("Challenger") && !reviewPrompt.includes("身份高于") && reviewPrompt.includes("用户问题") && reviewPrompt.includes("docs/plan.md"));
+check("review prompt: question + structured proposal + file ref", reviewPrompt.includes("Q1") && reviewPrompt.includes("结构化方案") && reviewPrompt.includes("answer with") && reviewPrompt.includes("docs/plan.md"));
+check("review directive: single verdict + action items", reviewPrompt.includes("**Overall Verdict**") && reviewPrompt.includes("READY") && reviewPrompt.includes("NEEDS_REVISION") && reviewPrompt.includes("Action Items") && reviewPrompt.includes("禁止辩论"));
+check("parseReviewVerdict READY", loaded.parseReviewVerdict("**Overall Verdict**: READY") === "READY");
+check("parseReviewVerdict NEEDS REVISION (space)", loaded.parseReviewVerdict("**Overall Verdict**: NEEDS REVISION") === "NEEDS_REVISION");
+check("parseReviewVerdict NOT READY", loaded.parseReviewVerdict("**Overall Verdict**: NOT READY") === "NOT_READY");
+check("parseReviewVerdict unparseable -> empty", loaded.parseReviewVerdict("no verdict here") === "");
 const reviseMsg = loaded.buildReviseMessage("objection text", chCtx, realT);
-check("revise message = raw challenger text (no wrappers)", reviseMsg === "objection text" && !reviseMsg.includes("Knowledge Expert") && !reviseMsg.includes("禁止辩论"));
-check("stripMarkdown removes emphasis and code", loaded.stripMarkdown("**bold** and \`code\` and [link](http://x)") === "bold and code and link");
+check("revise message = directive + review text", reviseMsg.includes("不认可") && reviseMsg.includes("审查意见") && reviseMsg.includes("objection text"));
+check("stripMarkdown removes emphasis and code", loaded.stripMarkdown("**bold** and `code` and [link](http://x)") === "bold and code and link");
 check("stripMarkdown keeps paragraphs", loaded.stripMarkdown("line1\n\n\n\nline2") === "line1\n\nline2");
 const reviseMd = loaded.buildReviseMessage("**核心问题**：方案有缺陷", chCtx, realT);
-check("revise message strips markdown before injection", reviseMd === "核心问题：方案有缺陷");
-const qaPrompt = loaded.buildRoundPrompt("challenge", { ...chCtx, scene: "qa" }, realT);
-check("qa scene roles", qaPrompt.includes("QA Expert") && qaPrompt.includes("用户"));
+check("revise message strips markdown before injection", reviseMd.includes("核心问题：方案有缺陷") && !reviseMd.includes("**"));
+const qaPrompt = loaded.buildRoundPrompt("review", { ...chCtx, scene: "qa" }, realT);
+check("qa scene role", qaPrompt.includes("QA Expert"));
+const challengePrompt = loaded.buildRoundPrompt("challenge", chCtx, realT);
+check("challenge prompt (original flow): question + answer", challengePrompt.includes("用户问题") && challengePrompt.includes("质疑") && challengePrompt.includes("docs/plan.md"));
+check("challenge prompt has no review verdict", !challengePrompt.includes("Overall Verdict") && !challengePrompt.includes("结构化方案"));
+const finalPrompt = loaded.buildRoundPrompt("final", chCtx, realT);
+check("final prompt (original flow): verdict directive", finalPrompt.includes("修正后的回答") && finalPrompt.includes("最终评审结论") && !finalPrompt.includes("Overall Verdict"));
 check("extractFileRefs finds code/link paths", loaded.extractFileRefs("see `docs/a.md` and [x](src/b.ts)").join(",") === "docs/a.md,src/b.ts");
 check("fmt substitutes placeholders", loaded.fmt("a {x} b", { x: "1" }) === "a 1 b");
 // ── tool-call trail in round prompts (assistant-node blocks only) ────────
@@ -515,17 +525,15 @@ const jsonFallback = loaded.formatToolTrail([{ name: "run_command", argsRaw: '{"
 check("formatToolTrail falls back to compact json", jsonFallback.includes("run_command") && jsonFallback.includes("pnpm bench"));
 check("formatToolTrail truncates long args", loaded.formatToolTrail([{ name: "x", argsRaw: "y".repeat(500) }]).length < 400);
 const toolsCtx = { ...chCtx, lastMainTools: [{ name: "read_file", argsRaw: '{"path":"src/query.ts"}' }, { name: "run_command", argsRaw: '{"command":"pnpm bench"}' }] };
-const toolsPrompt = loaded.buildRoundPrompt("challenge", toolsCtx, realT);
-check("challenge prompt includes tool trail", toolsPrompt.includes("工具操作记录") && toolsPrompt.includes("1. read_file") && toolsPrompt.includes("2. run_command"));
-check("challenge prompt tool trail after files section", toolsPrompt.indexOf("工具操作记录") > toolsPrompt.indexOf("提到的文件"));
-const finalToolsPrompt = loaded.buildRoundPrompt("final", toolsCtx, realT);
-check("final prompt includes tool trail too", finalToolsPrompt.includes("工具操作记录") && finalToolsPrompt.includes("run_command"));
-check("no tool trail when lastMainTools absent", !loaded.buildRoundPrompt("challenge", chCtx, realT).includes("工具操作记录"));
+const toolsPrompt = loaded.buildRoundPrompt("review", toolsCtx, realT);
+check("review prompt includes tool trail", toolsPrompt.includes("工具操作记录") && toolsPrompt.includes("1. read_file") && toolsPrompt.includes("2. run_command"));
+check("review prompt tool trail after files section", toolsPrompt.indexOf("工具操作记录") > toolsPrompt.indexOf("提到的文件"));
+check("no tool trail when lastMainTools absent", !loaded.buildRoundPrompt("review", chCtx, realT).includes("工具操作记录"));
 check("nonMdSig flips when reasoning turns non-empty", loaded.nonMdSig([{ kind: "reasoning", text: "" }, { kind: "text", text: "x" }]) !== loaded.nonMdSig([{ kind: "reasoning", text: "thinking" }, { kind: "text", text: "x" }]));
 check("nonMdSig stable while reasoning text streams", loaded.nonMdSig([{ kind: "reasoning", text: "t1" }]) === loaded.nonMdSig([{ kind: "reasoning", text: "t1 longer" }]));
 check("nonMdSig unchanged for text-only streaming", loaded.nonMdSig([{ kind: "text", text: "a" }]) === loaded.nonMdSig([{ kind: "text", text: "ab" }]));
 const seed = loaded.buildRoleSeed({ scene: "knowledge" }, realT);
-check("role seed carries challenger rank + no-debate", seed.includes("Challenger") && seed.includes("身份高于") && seed.includes("Knowledge Expert") && seed.includes("禁止辩论"));
+check("role seed carries reviewer rank + no-debate", seed.includes("Challenger") && seed.includes("身份高于") && seed.includes("审查者") && seed.includes("Knowledge Expert") && seed.includes("禁止辩论") && seed.includes("Overall Verdict"));
 
 const toggle = heroRow.children.find((child) => child.dataset.arenaToggle !== void 0);
 check("toggle mounted in hero row", toggle !== void 0);
@@ -536,11 +544,12 @@ const panel = heroRoot.children.find((child) => child.dataset.arenaPanel !== voi
 check("toggle on mounts panel", panel !== void 0);
 check("composer blocked while arena on without model", blockCalls.some((c) => c.sessionId === "s1" && c.block?.reason === "L:block.reason"));
 const sceneBtnEls = collectByClass(panel, "ma-sceneBtn");
-check("scene selector has two options", sceneBtnEls.length === 2);
-check("knowledge scene default", sceneBtnEls[0].getAttribute("aria-pressed") === "true" && sceneBtnEls[0].textContent === "L:scene.knowledge");
-click(sceneBtnEls[1]);
-check("scene switched to qa", sceneBtnEls[1].getAttribute("aria-pressed") === "true" && sceneBtnEls[0].getAttribute("aria-pressed") === "false");
-click(sceneBtnEls[0]); // back to knowledge for the runtime flow
+check("scene selector has three options", sceneBtnEls.length === 3);
+check("business scene listed", sceneBtnEls[0].textContent === "L:scene.business");
+check("business scene default", sceneBtnEls[0].getAttribute("aria-pressed") === "true" && sceneBtnEls[0].textContent === "L:scene.business");
+click(sceneBtnEls[2]); // switch to qa
+check("scene switched to qa", sceneBtnEls[2].getAttribute("aria-pressed") === "true" && sceneBtnEls[1].getAttribute("aria-pressed") === "false");
+click(sceneBtnEls[1]); // back to knowledge for the review-loop flow
 
 const selector = panel.children[1];
 const trigger = selector.children[0];
@@ -630,8 +639,8 @@ check("arena model selected", selectCalls.length === 1 && selectCalls[0].session
 check("no seed message (roles via system prompt)", promptCalls.length === 0);
 check("persona map synced to settings", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "persona" && m.ops[0].value.s1 !== void 0 && m.ops[0].value.s1.includes("Knowledge Expert") && m.ops[0].value["arena-1"] !== void 0 && m.ops[0].value["arena-1"].includes("Challenger")));
 const internals = loaded.__internals;
-check("composer locked during challenge (answer stage label)", blockCalls.some((c) => c.sessionId === "s1" && c.block?.reason === "L:block.challenge.answer"));
-check("challenge phase = answer after first question", internals.getArenaMount().challenge.phase === "answer" && internals.getArenaMount().challenge.active === true);
+check("composer locked during review (propose stage label)", blockCalls.some((c) => c.sessionId === "s1" && c.block?.reason === "L:block.challenge.propose"));
+check("challenge phase = propose after first question", internals.getArenaMount().challenge.phase === "propose" && internals.getArenaMount().challenge.active === true);
 check("arena session archived on create (hidden from sidebar/counter)", archiveCalls.includes("arena-1"));
 check("permission preset applied via command channel (not prompt)", commandCalls.length === 1 && commandCalls[0].sessionId === "arena-1" && commandCalls[0].line === "/permission workspace-write" && !promptCalls.some((c) => c.content?.[0]?.text?.startsWith("/permission")));
 check("arena session window opened", openCalls.includes("arena-1"));
@@ -780,129 +789,118 @@ click(allowBtn);
 await sleep(10);
 check("approval allow responds allowed-once", approvalResults.length === 1 && approvalResults[0].ok === true && approvalResults[0].value.approvalId === "ap1" && approvalResults[0].value.outcome === "allowed-once");
 
-// ── challenge rounds: 1 -> 2 -> 1 -> 2 ─────────────────────────────────
-// model 1 answers -> challenger prompted (round 1; role injected once)
+// The arena session chat is EMPTY when a challenge starts (the first round
+// prompt is the first node — the rendering fixtures above were artificial).
+// Reset it so the review-loop orchestration sees production reality; the
+// poll-based catch-up would otherwise treat the last fixture node as a
+// completed challenger turn.
+arenaStore._set({ chat: { order: [], nodes: new Map() } });
+await sleep(10);
+
+// ── review loop: propose → review → (revise → review)* ─────────────────
+// model 1 produces the structured proposal → challenger is prompted to review
 mainStore._set({
   chat: {
     order: ["u1", "a1"],
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "answer from model1" }] } }]
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "proposal from model1" }] } }]
     ])
   }
 });
 await sleep(20);
 const arenaPrompts = promptCalls.filter((c) => c.sessionId === "arena-1");
-const chPrompt = arenaPrompts.find((c) => c.content[0].text.includes("用户问题"));
-check("challenger prompted after model1 answer (no seed message)", arenaPrompts.length === 1 && chPrompt !== void 0);
-check("challenge phase = challenge", internals.getArenaMount().challenge.phase === "challenge");
-check("challenger persona carries round instruction", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.value?.["arena-1"] !== void 0 && m.ops[0].value["arena-1"].includes("禁止辩论")));
+check("challenger prompted to review after proposal", arenaPrompts.length === 1 && arenaPrompts[0].content[0].text.includes("结构化方案"));
+check("review phase = review", internals.getArenaMount().challenge.phase === "review");
+check("challenger persona carries review instruction", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.value?.["arena-1"] !== void 0 && m.ops[0].value["arena-1"].includes("审查者")));
 
-// switching away and back mid-challenge must preserve the flow state
+// switching away and back mid-review must preserve the flow state
 currentSession = "s2";
 listSub();
 await sleep(80);
 currentSession = "s1";
 listSub();
 await sleep(80);
-check("challenge state survives a session round-trip", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "challenge");
+check("review state survives a session round-trip", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "review");
 
-// model 2 challenges -> revise message injected into the MAIN session
+// challenger rejects (NEEDS_REVISION) → revision instruction injected into main
 arenaStore._set({
   chat: {
-    order: ["ch1"],
-    nodes: new Map([["ch1", { key: "ch1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "challenger objection" }] } }]])
+    order: ["rv1"],
+    nodes: new Map([["rv1", { key: "rv1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION\nAction Items: fix A" }] } }]])
   }
 });
 await sleep(20);
-check("challenger objection injected raw into main session", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text === "challenger objection"));
-check("challenge phase = revise", internals.getArenaMount().challenge.phase === "revise");
+check("reject verdict injects revision instruction into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("不认可") && c.content[0].text.includes("fix A")));
+check("review phase = revise after rejection", internals.getArenaMount().challenge.phase === "revise");
+check("reject count = 1", internals.getArenaMount().challenge.rejectCount === 1);
 
-// the injected revise message lands in the main session (a user node) —
-// the orchestrator re-anchors without treating it as a completed turn
+// the injected revise message lands (a user node) → re-anchor without advancing
 mainStore._set({
   chat: {
     order: ["u1", "a1", "inj1"],
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer from model1" }] } }],
-      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "L:challenge.revise.message" }] } }]
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "proposal from model1" }] } }],
+      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }]
     ])
   }
 });
 await sleep(20);
 check("injected revise message does not advance the flow", internals.getArenaMount().challenge.phase === "revise" && promptCalls.filter((c) => c.sessionId === "arena-1").length === 1);
 
-// model 1 revises -> final round prompted (no repeated role injection)
+// model 1 revises → challenger re-reviews (终审)
 mainStore._set({
   chat: {
     order: ["u1", "a1", "inj1", "r1"],
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer from model1" }] } }],
-      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "L:challenge.revise.message" }] } }],
-      ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised answer" }] } }]
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "proposal from model1" }] } }],
+      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
+      ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised proposal" }] } }]
     ])
   }
 });
 await sleep(20);
-const finalPrompts = promptCalls.filter((c) => c.sessionId === "arena-1");
-check("final round prompted after revision (challenge + final, verdict directive)", finalPrompts.length === 2 && finalPrompts[1].content[0].text.includes("修正后的回答") && finalPrompts[1].content[0].text.includes("仅给出最终评审结论"));
-check("challenge phase = final", internals.getArenaMount().challenge.phase === "final");
+const reviewPrompts = promptCalls.filter((c) => c.sessionId === "arena-1");
+check("re-review prompted after revision", reviewPrompts.length === 2 && reviewPrompts[1].content[0].text.includes("revised proposal"));
+check("review phase = review again", internals.getArenaMount().challenge.phase === "review");
 
-// the final prompt lands as a USER node in the arena session BEFORE the
-// challenger starts (real platform timing) — this must NOT count as the
-// verdict turn, or the previous challenge text is reused as the verdict
+// challenger approves (READY) → verdict injected + flow done + composer unlocked
 arenaStore._set({
   chat: {
-    order: ["ch1", "fp1"],
+    order: ["rv1", "rv2"],
     nodes: new Map([
-      ["ch1", { key: "ch1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", blocks: [{ kind: "text", text: "challenger objection" }] } }],
-      ["fp1", { key: "fp1", kind: "user", anchorSeq: 2, data: { content: [{ type: "text", text: "final round prompt" }] } }]
+      ["rv1", { key: "rv1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION\nAction Items: fix A" }] } }],
+      ["rv2", { key: "rv2", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 2, step: 1, blocks: [{ kind: "text", text: "**Overall Verdict**: READY" }] } }]
     ])
   },
   running: false
 });
 await sleep(20);
-check("prompt user node does not fake the verdict turn", internals.getArenaMount().challenge.phase === "final" && promptCalls.filter((c) => c.sessionId === "s1").length === 1);
-
-// model 2 verdict -> injected into main session + flow done + composer unlocked
-arenaStore._set({
-  chat: {
-    order: ["ch1", "fp1", "v1"],
-    nodes: new Map([
-      ["ch1", { key: "ch1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", blocks: [{ kind: "text", text: "challenger objection" }] } }],
-      ["fp1", { key: "fp1", kind: "user", anchorSeq: 2, data: { content: [{ type: "text", text: "final round prompt" }] } }],
-      ["v1", { key: "v1", kind: "assistant-step", anchorSeq: 3, data: { status: "settled", blocks: [{ kind: "text", text: "final verdict" }] } }]
-    ])
-  },
-  running: false
-});
-await sleep(20);
-const verdictMsg = promptCalls[promptCalls.length - 1];
-check("final verdict injected into main session", verdictMsg.sessionId === "s1" && verdictMsg.content[0].text.includes("final verdict"));
-check("challenge done", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
-check("composer unlocked after flow", blockCalls[blockCalls.length - 1].block === void 0);
+check("approval verdict injected into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("READY")));
+check("review done after approval", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+check("composer unlocked after approval", blockCalls[blockCalls.length - 1].block === void 0);
 check("composer stage label advances with phase", (() => {
   const reasons = blockCalls.filter((c) => c.sessionId === "s1").map((c) => c.block?.reason);
-  return reasons.includes("L:block.challenge.answer") && reasons.includes("L:block.challenge.challenger") && reasons.includes("L:block.challenge.revise") && reasons.includes("L:block.challenge.verdict");
+  return reasons.includes("L:block.challenge.propose") && reasons.includes("L:block.challenge.review") && reasons.includes("L:block.challenge.revise");
 })());
 const promptsAfterDone = promptCalls.length;
 arenaStore._set({ chat: arenaStore.snapshot.chat });
 await sleep(20);
 check("no re-trigger after flow done (phase guard)", promptCalls.length === promptsAfterDone);
-// after the verdict, a late main-session reply must NEVER reach the challenger
+// after approval, a late main-session reply must NEVER reach the challenger
 const promptsBeforeLateReply = promptCalls.length;
 mainStore._set({
   chat: {
     order: ["u1", "a1", "inj1", "r1", "v1", "late"],
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer" }] } }],
-      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "challenger objection" }] } }],
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "proposal" }] } }],
+      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
       ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised" }] } }],
-      ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "final verdict" }] } }],
-      ["late", { key: "late", kind: "assistant-step", anchorSeq: 99, data: { status: "settled", blocks: [{ kind: "text", text: "model1 reacts to verdict" }] } }]
+      ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "Overall Verdict: READY" }] } }],
+      ["late", { key: "late", kind: "assistant-step", anchorSeq: 99, data: { status: "settled", blocks: [{ kind: "text", text: "model1 reacts to approval" }] } }]
     ])
   }
 });
@@ -916,16 +914,16 @@ mainStore._set({
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
       ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer" }] } }],
-      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "L:challenge.revise.message" }] } }],
+      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
       ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised" }] } }],
-      ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "final verdict" }] } }],
+      ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "Overall Verdict: READY" }] } }],
       ["u2", { key: "u2", kind: "user", anchorSeq: 6, data: { content: [{ type: "text", text: "second question" }] } }]
     ])
   },
   running: true
 });
 await sleep(20);
-check("new round started on second question", internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "answer");
+check("new round started on second question", internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "propose");
 
 // model 1 is generating (running true) ...
 mainStore._set({
@@ -999,6 +997,73 @@ await sleep(200);
 listSub?.();
 await sleep(30);
 check("switching into the arena session bounces back to the main session", currentSession === "s1" || (openCalls.length >= 1 && openCalls.includes("s1")));
+
+// ── business scenario: the ORIGINAL challenge flow (question -> verdict) ────
+// Switch the hero panel scene to "business" (knowledge = review loop is the default).
+const panelEl = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
+const sceneBtns = collectByClass(panelEl, "ma-sceneBtn");
+click(sceneBtns[0]); // business
+// A fresh question in the main session must start the ORIGINAL challenge flow.
+mainStore._set({
+  chat: {
+    order: [...mainStore.snapshot.chat.order, "bq1"],
+    nodes: new Map([...mainStore.snapshot.chat.nodes, ["bq1", { key: "bq1", kind: "user", anchorSeq: 50, data: { content: [{ type: "text", text: "business question" }] } }]])
+  },
+  running: true
+});
+await sleep(20);
+check("business scene starts the original challenge flow (answer phase)", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "answer");
+
+// ── catch-up after session switch: challenger finishes while away ────────
+// main answers the business question -> the challenger is prompted
+mainStore._set({
+  chat: {
+    order: [...mainStore.snapshot.chat.order, "ba1"],
+    nodes: new Map([...mainStore.snapshot.chat.nodes, ["ba1", { key: "ba1", kind: "assistant-step", anchorSeq: 60, data: { status: "settled", blocks: [{ kind: "text", text: "business answer" }] } }]])
+  },
+  running: false
+});
+await sleep(20);
+check("challenge prompt sent after main answer", internals.getArenaMount().challenge.phase === "challenge" && promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("质疑")));
+// switch away mid-challenge: the runtime tears down
+currentSession = "s2";
+listSub();
+await sleep(80);
+check("runtime torn down on switch away (catch-up test)", internals.getArenaMount() === null);
+// the challenger finishes its challenge turn while the runtime is unmounted
+const beforeCatchup = promptCalls.length;
+arenaStore._set({
+  chat: {
+    order: [...arenaStore.snapshot.chat.order, "cv1"],
+    nodes: new Map([...arenaStore.snapshot.chat.nodes, ["cv1", { key: "cv1", kind: "assistant-step", anchorSeq: 70, data: { status: "settled", turn: 9, step: 1, blocks: [{ kind: "text", text: "**质疑**：你的回答有漏洞 A" }] } }]])
+  },
+  running: false
+});
+await sleep(20);
+check("no injection while the runtime is unmounted", promptCalls.length === beforeCatchup);
+// return to the session: the poll catch-up must inject the conclusion
+currentSession = "s1";
+listSub();
+await sleep(120);
+check("catch-up injects the challenge conclusion on return", internals.getArenaMount() !== null && internals.getArenaMount().challenge.phase === "revise" && promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("漏洞 A")));
+// the injected conclusion lands -> main revises -> while away the revision
+// finishes -> returning must advance to the FINAL round (injected-node anchor)
+mainStore._set({
+  chat: {
+    order: [...mainStore.snapshot.chat.order, "inj-c", "br1"],
+    nodes: new Map([...mainStore.snapshot.chat.nodes, ["inj-c", { key: "inj-c", kind: "user", anchorSeq: 80, data: { content: [{ type: "text", text: "质疑：你的回答有漏洞 A" }] } }], ["br1", { key: "br1", kind: "assistant-step", anchorSeq: 81, data: { status: "settled", blocks: [{ kind: "text", text: "修正后的回答" }] } }]])
+  },
+  running: false
+});
+await sleep(20);
+currentSession = "s2";
+listSub();
+await sleep(80);
+currentSession = "s1";
+listSub();
+await sleep(120);
+check("catch-up advances to final after away-revision", internals.getArenaMount() !== null && internals.getArenaMount().challenge.phase === "final" && promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("修正后")));
+
 console.log(failed === 0 ? "CLIENT SMOKE PASS" : failed + " CLIENT SMOKE FAILURES");
 process.exit(failed === 0 ? 0 : 1);
 
