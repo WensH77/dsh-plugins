@@ -4,7 +4,9 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const code = readFileSync("command-setting/lib/client.js", "utf8");
+// resolved against this file so the suite runs from any cwd (npm test uses the
+// plugin dir)
+const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 let loaded = null;
 const sandbox = {
   window: {},

@@ -1,0 +1,29 @@
+{
+  "name": "dsh-plugin-model-arena",
+  "version": "0.1.0",
+  "description": "dsh web 模型竞技场开关：在命令菜单（“+” / “/”）中注册普通命令 /arena，弹出开关面板切换并持久化竞技场启用状态（settings.yaml，model-arena 命名空间）；竞技场功能开发中，开启暂不影响对话。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "locale",
+        "commandUi"
+      ],
+      "immediately": false
+    }
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client-smoke.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "license": "MIT"
+}

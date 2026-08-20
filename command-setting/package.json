@@ -19,6 +19,9 @@
       "immediately": false
     }
   },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client-smoke.mjs"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1"

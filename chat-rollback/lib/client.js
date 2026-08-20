@@ -17,6 +17,8 @@ window.__ModuleLoader__.load({
 			'.crb-action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}',
 			'.crb-action.confirm{color:var(--dsw-alias-state-error-primary)}',
 			'.crb-action.confirm:hover{color:var(--dsw-alias-state-error-primary)}',
+			'.crb-action.conflict{color:var(--dsw-alias-state-warning-primary,#e3a008)}',
+			'.crb-action.conflict:hover{color:var(--dsw-alias-state-warning-primary,#e3a008)}',
 			'.crb-action:disabled{opacity:.5;cursor:default}',
 			// Native title tooltips are inert in this platform, so the hover label
 			// is drawn locally from the button's aria-label — styled exactly like
@@ -55,6 +57,7 @@ window.__ModuleLoader__.load({
 			'rollback.codeRestored': '已恢复工作区到回滚点',
 			'rollback.codeSkipped': '无工作区快照，仅回滚对话（代码修改保留）',
 			'rollback.codeFailed': '代码恢复失败',
+			'rollback.conflict': '存在版本冲突，文件 {files} 在其他会话中也存在改动，本次回滚会将以上改动覆盖',
 			'rollback.tip': '在目标消息处截断历史，创建新会话继续对话（原会话自动归档）'
 		};
 		const en = {
@@ -69,6 +72,7 @@ window.__ModuleLoader__.load({
 			'rollback.codeRestored': 'Workspace restored to the rollback point',
 			'rollback.codeSkipped': 'No workspace snapshot — conversation only (code changes kept)',
 			'rollback.codeFailed': 'Workspace restore failed',
+			'rollback.conflict': 'Version conflict: {files} also changed in other sessions — this rollback will overwrite those changes',
 			'rollback.tip': 'Cut history before this message and continue in a new session (the original is archived)'
 		};
 
@@ -79,6 +83,7 @@ window.__ModuleLoader__.load({
 		// button itself carries the localized label).
 		const ICON_ROLLBACK = '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.2721 36.7279C14.5294 39.9853 19.0294 42 24 42C33.9411 42 42 33.9411 42 24C42 14.0589 33.9411 6 24 6C19.0294 6 14.5294 8.01472 11.2721 11.2721C9.61407 12.9301 6 17 6 17"></path><path d="M6 9V17H14"></path></svg>';
 		const ICON_CHECK = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 8.4 L6.4 11.6 L12.8 4.4"></path></svg>';
+		const ICON_CONFLICT = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.2 5.6a2.3 2.3 0 1 1 3.6 1.9c-.7.6-1.3 1.2-1.3 2.1"/><path d="M8 12.7v.1"/></svg>';
 		const ICON_LOADING = '<svg class="crb-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.6 A5.4 5.4 0 0 1 13.4 8"></path></svg>';
 
 		function extractText(content) {
@@ -105,6 +110,8 @@ window.__ModuleLoader__.load({
 				button,
 				note,
 				confirm: false,
+				conflict: false,
+				conflictFiles: [],
 				busy: false,
 				showNote(text, ok) {
 					note.textContent = text;
@@ -114,36 +121,99 @@ window.__ModuleLoader__.load({
 					if (text !== '') noteTimer = setTimeout(() => { note.textContent = ''; note.hidden = true; }, 6000);
 				},
 				paint() {
-					const label = control.busy ? t('rollback.busy') : control.confirm ? t('rollback.confirm') : t('rollback.here');
+					let label, icon, extra = '';
+					if (control.busy) {
+						label = t('rollback.busy');
+						icon = ICON_LOADING;
+					} else if (control.confirm) {
+						label = t('rollback.confirm');
+						icon = ICON_CHECK;
+						extra = ' confirm';
+					} else if (control.conflict) {
+						label = control.conflictLabel();
+						icon = ICON_CONFLICT;
+						extra = ' conflict';
+					} else {
+						label = t('rollback.here');
+						icon = ICON_ROLLBACK;
+					}
 					button.setAttribute('aria-label', label);
 					button.setAttribute('title', label);
-					button.className = 'crb-action' + (control.confirm ? ' confirm' : '');
+					button.className = 'crb-action' + extra;
 					button.disabled = control.busy;
-					button.innerHTML = control.busy ? ICON_LOADING : control.confirm ? ICON_CHECK : ICON_ROLLBACK;
+					button.innerHTML = icon;
+				},
+				conflictLabel() {
+					const files = control.conflictFiles ?? [];
+					const list = files.slice(0, 5).join('、') + (files.length > 5 ? '…' : '');
+					return t('rollback.conflict').replace('{files}', list);
 				}
 			};
 			button.addEventListener('click', () => {
 				if (control.busy) return;
-				if (!control.confirm) {
+				if (control.confirm) {
+					control.confirm = false;
+					control.busy = true;
+					control.paint();
+					runRollback(control);
+					return;
+				}
+				if (control.conflict) {
+					control.conflict = false;
 					control.confirm = true;
 					control.paint();
 					return;
 				}
-				control.confirm = false;
+				// idle: the first click runs the conflict preflight; the ✓ or ? gate
+				// appears only after the server has compared per-file hashes.
 				control.busy = true;
 				control.paint();
-				runRollback(control);
+				runPreflight(control);
 			});
 			// Two-step confirm safety: focus leaving the button (click elsewhere,
 			// Tab away, Esc-adjacent moves) cancels the armed confirm state, so a
 			// stray second click after a context switch never fires the rollback.
 			button.addEventListener('blur', () => {
-				if (!control.confirm || control.busy) return;
+				if (control.busy || (!control.confirm && !control.conflict)) return;
 				control.confirm = false;
+				control.conflict = false;
 				control.paint();
 			});
 			control.paint();
 			return control;
+		}
+
+		/** First-click preflight: compare per-file hashes server-side and gate the
+		 * confirm (✓) behind a conflict (?) state when another session also changed
+		 * files this rollback would overwrite. */
+		async function runPreflight(control) {
+			const { sessionId, seq, t } = control.binding ?? {};
+			if (sessionId === undefined || typeof seq !== 'number') {
+				control.busy = false;
+				control.paint?.();
+				control.showNote?.(t?.('rollback.error') ?? 'rollback failed', false);
+				return;
+			}
+			try {
+				const res = await fetch('/chat-rollback/preflight?session=' + encodeURIComponent(sessionId) + '&seq=' + seq, { method: 'POST', cache: 'no-store' });
+				const data = await res.json();
+				if (typeof data !== 'object' || data === null) throw new Error('invalid preflight response');
+				if (!data.ok) {
+					control.showNote(String(data.message ?? data.code ?? t?.('rollback.error') ?? 'preflight failed'), false);
+					return;
+				}
+				if (data.conflict && Array.isArray(data.files) && data.files.length > 0) {
+					control.conflictFiles = data.files;
+					control.conflict = true;
+				} else {
+					control.confirm = true;
+				}
+			} catch (err) {
+				control.showNote(err instanceof Error ? err.message : String(err), false);
+			} finally {
+				control.busy = false;
+				control.paint();
+			}
 		}
 
 		/** The rollback request; session/seq ride the control's current binding. */
@@ -203,7 +273,9 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'chat-rollback: dictionaries');
 			const t = ctx.locale.bind(NS);
-			const mounted = new WeakMap(); // row -> { seq, kind, control }
+			// Map (not WeakMap): the locale-change repaint iterates mounted.values(),
+			// which WeakMap does not support. Rows are removed on detach().
+			const mounted = new Map(); // row -> { seq, kind, control }
 			let timer = null;
 			const schedule = () => {
 				clearTimeout(timer);
