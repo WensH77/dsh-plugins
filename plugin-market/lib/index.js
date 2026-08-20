@@ -15,7 +15,7 @@
  */
 import { readFile, writeFile, rm, readdir, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { dirname, join } from 'node:path'
@@ -102,6 +102,20 @@ function isUserInstalled(moduleName, rowId, extra, bundles) {
   if (moduleName.startsWith('@deepseek-ai/dsh-') || moduleName.startsWith('@deepseek-ai/cordis-plugin-')) return false
   if (extra) return true
   return Array.isArray(bundles) && bundles.includes(moduleName) && !DEFAULT_BUNDLES.includes(moduleName)
+}
+
+/** 判断插件是否已安装（运行树同名条目 / 补丁层 insert 行 / 非默认 bundle 已写入 manifest）。
+ * 用于拦截重复安装：同一包名只允许安装一次，升级走「检查更新」。 */
+async function isPluginInstalled(ctx, patch, moduleName, profileDir) {
+  if (listEntries(ctx).some((entry) => entry.moduleName === moduleName)) return true
+  if (patch.inserts.includes(moduleName)) return true
+  if (patch.inserts.includes(deriveEntryId(moduleName, new Set()))) return true
+  try {
+    const manifest = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8'))
+    const bundles = manifest.dsh?.profile?.bundles ?? []
+    if (bundles.includes(moduleName) && !DEFAULT_BUNDLES.includes(moduleName)) return true
+  } catch {}
+  return false
 }
 
 /** 判断插件是否为本地安装（package.json 中 link:/file: 依赖，或 node_modules 中指向 profile 外的符号链接）。本地安装的插件不可通过插件市场卸载。 */
@@ -243,6 +257,87 @@ function isTransientPnpmError(error) {
   return /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|ETARGET|integrity|timeout|timed out|ENOTEMPTY|EBUSY|ELOCKED|ENOENT/i.test(text)
 }
 
+/** 解析 pnpm 的 Progress 行（stdout 实时输出，非 TTY 也会打印）：
+ * "Progress: resolved 340, reused 319, downloaded 21, added 340, done"。
+ * 返回 null 表示不是进度行。 */
+function parsePnpmProgress(line) {
+  const text = String(line).trim()
+  const match = /^Progress:\s*resolved\s+(\d+)(?:,\s*reused\s+(\d+))?(?:,\s*downloaded\s+(\d+))?(?:,\s*added\s+(\d+))?/.exec(text)
+  if (match === null) return null
+  return {
+    resolved: Number(match[1]),
+    reused: match[2] !== undefined ? Number(match[2]) : 0,
+    downloaded: match[3] !== undefined ? Number(match[3]) : 0,
+    added: match[4] !== undefined ? Number(match[4]) : 0,
+    done: /,\s*done\s*$/.test(text),
+  }
+}
+
+/** 由 pnpm 进度行生成任务进度快照（percent 为 added/resolved；done 时固定 100，
+ * 避免全缓存安装 added 保持 0 却已完成时进度条停在 0%）。 */
+function progressFromPnpm(progress) {
+  const total = progress.resolved
+  let percent = null
+  if (progress.done) percent = 100
+  else if (total > 0) percent = Math.max(0, Math.min(100, Math.round((progress.added / total) * 100)))
+  return { percent, resolved: progress.resolved, downloaded: progress.downloaded, added: progress.added, done: progress.done }
+}
+
+/** 带进度回调的 pnpm 执行：流式读取 stdout 逐行解析 Progress，错误对象
+ * 与 execFileAsync 兼容（message 含命令、stdout/stderr/code/killed 属性齐全）。 */
+function execPnpmStream(bin, argv, opts, onProgress) {
+  return new Promise((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    let buffer = ''
+    let timedOut = false
+    let settled = false
+    const timer = opts.timeout > 0 ? setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, opts.timeout) : null
+    const child = spawn(bin, argv, {
+      cwd: opts.cwd,
+      env: opts.env,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      signal: opts.signal,
+    })
+    child.stdout.on('data', (chunk) => {
+      const text = String(chunk)
+      stdout += text
+      if (typeof onProgress !== 'function') return
+      buffer += text
+      let index
+      while ((index = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, index)
+        buffer = buffer.slice(index + 1)
+        const parsed = parsePnpmProgress(line)
+        if (parsed !== null) onProgress(parsed)
+      }
+    })
+    child.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    child.on('error', (error) => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimeout(timer)
+      reject(error)
+    })
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      if (timer !== null) clearTimeout(timer)
+      if (code !== 0) {
+        const error = new Error('Command failed: ' + [bin, ...argv].join(' '))
+        error.code = code
+        error.stdout = stdout
+        error.stderr = stderr
+        error.killed = timedOut
+        reject(error)
+      } else {
+        resolve({ stdout, stderr })
+      }
+    })
+  })
+}
+
 /**
  * 运行 pnpm（串行化 + 瞬时失败重试 + 结果带 stderr）：
  *  - 追加 pnpm 自身 fetch 重试与 prefer-offline 参数，命中 store 缓存时快且稳；
@@ -253,31 +348,40 @@ function isTransientPnpmError(error) {
 async function repairPnpmLayout(profileDir) {
   const attempts = resolvePnpm()
   await queuedPnpm(async () => {
-    for (const { bin, args: prefix } of attempts) {
-      try {
-        await execFileAsync(bin, [...prefix, 'install', '--no-frozen-lockfile'], {
-          cwd: profileDir,
-          timeout: 300000,
-          windowsHide: true,
-          maxBuffer: 4 * 1024 * 1024,
-          env: {
-            ...process.env,
-            GIT_TERMINAL_PROMPT: '0',
-            GCM_INTERACTIVE: 'never',
-            CI: 'true',
-          },
-        })
-        return
-      } catch (error) {
-        if (error.code === 'ENOENT') continue
-        throw error
+    // 两轮：首轮失败若为构建脚本授权错误（prepare 被禁 / 传递依赖构建被忽略），
+    // 写 allowBuilds 后重试一轮（install 同样可能触发这两类错误）
+    for (let round = 0; round < 2; round += 1) {
+      for (const { bin, args: prefix } of attempts) {
+        try {
+          await execFileAsync(bin, [...prefix, 'install', '--no-frozen-lockfile'], {
+            cwd: profileDir,
+            timeout: 300000,
+            windowsHide: true,
+            maxBuffer: 4 * 1024 * 1024,
+            env: {
+              ...process.env,
+              GIT_TERMINAL_PROMPT: '0',
+              GCM_INTERACTIVE: 'never',
+              CI: 'true',
+            },
+          })
+          return
+        } catch (error) {
+          if (error.code === 'ENOENT') continue
+          if (round === 0) {
+            try {
+              if (await applyBuildPolicyRecovery(profileDir, error)) break
+            } catch {}
+          }
+          throw error
+        }
       }
     }
     throw new Error('未找到可用的 pnpm 以修复安装布局')
   })
 }
 
-async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried = false) {
+async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried = false, policyRounds = 0, onProgress = null) {
   const attempts = resolvePnpm()
   const buildError = (error) => {
     // pnpm v11 的部分错误（如 ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF）写 stdout 而非 stderr，
@@ -293,6 +397,8 @@ async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried =
       guide = '（网络/超时问题：请检查网络后重试，或稍后再试）'
     } else if (/ENOENT|not found|未找到|command not found/.test(text)) {
       guide = '（缺少 pnpm/git 等工具：请安装 pnpm（npm i -g pnpm）与 git 后重试）'
+    } else if (/ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED|ERR_PNPM_IGNORED_BUILDS/.test(text)) {
+      guide = '（pnpm 构建脚本授权：已自动把 allowBuilds 写入 pnpm-workspace.yaml 并重试；若仍失败，请检查网络/磁盘后重试）'
     }
     return new Error((error?.message ?? '安装失败') + (detail ? '：' + detail.slice(-800) : '') + guide)
   }
@@ -306,18 +412,25 @@ async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried =
             const fetchFlags = args[0] === 'add' || args[0] === 'install' || args[0] === 'update'
               ? ['--fetch-retries=5', '--fetch-retry-mintimeout=10000', '--fetch-retry-maxtimeout=60000', '--prefer-offline']
               : []
-            await execFileAsync(bin, [...prefix, ...args, ...fetchFlags], {
-              cwd: profileDir,
-              timeout,
-              signal,
-              windowsHide: true,
-              maxBuffer: 4 * 1024 * 1024,
-              env: {
-                ...process.env,
-                GIT_TERMINAL_PROMPT: '0',
-                GCM_INTERACTIVE: 'never',
-              },
-            })
+            const argv = [...prefix, ...args, ...fetchFlags]
+            const pnpmEnv = {
+              ...process.env,
+              GIT_TERMINAL_PROMPT: '0',
+              GCM_INTERACTIVE: 'never',
+            }
+            if (typeof onProgress === 'function') {
+              // 流式执行：实时解析 pnpm 的 Progress 行回传进度
+              await execPnpmStream(bin, argv, { cwd: profileDir, timeout, signal, env: pnpmEnv }, onProgress)
+            } else {
+              await execFileAsync(bin, argv, {
+                cwd: profileDir,
+                timeout,
+                signal,
+                windowsHide: true,
+                maxBuffer: 4 * 1024 * 1024,
+                env: pnpmEnv,
+              })
+            }
             return
           } catch (error) {
             lastError = error
@@ -336,6 +449,19 @@ async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried =
         lastError = error
         break
       }
+      // pnpm 构建脚本授权错误（git 插件 prepare 被禁 / 传递依赖构建被忽略）：
+      // 确定性错误，须先于瞬时判定处理——自动把 allowBuilds 写入 pnpm-workspace.yaml 后重试
+      // （最多 3 轮，覆盖多层 git/原生依赖）。不能用 isTransientPnpmError 判定：
+      //   其正则会把我们追加的命令参数（--fetch-retry-maxtimeout）误判为瞬时超时，
+      //   且 pnpm v11 的 IGNORED_BUILDS 提示写在 stdout 而非 stderr。
+      if (policyRounds < 3 && (args[0] === 'add' || args[0] === 'install' || args[0] === 'update')
+          && /ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED|ERR_PNPM_IGNORED_BUILDS/.test(errText)) {
+        try {
+          if (await applyBuildPolicyRecovery(profileDir, error)) {
+            return runPnpm(profileDir, args, timeout, signal, repairTried, policyRounds + 1, onProgress)
+          }
+        } catch {}
+      }
       if (!isTransientPnpmError(error)) throw buildError(error)
       lastError = error
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1500))
@@ -347,7 +473,7 @@ async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried =
     if (/ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF|ERR_PNPM_LOCKFILE_CONFIG_MISMATCH|ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY/.test(errText)) {
       try {
         await repairPnpmLayout(profileDir)
-        return runPnpm(profileDir, args, timeout, signal, true)
+        return runPnpm(profileDir, args, timeout, signal, true, policyRounds, onProgress)
       } catch {}
     }
   }
@@ -355,12 +481,105 @@ async function runPnpm(profileDir, args, timeout = 180000, signal, repairTried =
 }
 
 /** pnpm add：profile 是 workspace 根，必须加 -w 才能在根 package.json 安装。 */
-async function pnpmInstall(profileDir, spec) {
-  await runPnpm(profileDir, ['add', '-w', spec])
+async function pnpmInstall(profileDir, spec, onProgress = null) {
+  await runPnpm(profileDir, ['add', '-w', spec], 180000, undefined, false, 0, onProgress)
 }
 
 async function pnpmRemove(profileDir, packageName) {
   await runPnpm(profileDir, ['remove', packageName])
+}
+
+// ── pnpm 构建脚本授权（allowBuilds） ─────────────────────────────────────────
+
+/**
+ * pnpm v10.26+/v11 安全策略（GHSA-5wx6-mg75-v57r 修复）：git 托管依赖的
+ * prepare 构建脚本必须显式列入 pnpm-workspace.yaml 的 allowBuilds 才允许执行，
+ * 否则报 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED；被忽略的传递依赖构建脚本
+ * （如原生模块 node-pty）则报 ERR_PNPM_IGNORED_BUILDS 并以退出码 1 结束。
+ * 插件市场是显式安装器，安装即代表允许该插件的构建脚本，这里自动补齐授权。
+ * allowBuilds 键支持三种形式：精确 depPath（name@tarballUrl，含 commit）、
+ * git 仓库级键（name@git+https://github.com/owner/repo.git，跨 commit 稳定）、
+ * 纯包名（仅 registry 依赖）。git 插件优先写仓库级键，插件更新（commit 变化）后无需再次授权。
+ */
+
+/** 从 PREPARE_NOT_ALLOWED 错误文本提取 git 依赖的 allowBuilds 键（仓库级优先）。 */
+function deriveGitAllowBuildKey(errorText) {
+  const urlMatch = /fetched from "([^"]+)"/u.exec(errorText)
+  const nameMatch = /The git-hosted package "(.+?)@[^"]+"/u.exec(errorText)
+  if (urlMatch === null || nameMatch === null) return null
+  const tarballUrl = urlMatch[1]
+  const pkgName = nameMatch[1]
+  const repoMatch = /^https:\/\/codeload\.github\.com\/([^/]+)\/([^/]+)\/tar\.gz\//u.exec(tarballUrl)
+  if (repoMatch !== null) {
+    return pkgName + '@git+https://github.com/' + repoMatch[1] + '/' + repoMatch[2] + '.git'
+  }
+  // 非 codeload 源：退化为精确 depPath（name@tarballUrl）
+  return pkgName + '@' + tarballUrl
+}
+
+/** 从 IGNORED_BUILDS 提示提取被忽略构建脚本的包名列表（a@1.0.0 → a）。 */
+function parseIgnoredBuildNames(errorText) {
+  const match = /Ignored build scripts:\s*([^\n]+)/u.exec(errorText)
+  if (match === null) return []
+  return match[1]
+    .split(',')
+    .map((item) => item.trim().replace(/@[\d^~<>=v][^\s,]*$/u, ''))
+    .filter((name) => name !== '')
+}
+
+/** 行级合并 allowBuilds 条目到 pnpm-workspace.yaml（保留其它键/注释，幂等）。 */
+async function mergeAllowBuilds(projectDir, entries) {
+  if (entries.size === 0) return false
+  const file = join(projectDir, 'pnpm-workspace.yaml')
+  let text = ''
+  try {
+    text = await readFile(file, 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  const lines = text.split(/\r?\n/u)
+  const topKeyRe = /^([A-Za-z0-9_-]+):(?:\s*(?:#.*)?)$/u
+  let blockStart = -1
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = topKeyRe.exec(lines[i])
+    if (match !== null && match[1] === 'allowBuilds') {
+      blockStart = i
+      break
+    }
+  }
+  const render = (map) => [...map.entries()].map(([key, value]) => '  ' + key + ': ' + value).join('\n')
+  if (blockStart === -1) {
+    const prefix = lines.length > 0 && lines[lines.length - 1].trim() !== '' ? '\n' : ''
+    await writeFile(file, text + prefix + 'allowBuilds:\n' + render(entries) + '\n', 'utf8')
+    return true
+  }
+  // 已有 allowBuilds 块：收集现有条目（2 空格缩进，直到空行或顶层键），合并后重写
+  const existing = new Map()
+  let blockEnd = blockStart + 1
+  while (blockEnd < lines.length && lines[blockEnd].trim() !== '' && /^[ \t]/.test(lines[blockEnd])) {
+    const entry = /^  (.+?):\s+(.*)$/u.exec(lines[blockEnd])
+    if (entry !== null) existing.set(entry[1], entry[2].trim())
+    blockEnd += 1
+  }
+  for (const [key, value] of entries) existing.set(key, String(value))
+  const merged = ['allowBuilds:', ...render(existing).split('\n')]
+  await writeFile(file, [...lines.slice(0, blockStart), ...merged, ...lines.slice(blockEnd)].join('\n'), 'utf8')
+  return true
+}
+
+/** 针对可恢复的构建策略错误写 allowBuilds 授权；成功写出返回 true。 */
+async function applyBuildPolicyRecovery(projectDir, error) {
+  const errorText = String(error?.message ?? '') + ' ' + String(error?.stderr ?? '') + ' ' + String(error?.stdout ?? '')
+  const entries = new Map()
+  if (/ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED/.test(errorText)) {
+    const key = deriveGitAllowBuildKey(errorText)
+    if (key !== null) entries.set(key, true)
+  }
+  if (/ERR_PNPM_IGNORED_BUILDS/.test(errorText)) {
+    for (const name of parseIgnoredBuildNames(errorText)) entries.set(name, true)
+  }
+  if (entries.size === 0) return false
+  return mergeAllowBuilds(projectDir, entries)
 }
 
 // ── 补丁层读写（与 dsh plugin CLI 语义一致） ────────────────────────────────
@@ -642,6 +861,18 @@ async function writeRepoOverride(packageName, repository, manual = false) {
   return overrides[packageName]?.repo ?? null
 }
 
+/** set-repo 落盘决策：保存的地址与当前生效地址（已有覆盖优先，否则包内 repository）一致时
+ * 视为"没变"——不新建覆盖、也不把自动保存（manual:false）升级成手动覆盖（卡片不显示徽标）；
+ * 只有真正变更（或清空）才需要写 manual 覆盖。返回 { action: 'keep'|'write'|'clear', repo }。 */
+function decideRepoOverride(overrides, moduleName, clean, metaRepo) {
+  const existing = Object.prototype.hasOwnProperty.call(overrides, moduleName) ? overrides[moduleName] : null
+  const currentEffective = existing !== null ? existing.repo : metaRepo
+  if (clean === (currentEffective ?? '')) {
+    return { action: 'keep', repo: existing !== null ? existing.repo : (metaRepo ?? '') }
+  }
+  return { action: clean === '' ? 'clear' : 'write', repo: clean }
+}
+
 /** 移除一条「- id: X」+「disabled: true」禁用块（重装 bundle 时清理卸载留下的临时禁用行）。 */
 async function removeDisableBlock(patchPath, id) {
   return queuedWrite(async () => {
@@ -663,6 +894,8 @@ async function removeDisableBlock(patchPath, id) {
 const DSH_BEST_FIT_VERSION = '0.1.0-rc.7'
 /** 安装任务队列：jobId → job。状态流：pulling（拉取中）→ reviewing（审查中）→ pending（待安装）→ installing（安装中）→ 完成/取消。 */
 const installJobs = new Map()
+/** 正在生成的审查（按 包名@版本 键）→ Promise：同一键的生成只跑一次，连点/双端触发时等待并复用结果。 */
+const reviewInflight = new Map()
 /** 任务过期时间：30 分钟内未确认/中断则视为废弃（清理隔离目录）。 */
 const JOB_TTL_MS = 30 * 60 * 1000
 
@@ -679,6 +912,7 @@ function createInstallJob(repo, name) {
     staged: null,
     review: null,
     error: null,
+    progress: null,
   }
   installJobs.set(id, job)
   return job
@@ -713,6 +947,7 @@ function listInstallJobs() {
       status: job.status,
       stage: job.stage ?? null,
       scan: job.scan ?? null,
+      progress: job.progress ?? null,
       createdAt: job.createdAt,
       review: job.review,
     })
@@ -742,6 +977,15 @@ async function installPlugin(ctx, options) {
   let repoInfo = null
   try { repoInfo = githubRepoInfo(repo) } catch (err) { throw err instanceof Error ? err : new Error('GitHub 仓库地址格式无效') }
 
+  // 同一仓库已有进行中的安装任务（拉取中/审查中/待安装/安装中）→ 拒绝重复发起
+  const spec = gitSpec(repoInfo)
+  for (const live of installJobs.values()) {
+    if (live.status === 'cancelled' || live.status === 'done') continue
+    if (live.repoInfo !== null && live.repoInfo !== undefined && gitSpec(live.repoInfo) === spec) {
+      throw new Error('该插件已在安装中（' + live.repo + '），请勿重复安装')
+    }
+  }
+
   // 创建任务（包名初始可为空，拉取后由包自身决定）→ 隔离拉取
   const job = createInstallJob(repo, packageName ?? '')
   job.repoInfo = repoInfo
@@ -767,11 +1011,27 @@ async function installPlugin(ctx, options) {
     return { ok: true, pending: true, jobId: job.id, packageName: job.name, review: job.review }
   }
 
+  // 重复安装防护（拉取成功、包名确定后）：已安装 / 其它任务同包名进行中 → 拒绝并清理
+  if (await isPluginInstalled(ctx, patch, job.name, profileDir)) {
+    installJobs.delete(job.id)
+    await rm(job.staged?.jobDir, { recursive: true, force: true }).catch(() => {})
+    throw new Error('插件 ' + job.name + ' 已安装，请勿重复安装（如需升级请使用「检查更新」）')
+  }
+  for (const other of installJobs.values()) {
+    if (other.id === job.id || other.status === 'cancelled' || other.status === 'done') continue
+    if (other.name === undefined || other.name === null || other.name === '') continue
+    if (other.name === job.name) {
+      installJobs.delete(job.id)
+      await rm(job.staged?.jobDir, { recursive: true, force: true }).catch(() => {})
+      throw new Error('插件 ' + job.name + ' 正在安装中，请勿重复安装')
+    }
+  }
+
   // 安全审查关闭：直接安装（staged 已拉取，安装时顺带清理隔离目录）
   if (review !== true) {
     job.status = 'installing'
     try {
-      const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged })
+      const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job })
       job.status = 'done'
       installJobs.delete(job.id)
       return { ...result, review: null }
@@ -807,8 +1067,14 @@ async function installPlugin(ctx, options) {
 }
 
 /** 执行真正安装（迁移到 profile）：pnpm add + 清理隔离目录 + bundle/insert 激活。 */
-async function performInstall({ repoInfo, name, profileDir, patchPath, taken, staged }) {
-  await pnpmInstall(profileDir, gitSpec(repoInfo))
+async function performInstall({ repoInfo, name, profileDir, patchPath, taken, staged, job = null }) {
+  // 安装进度（迁移到 profile 的 pnpm add，同样流式回传）
+  if (job !== null && job !== undefined) job.progress = null
+  const onProgress = job !== null && job !== undefined
+    ? (parsed) => { job.progress = progressFromPnpm(parsed) }
+    : null
+  await pnpmInstall(profileDir, gitSpec(repoInfo), onProgress)
+  if (job !== null && job !== undefined) job.progress = null
   if (staged !== null) {
     await rm(staged.jobDir, { recursive: true, force: true }).catch(() => {})
   }
@@ -845,7 +1111,7 @@ async function confirmInstall(jobId) {
   installJobs.delete(jobId)
   job.status = 'installing'
   try {
-    const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged })
+    const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job })
     job.status = 'done'
     return result
   } catch (error) {
@@ -977,7 +1243,7 @@ async function updatePlugin(ctx, entryId) {
 // ── 安全审查（隔离拉取 → 子代理审查整个包 → 缓存报告，7 天清理） ───────────────
 
 /** 清理隔离目录与旧审查缓存（超过 7 天的删除）。 */
-async function cleanupStagingAndReviews() {
+async function cleanupStagingAndReviews(ctx) {
   // 隔离目录：job-* 目录超过 1 小时视为孤儿（dsh web 崩溃/重启遗留——任务队列是内存的，
   // 重启后任何 job-* 都无主，正常安装拉取几分钟、审查最多 10 分钟，1 小时阈值安全）；
   // 其它条目（如顶层残留）按 7 天兜底清理。
@@ -995,12 +1261,15 @@ async function cleanupStagingAndReviews() {
       }
     }
   } catch {}
+  const keepKeys = ctx !== undefined && ctx !== null ? installedReviewKeys(ctx) : new Set()
   try {
     const entries = await readdir(REVIEWS_DIR)
     for (const entry of entries) {
       if (!entry.endsWith('.json')) continue
+      const key = entry.slice(0, -5)
       try {
         const data = JSON.parse(await readFile(join(REVIEWS_DIR, entry), 'utf8'))
+        if (shouldRetainReview(key, data, keepKeys)) continue
         if (typeof data.reviewedAt === 'number' && Date.now() - data.reviewedAt > REVIEW_TTL_DAYS * 86400000) {
           await rm(join(REVIEWS_DIR, entry), { force: true }).catch(() => {})
         }
@@ -1010,7 +1279,7 @@ async function cleanupStagingAndReviews() {
 }
 
 /** 一键清理缓存：删除超过 thresholdMs 的 staging 残留与审查报告。清理按钮用 1 小时阈值。 */
-async function cleanupCaches(thresholdMs) {
+async function cleanupCaches(ctx, thresholdMs) {
   const now = Date.now()
   let removedStaging = 0
   let removedReviews = 0
@@ -1025,13 +1294,16 @@ async function cleanupCaches(thresholdMs) {
       }
     }
   } catch {}
+  const keepKeys = ctx !== undefined && ctx !== null ? installedReviewKeys(ctx) : new Set()
   try {
     const entries = await readdir(REVIEWS_DIR)
     for (const entry of entries) {
       if (!entry.endsWith('.json')) continue
+      const key = entry.slice(0, -5)
       const target = join(REVIEWS_DIR, entry)
       try {
         const data = JSON.parse(await readFile(target, 'utf8'))
+        if (shouldRetainReview(key, data, keepKeys)) continue
         if (typeof data.reviewedAt === 'number' && now - data.reviewedAt > thresholdMs) {
           await rm(target, { force: true }).catch(() => {})
           removedReviews += 1
@@ -1052,7 +1324,12 @@ async function stagePackage(spec, job) {
   // 提前登记 jobDir，中断时即便拉取未完成也能清理残留
   if (job !== undefined && job !== null) job.staged = { jobDir }
   fsMod.writeFileSync(join(jobDir, 'package.json'), JSON.stringify({ name: 'staging', private: true, dependencies: {} }, null, 2) + '\n')
-  await runPnpm(jobDir, ['add', spec], 180000, job?.abort?.signal)
+  // 拉取进度：流式解析 pnpm 的 Progress 行 → job.progress（客户端 1s 轮询展示进度条）
+  const onProgress = job !== undefined && job !== null
+    ? (parsed) => { job.progress = progressFromPnpm(parsed) }
+    : null
+  await runPnpm(jobDir, ['add', spec], 180000, job?.abort?.signal, false, 0, onProgress)
+  if (job !== undefined && job !== null) job.progress = null
   const manifest = JSON.parse(fsMod.readFileSync(join(jobDir, 'package.json'), 'utf8'))
   const depNames = Object.keys(manifest.dependencies ?? {})
   if (depNames.length === 0) throw new Error('隔离拉取未产生依赖')
@@ -1331,6 +1608,56 @@ async function writeReviewCache(key, report) {
     fsMod.mkdirSync(REVIEWS_DIR, { recursive: true })
     await writeFile(join(REVIEWS_DIR, key + '.json'), JSON.stringify({ reviewedAt: Date.now(), report }, null, 2) + '\n', 'utf8')
   } catch {}
+}
+
+/** 审查缓存键：包名@版本（无版本时 'latest'，与 reviewPackage 一致）。 */
+function reviewKey(pkgName, version) {
+  return pkgName + '@' + (version ?? 'latest')
+}
+
+/** 直接读取审查缓存文件（不按 7 天 TTL 过期，供已安装版本报告的保留读取）。
+ * 返回 { report, reviewedAt, protected } 或 null。 */
+async function readReviewFile(key) {
+  try {
+    const data = JSON.parse(await readFile(join(REVIEWS_DIR, key + '.json'), 'utf8'))
+    return { report: data.report ?? null, reviewedAt: data.reviewedAt ?? null, protected: data.protected === true }
+  } catch {
+    return null
+  }
+}
+
+/** 标记某审查缓存为「保留」（清理缓存/自动清理都跳过）。 */
+async function markReviewProtected(key) {
+  try {
+    const file = join(REVIEWS_DIR, key + '.json')
+    const data = JSON.parse(await readFile(file, 'utf8'))
+    if (data.protected !== true) {
+      data.protected = true
+      await writeFile(file, JSON.stringify(data, null, 2) + '\n', 'utf8')
+    }
+  } catch {}
+}
+
+/** 当前已安装插件（用户列表）的审查键集合：moduleName@当前版本。
+ * 清理时跳过这些键——已安装版本的审查报告永久保留。 */
+function installedReviewKeys(ctx) {
+  const keys = new Set()
+  try {
+    for (const entry of listEntries(ctx)) {
+      const meta = entryPkgMeta(entry.moduleName, ctx.baseUrl ?? 'file:///')
+      if (meta?.version !== null && meta?.version !== undefined && meta.version !== '') {
+        keys.add(reviewKey(entry.moduleName, meta.version))
+      }
+    }
+  } catch {}
+  return keys
+}
+
+/** 判断某个审查缓存条目是否应保留（纯函数，无磁盘）：键命中当前已安装版本，
+ * 或文件数据标记了 protected（手动查看/生成后标记）。 */
+function shouldRetainReview(key, data, keepKeys) {
+  if (keepKeys.has(key)) return true
+  return data !== null && data !== undefined && data.protected === true
 }
 
 /** 读取审查用的默认 LLM 路由（跟随用户 agent-default-model 设置；失败回退 deepseek-official）。 */
@@ -1685,7 +2012,11 @@ async function handle(ctx, req, res) {
         return
       }
     }
-    const saved = await writeRepoOverride(moduleName, clean, true)
+    // 保存但地址实际没变：不新建、不升级为「手动覆盖」（见 decideRepoOverride）
+    const overrides = await readRepoOverrides()
+    const metaRepo = entryPkgMeta(moduleName, ctx.baseUrl ?? 'file:///')?.repository ?? null
+    const decision = decideRepoOverride(overrides, moduleName, clean, metaRepo)
+    const saved = decision.action === 'keep' ? decision.repo : await writeRepoOverride(moduleName, clean, true)
     sendJson(res, 200, { ok: true, entryId, moduleName, repository: saved })
     return
   }
@@ -1902,10 +2233,72 @@ async function handle(ctx, req, res) {
     return
   }
 
+  // 查看已安装插件当前版本的审查报告：缓存命中直接返回（永久保留，不受 7 天 TTL/清理影响）；
+  // 没有缓存则在已安装包目录现场生成（首次点击触发），生成后标记保留。
+  if (pathname === ROUTE_PREFIX + '/review') {
+    const { entryId } = body
+    if (typeof entryId !== 'string' || !/^[A-Za-z0-9_:.-]{1,80}$/u.test(entryId)) {
+      sendError(res, 400, 'entryId 无效')
+      return
+    }
+    const target = ctx.loader.entries().find((entry) => entry.id === entryId)
+    if (!target || typeof target.options.name !== 'string') {
+      sendError(res, 404, '没有名为 ' + entryId + ' 的插件条目')
+      return
+    }
+    const moduleName = target.options.name
+    const meta = entryPkgMeta(moduleName, ctx.baseUrl ?? 'file:///')
+    const version = meta?.version ?? null
+    const key = reviewKey(moduleName, version)
+    const cached = await readReviewFile(key)
+    if (cached !== null && cached.report !== null && cached.report !== undefined) {
+      if (cached.protected !== true) await markReviewProtected(key)
+      sendJson(res, 200, { ok: true, entryId, moduleName, version, cached: true, report: cached.report })
+      return
+    }
+    const patchPath = findPatchPath(ctx)
+    const profileDir = dirname(patchPath)
+    const pkgDir = installedPackageDir(profileDir, moduleName)
+    try {
+      await stat(pkgDir)
+    } catch {
+      sendError(res, 404, '插件包目录不存在：' + moduleName)
+      return
+    }
+    // 并发去重：同一键的审查生成只跑一次（连点 / 双端同时触发时等待并复用同一结果）
+    let pending = reviewInflight.get(key)
+    if (pending === undefined) {
+      pending = reviewPackage(ctx, pkgDir, moduleName, version, null, null)
+      reviewInflight.set(key, pending)
+      // 清理链吞掉拒绝（避免 unhandled rejection），原 promise 仍由 await 处处理
+      pending.then(() => {}, () => {}).finally(() => {
+        if (reviewInflight.get(key) === pending) reviewInflight.delete(key)
+      })
+    }
+    let report = null
+    try {
+      report = await pending
+    } catch (error) {
+      sendError(res, 500, error instanceof Error ? error.message : String(error))
+      return
+    }
+    if (report === null || report === undefined) {
+      // 审查通道不可用 / 包无可审查内容：给可见的 caution 报告而不是静默失败
+      sendJson(res, 200, {
+        ok: true, entryId, moduleName, version, cached: false,
+        report: { summary: '审查未能完成（审查通道不可用或包内容为空）', risks: [], severity: 'low', verdict: 'caution', details: '可稍后重试。', method: 'none' },
+      })
+      return
+    }
+    await markReviewProtected(key)
+    sendJson(res, 200, { ok: true, entryId, moduleName, version, cached: false, report })
+    return
+  }
+
   // 一键清理缓存：删除 1 小时之前的 staging 残留与审查报告
   if (pathname === ROUTE_PREFIX + '/cleanup') {
     try {
-      const result = await cleanupCaches(60 * 60 * 1000)
+      const result = await cleanupCaches(ctx, 60 * 60 * 1000)
       sendJson(res, 200, result)
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : String(error))
@@ -1918,7 +2311,7 @@ async function handle(ctx, req, res) {
 
 /** 应用插件：注册 /plugin-market 路由。 */
 export function apply(ctx) {
-  void cleanupStagingAndReviews()
+  void cleanupStagingAndReviews(ctx)
   ctx.effect(() => {
     const route = {
       kind: 'prefix',
