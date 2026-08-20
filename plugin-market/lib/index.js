@@ -26,10 +26,9 @@ import { createRequire } from 'node:module'
 const execFileAsync = promisify(execFile)
 
 export const name = 'dsh-plugin-market'
-export const inject = ['webServer', 'loader', 'subagents', 'agents']
+export const inject = ['webServer', 'loader', 'agents']
 
 const ROUTE_PREFIX = '/plugin-market'
-const GITHUB_UA = 'dsh-plugin-market/0.1 (local dsh web instance)'
 const SOURCES_FILE = join(homedir(), '.dsh', 'plugin-market-sources.json')
 /** 用户手动指定的插件仓库地址覆盖：{ packageName: repoString }，优先于包内 repository 字段。 */
 const REPOS_FILE = join(homedir(), '.dsh', 'plugin-market-repos.json')
@@ -374,10 +373,6 @@ function queuedWrite(task) {
   return next
 }
 
-function profileDirOf(ctx) {
-  return dirname(findPatchPath(ctx))
-}
-
 function findPatchPath(ctx) {
   for (const entry of ctx.loader.entries()) {
     const cfg = entry.options?.config
@@ -625,7 +620,9 @@ async function readRepoOverrides() {
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const out = {}
       for (const [key, value] of Object.entries(parsed)) {
-        if (typeof value === 'string' && value.trim() !== '') out[key] = value.trim()
+        // 兼容两种记录：旧格式字符串（仅手动写入过 → manual: true）与新格式 { repo, manual }
+        if (typeof value === 'string' && value.trim() !== '') out[key] = { repo: value.trim(), manual: true }
+        else if (value !== null && typeof value === 'object' && typeof value.repo === 'string' && value.repo.trim() !== '') out[key] = { repo: value.repo.trim(), manual: value.manual === true }
       }
       return out
     }
@@ -635,14 +632,14 @@ async function readRepoOverrides() {
   }
 }
 
-/** 写入单个插件的仓库地址覆盖；repository 为空串表示清除覆盖（回落到包内 repository 字段）。 */
-async function writeRepoOverride(packageName, repository) {
+/** 写入单个插件的仓库地址覆盖；repository 为空串表示清除覆盖（回落到包内 repository 字段）。manual=true 表示用户手动修改（卡片显示「手动覆盖」徽标），安装自动保存为 false。 */
+async function writeRepoOverride(packageName, repository, manual = false) {
   const overrides = await readRepoOverrides()
   const clean = typeof repository === 'string' ? repository.trim() : ''
   if (clean === '') delete overrides[packageName]
-  else overrides[packageName] = clean
+  else overrides[packageName] = { repo: clean, manual: manual === true }
   await writeFile(REPOS_FILE, JSON.stringify(overrides, null, 2) + '\n', 'utf8')
-  return overrides[packageName] ?? null
+  return overrides[packageName]?.repo ?? null
 }
 
 /** 移除一条「- id: X」+「disabled: true」禁用块（重装 bundle 时清理卸载留下的临时禁用行）。 */
@@ -652,37 +649,6 @@ async function removeDisableBlock(patchPath, id) {
     const blockRe = new RegExp('^- id: ' + escapeRegExp(id) + '\r?\n  disabled: true\r?\n', 'mu')
     if (blockRe.test(text)) await writeFile(patchPath, text.replace(blockRe, ''), 'utf8')
   })
-}
-
-// ── GitHub 请求 ─────────────────────────────────────────────────────────────
-
-async function fetchJson(url, headers = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15000)
-  try {
-    const res = await fetch(url, { headers: { 'user-agent': GITHUB_UA, accept: 'application/json', ...headers }, signal: controller.signal })
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    return await res.json()
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/** 读取 GitHub 仓库根 package.json（main → master）。 */
-async function fetchRepoPackage(repo) {
-  // 子目录（monorepo 整合仓库）：读 <path>/package.json
-  const filePath = repo.path !== null && repo.path !== undefined && repo.path !== ''
-    ? (repo.path + '/package.json')
-    : 'package.json'
-  for (const branch of ['main', 'master']) {
-    try {
-      const data = await fetchJson('https://api.github.com/repos/' + repo.owner + '/' + repo.name + '/contents/' + encodeURIComponent(filePath).replace(/%2F/gu, '/') + '?ref=' + branch)
-      if (data && typeof data.content === 'string') {
-        return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'))
-      }
-    } catch {}
-  }
-  return null
 }
 
 // ── 安装 / 更新通道 ─────────────────────────────────────────────────────────
@@ -887,11 +853,6 @@ async function confirmInstall(jobId) {
     await rm(job.staged?.jobDir, { recursive: true, force: true }).catch(() => {})
     throw error
   }
-}
-
-/** 取消：与中断等价（清理隔离目录，不安装）。 */
-async function cancelInstall(jobId) {
-  return interruptInstall(jobId)
 }
 
 /**
@@ -1372,65 +1333,6 @@ async function writeReviewCache(key, report) {
   } catch {}
 }
 
-/**
- * 运行一次安全审查子代理（deepseek-v4-flash + high），返回结构化报告或 null。
- */
-async function runReviewAgent(ctx, label, promptText, signal) {
-	let subagents = null
-	try { subagents = ctx.get('subagents') } catch {}
-	const startFn = subagents?.start
-	if (typeof startFn !== 'function') return null
-	let parent = null
-	try {
-		const agents = ctx.get('agents')
-		const candidates = typeof agents?.roots === 'function' ? agents.roots() : (typeof agents?.list === 'function' ? agents.list() : [])
-		parent = candidates[0] ?? null
-	} catch {}
-	if (parent === null) return null
-	try {
-		const controller = new AbortController()
-		if (signal !== undefined && signal !== null) signal.addEventListener('abort', () => controller.abort(), { once: true })
-		const run = await startFn.call(subagents, 'spawn', {
-			label,
-			prompt: [{ type: 'text', text: promptText }],
-			maxDepth: 1,
-			signal: controller.signal,
-			parent,
-		})
-		let settleFn = null
-		try {
-			const requireLocal = createRequire(join(profileDirOf(ctx), 'package.json'))
-			;({ settleRun: settleFn } = requireLocal('@deepseek-ai/dsh-subagent'))
-		} catch {}
-		const settle = settleFn ?? (async (handle) => {
-			try {
-				const result = await handle.result
-				return { status: result?.stopReason === 'completed' ? 'completed' : 'failed', text: String(result?.message?.text ?? '') }
-			} catch (error) {
-				return { status: 'failed', text: String(error) }
-			}
-		})
-		const outcome = await Promise.race([
-			settle(run),
-			new Promise((resolve) => setTimeout(() => { controller.abort(); resolve({ status: 'failed', text: 'timeout' }) }, 600000)),
-		])
-		if (outcome.status !== 'completed' || !outcome.text) return null
-		const jsonMatch = String(outcome.text).match(/\{[\s\S]*\}/u)
-		if (!jsonMatch) return null
-		const report = JSON.parse(jsonMatch[0])
-		if (!report || typeof report !== 'object') return null
-		return {
-			summary: String(report.summary ?? ''),
-			risks: Array.isArray(report.risks) ? report.risks.map((r) => String(r)) : [],
-			severity: ['low', 'medium', 'high'].includes(report.severity) ? report.severity : 'medium',
-			verdict: ['safe', 'caution', 'danger'].includes(report.verdict) ? report.verdict : 'caution',
-			details: String(report.details ?? ''),
-			channel: 'subagent',
-		}
-	} catch {
-		return null
-	}
-}
 /** 读取审查用的默认 LLM 路由（跟随用户 agent-default-model 设置；失败回退 deepseek-official）。 */
 function reviewLlmRoute(ctx) {
   try {
@@ -1632,7 +1534,7 @@ function mergeReports(reports, scan) {
 
 /**
  * 分层安全审查：L0 确定性扫描全量文件（不限大小）→ 命中信号分批交给
- * subagent 定向深挖（带上下文）→ 信号多时再做一层聚合终审。
+ * dsh 审查会话 / LLM 定向深挖（带上下文）→ 信号多时再做一层聚合终审。
  * 相比旧实现：>256KB 的大文件不再被整体跳过（改全量特征扫描 + 片段深挖）；
  * source map 带 sourcesContent 时还原可读源码供交叉参考。
  */
@@ -1717,8 +1619,9 @@ async function handle(ctx, req, res) {
       const extra = patch.inserts.includes(entry.rowId)
       // 用户安装的 bundle（非默认）：进 dsh.profile.bundles 的第三方 bundle
       const userBundle = bundles.includes(entry.moduleName) && !DEFAULT_BUNDLES.includes(entry.moduleName)
-      // 手动覆盖的仓库地址优先于包内 repository 字段
-      const manualRepo = Object.prototype.hasOwnProperty.call(overrides, entry.moduleName) ? overrides[entry.moduleName] : null
+      // 仓库覆盖（安装自动保存或用户手动修改）优先于包内 repository 字段；仅手动修改显示「手动覆盖」徽标
+      const override = Object.prototype.hasOwnProperty.call(overrides, entry.moduleName) ? overrides[entry.moduleName] : null
+      const manualRepo = override !== null ? override.repo : null
       return {
         ...entry,
         userDisabled: patch.disables.includes(entry.rowId),
@@ -1729,7 +1632,7 @@ async function handle(ctx, req, res) {
         localInstalled: isLocalDependency(profileDir, entry.moduleName),
         version: meta?.version ?? null,
         repository: manualRepo ?? meta?.repository ?? null,
-        repoOverridden: manualRepo !== null,
+        repoOverridden: override !== null && override.manual === true,
       }
     })
     // 已写入 manifest 但尚未加载进运行树（bundle 层只在 dsh web 启动时加载）：
@@ -1782,7 +1685,7 @@ async function handle(ctx, req, res) {
         return
       }
     }
-    const saved = await writeRepoOverride(moduleName, clean)
+    const saved = await writeRepoOverride(moduleName, clean, true)
     sendJson(res, 200, { ok: true, entryId, moduleName, repository: saved })
     return
   }
@@ -1894,22 +1797,6 @@ async function handle(ctx, req, res) {
     }
     try {
       const result = await confirmInstall(jobId)
-      sendJson(res, 200, result)
-    } catch (error) {
-      sendError(res, 500, error instanceof Error ? error.message : String(error))
-    }
-    return
-  }
-
-  // 取消安装：清理隔离目录，不迁移
-  if (pathname === ROUTE_PREFIX + '/install/cancel') {
-    const jobId = typeof body.jobId === 'string' ? body.jobId.trim() : ''
-    if (jobId === '') {
-      sendError(res, 400, 'jobId 不能为空')
-      return
-    }
-    try {
-      const result = await cancelInstall(jobId)
       sendJson(res, 200, result)
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : String(error))
@@ -2100,8 +1987,4 @@ async function gitLocalCommit(profileDir, owner, name) {
   }
 }
 
-export { scanRiskSurface, buildDigest, buildSignalPrompt, buildCleanPrompt, buildAggregatePrompt, mergeReports, waitForToggleApplied }
 
-// install-jobs-rev-1
-
-// bundle-uninstall-rev
