@@ -83,6 +83,11 @@ window.__ModuleLoader__.load({
 			".pm-modalRow{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}",
 			".pm-reviewRisks{margin:0;padding:0 0 0 18px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;gap:4px;display:flex;flex-direction:column;list-style:disc}",
 			".pm-loadingRow{display:flex;align-items:center;gap:10px;color:var(--dsw-alias-label-tertiary);font-size:13px;padding:10px 0}",
+			// 拉取/安装进度条
+			".pm-progress{display:flex;flex-direction:column;gap:4px;margin:8px 0 2px}",
+			".pm-progressBar{height:5px;border-radius:999px;background:var(--dsw-alias-border-l1);overflow:hidden}",
+			".pm-progressFill{height:100%;border-radius:999px;background:var(--dsw-alias-state-business-primary);transition:width .3s ease}",
+			".pm-progressText{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:16px;font-family:var(--dsw-font-mono)}",
 			"@keyframes pmspin{to{transform:rotate(360deg)}}",
 			"@keyframes pmPulse{0%,100%{opacity:1}50%{opacity:.35}}",
 			"@media (max-width:640px){.pm-list{grid-template-columns:1fr}}",
@@ -108,6 +113,8 @@ window.__ModuleLoader__.load({
 			install: "安装",
 			installTitle: "安装审查报告",
 			updateReviewTitle: "更新审查报告",
+			reviewInstalledTitle: "安全审查报告",
+			reviewGenerating: "正在生成审查报告…（首次查看会现场审查已安装包）",
 			diffTitle: "更新差异",
 			diffAdded: "新增",
 			diffRemoved: "删除",
@@ -119,6 +126,7 @@ window.__ModuleLoader__.load({
 			restartPending: "待重启",
 			restartPendingHint: "重启 dsh web 后加载",
 			jobPulling: "拉取中",
+			pullProgress: "解析 {resolved} 个依赖 · {percent}%",
 			jobReviewing: "审查中",
 			stageScan: "L0 扫描",
 			stageL1: "L1 审查",
@@ -174,6 +182,7 @@ window.__ModuleLoader__.load({
 			repo: "仓库",
 			editRepo: "地址",
 			repoSaved: "仓库地址已更新",
+			repoUnchanged: "地址未变化",
 			overrideMark: "↻ 手动覆盖",
 			localInstalled: "本地安装",
 			phase: "状态",
@@ -191,6 +200,8 @@ window.__ModuleLoader__.load({
 			install: "Install",
 			installTitle: "Install review report",
 			updateReviewTitle: "Update review report",
+			reviewInstalledTitle: "Security review report",
+			reviewGenerating: "Generating review report… (first view reviews the installed package)",
 			diffTitle: "Update diff",
 			diffAdded: "Added",
 			diffRemoved: "Removed",
@@ -200,6 +211,7 @@ window.__ModuleLoader__.load({
 			pendingInstalls: "Pending installs",
 			pendingEmpty: "No pending installs",
 			jobPulling: "Pulling",
+			pullProgress: "resolving {resolved} deps · {percent}%",
 			jobReviewing: "Reviewing",
 			stageScan: "L0 scan",
 			stageL1: "L1 review",
@@ -257,6 +269,7 @@ window.__ModuleLoader__.load({
 			repo: "Repo",
 			editRepo: "Repo",
 			repoSaved: "Repo updated",
+			repoUnchanged: "Address unchanged",
 			overrideMark: "↻ overridden",
 			localInstalled: "local install",
 			phase: "State",
@@ -406,6 +419,12 @@ window.__ModuleLoader__.load({
 					flash(t("repoInvalid"), false);
 					return;
 				}
+				// 保存但地址实际没变：不发请求、不标记手动覆盖（服务端同样兜底）
+				if (value === String(entry.repository ?? "")) {
+					setModal(null);
+					flash(t("repoUnchanged"), false);
+					return;
+				}
 				setModal(null);
 				setBusy("repo:" + entry.entryId);
 				call("/plugin-market/set-repo", { entryId: entry.entryId, repository: value })
@@ -476,6 +495,16 @@ window.__ModuleLoader__.load({
 					.catch((error) => flash(error.message, false))
 					.finally(() => setBusy(null));
 			};
+			const reviewingRef = useRef(new Set());
+			const doViewReview = (entry) => {
+				if (reviewingRef.current.has(entry.entryId)) return; // 该插件审查生成中，忽略重复点击
+				reviewingRef.current.add(entry.entryId);
+				setModal({ type: "review-loading", title: t("reviewInstalledTitle") });
+				call("/plugin-market/review", { entryId: entry.entryId })
+					.then((data) => setModal({ type: "review", report: data.report, title: t("reviewInstalledTitle") }))
+					.catch((error) => { setModal(null); flash(error.message, false); })
+					.finally(() => reviewingRef.current.delete(entry.entryId));
+			};
 			const doCleanup = () => {
 				setBusy("cleanup");
 				call("/plugin-market/cleanup")
@@ -529,6 +558,17 @@ window.__ModuleLoader__.load({
 							h("div", { className: "pm-modalRow" },
 								h("button", { className: "pm-btn", onClick: () => setModal(null) }, t("cancel")),
 								h("button", { className: "pm-btn danger", onClick: doUninstall }, t("uninstall"))
+							)
+						)
+					);
+				}
+				if (modal.type === "review-loading") {
+					return h("div", { className: "pm-overlay" },
+						h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation() },
+							h("p", { className: "pm-modalTitle" }, modal.title),
+							h("div", { className: "pm-loadingRow" },
+								h("span", { className: "pm-spinner" }),
+								h("span", null, t("reviewGenerating"))
 							)
 						)
 					);
@@ -591,7 +631,6 @@ window.__ModuleLoader__.load({
 
 			const entries = state.data.entries ?? [];
 			const jobs = state.data.jobs ?? [];
-			const isBusy = (key) => busy === key;
 			// 只展示用户安装的插件；dsh 自带的官方 bundle 与基础设施跟随 dsh 更新，不在此展示
 			const entriesVisible = entries.filter((entry) => entry.userInstalled === true);
 
@@ -624,10 +663,12 @@ window.__ModuleLoader__.load({
 					? h("p", { className: "pm-empty" }, t("noSources"))
 					: h("ul", { className: "pm-sourceList" }, sources.map((repo) => {
 						const withPath = repo.includes("#path:");
+						// 同仓库已有进行中的安装任务 → 禁用安装按钮（服务端同样拦截）
+						const installing = jobs.some((job) => job.repo === repo);
 						return h("li", { className: "pm-sourceRow", key: repo },
 							h("span", { className: "pm-sourceText" }, repo),
 							withPath ? h("span", { className: "pm-sourceBadge" }, "subdir") : null,
-							h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: () => doInstall(repo) }, t("install")),
+							h("button", { className: "pm-btn primary", disabled: busy !== null || installing, onClick: () => doInstall(repo) }, installing ? t("jobInstalling") : t("install")),
 							h("button", { className: "pm-btn danger", onClick: () => removeSource(repo) }, "✕")
 						);
 					})),
@@ -637,7 +678,8 @@ window.__ModuleLoader__.load({
 				jobs.length === 0
 					? h("p", { className: "pm-empty" }, t("pendingEmpty"))
 					: h("ul", { className: "pm-list" }, jobs.map((job) => {
-						const statusLabel = job.status === "pulling" ? t("jobPulling")
+						const statusLabel = job.status === "pulling"
+							? (t("jobPulling") + " · " + Math.max(1, Math.round((Date.now() - job.createdAt) / 1000)) + "s")
 							: job.status === "reviewing"
 								? (t("jobReviewing") + (job.stage ? " · " + stageLabel(job.stage) : "") + " · " + Math.max(1, Math.round((Date.now() - job.createdAt) / 1000)) + "s")
 							: job.status === "installing" ? t("jobInstalling")
@@ -655,6 +697,16 @@ window.__ModuleLoader__.load({
 								job.scan ? h("span", { className: "pm-hint" }, tpl(t("scanInfo"), { files: job.scan.files, signals: job.scan.signals })) : null,
 								job.review && job.review.verdict ? h("span", { className: "pm-hint" }, t("jobClickToReview")) : null
 							),
+							(job.status === "pulling" || job.status === "installing") && job.progress
+								? h("div", { className: "pm-progress" },
+									h("div", { className: "pm-progressBar" },
+										h("div", { className: "pm-progressFill", style: { width: (job.progress.percent ?? 0) + "%" } })
+									),
+									h("span", { className: "pm-progressText" },
+										tpl(t("pullProgress"), { resolved: job.progress.resolved ?? 0, percent: job.progress.percent ?? 0 })
+									)
+								)
+								: null,
 							h("div", { className: "pm-btns" },
 								h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: (e) => doInterrupt(job.jobId, e) }, t("interrupt"))
 							)
@@ -671,9 +723,10 @@ window.__ModuleLoader__.load({
 						const checkButton = h("button", {
 							className: "pm-btn",
 							disabled: busy !== null || entry.localInstalled,
-							onClick: () => doCheckUpdate(entry)
+							onClick: (e) => { e.stopPropagation(); doCheckUpdate(entry); }
 						}, t("checkUpdate"));
-						return h("li", { className: "pm-row", key: entry.entryId, "data-enabled": entry.enabled ? "true" : "false" },
+						return h("li", { className: "pm-row", key: entry.entryId, "data-enabled": entry.enabled ? "true" : "false",
+							onClick: () => doViewReview(entry) },
 							h("div", { className: "pm-rowTop" },
 								h("span", { className: "pm-dot", "data-enabled": entry.enabled ? "true" : "false" }),
 								h("span", { className: "pm-name" }, moduleShortName(entry.moduleName)),
@@ -696,13 +749,13 @@ window.__ModuleLoader__.load({
 								: null,
 							h("div", { className: "pm-btns" },
 								entry.toggleable
-									? h("button", { className: "pm-btn", disabled: busy !== null, onClick: () => doToggle(entry, !entry.enabled) },
+									? h("button", { className: "pm-btn", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doToggle(entry, !entry.enabled); } },
 										entry.enabled ? t("off") : t("on"))
 									: null,
 								checkButton,
-								h("button", { className: "pm-btn", disabled: busy !== null || entry.localInstalled, onClick: () => doSetRepo(entry) }, t("editRepo")),
+								h("button", { className: "pm-btn", disabled: busy !== null || entry.localInstalled, onClick: (e) => { e.stopPropagation(); doSetRepo(entry); } }, t("editRepo")),
 								(entry.extra || entry.userBundle === true) && !entry.localInstalled
-									? h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: () => confirmUninstall(entry) }, t("uninstall"))
+									? h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); confirmUninstall(entry); } }, t("uninstall"))
 									: null
 							)
 						);
