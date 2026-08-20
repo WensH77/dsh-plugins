@@ -9,7 +9,7 @@
 |---|---|---|
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
-| **model-arena** | [`model-arena/`](model-arena/README.md) | 模型竞技场开关：以普通 `/arena` 命令形式出现，切换竞技场启用标记（**开发中**） |
+| **model-arena** | [`model-arena/`](model-arena/README.md) | 模型竞技场（挑战模式）：空会话 hero 视图旁开启「竞技场」toggle，选择场景与竞技场模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」 |
 | **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab——两阶段安装（隔离拉取 + 分层安全审查 + 确认安装，任务可视化、可中断）、检查更新/更新（git 通道，更新附带与本地已装代码的差异审查）、卸载、开关、仓库地址管理（保存用户填写的仓库）、待重启提示、清理缓存 |
 
 各插件目录内有完整的独立 README（功能、原理、安装、配置、已知限制）。
@@ -37,7 +37,7 @@ git clone https://github.com/WensH77/dsh-plugins.git
 dsh plugin --profile web add ./plugin-market
 ```
 
-**model-arena**：开发中，暂不安装。
+**model-arena**：手动安装（见 [model-arena/README.md](model-arena/README.md)）。
 
 安装后在补丁层启用（chat-rollback / command-setting 示例；plugin-market 为 bundle 包，无需此步，重启即加载）：
 
@@ -80,9 +80,11 @@ cd dsh-plugins
 ln -s <dsh 安装路径>/node_modules node_modules
 
 # 测试
-node --test chat-rollback/test/fork-rollback.mjs     # chat-rollback 测试（4 项：快照/继承/回滚/恢复保护）
+node --test chat-rollback/test/fork-rollback.mjs     # chat-rollback 测试（8 项：快照/继承/回滚/预填/恢复保护/冲突检测/双会话端到端）
 node command-setting/test/smoke.mjs                  # command-setting node 端测试
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
+node model-arena/test/smoke.mjs                      # model-arena node 端测试
+node model-arena/test/client-smoke.mjs               # model-arena 浏览器端测试
 node --check plugin-market/lib/index.js plugin-market/lib/client.js   # plugin-market 语法检查
 ```
 
@@ -102,8 +104,10 @@ dsh-plugins/
 │   ├── lib/client.js       #   浏览器端：设置页 + Plan 按钮
 │   ├── test/               #   smoke 测试
 │   └── package.json
-├── model-arena/            # 模型竞技场开关（开发中）
-│   ├── lib/
+├── model-arena/            # 模型竞技场（挑战模式）
+│   ├── lib/index.js        #   Node 端：links/persona 持久化 + system-prompt 角色注入
+│   ├── lib/client.js       #   浏览器端：hero toggle + 竞技场运行时 + 挑战编排
+│   ├── test/               #   smoke 测试
 │   └── package.json
 ├── plugin-market/          # 插件市场（基础版）
 │   ├── lib/index.js        #   Node 端：清单/开关/安装/更新/卸载/审查/清理 路由
