@@ -52,6 +52,12 @@ function makeCtx(workspace, snapRoot, eventsBySession) {
       handlers.get(event).push(handler);
       return () => {};
     },
+    // cordis ctx.effect: runs the callback now, returns its disposer (lib binds
+    // webServer routes to the plugin lifecycle through it)
+    effect(fn) {
+      const dispose = fn();
+      return typeof dispose === 'function' ? dispose : () => {};
+    },
     get() { return undefined; }, // agentPresets unavailable -> graceful degradation
     logger,
     sessions: {
@@ -132,6 +138,11 @@ test('A+B+C: snapshot, fork inheritance, rollback (code restore + archive + pref
     const listing1 = (await run('tar -tf ' + join(snapRoot, SRC, 'turn-1.tar.zst'))).stdout;
     assert.ok(!listing1.includes('.git'), 'snapshot excludes .git: ' + listing1.split('\n').slice(0, 3).join(','));
     assert.ok(!listing1.includes('node_modules'), 'snapshot excludes node_modules');
+    // turn/start also writes a per-file hash manifest (state after the previous turn)
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.files.json')).catch(() => null)) !== null), 'turn-1 manifest exists');
+    const manifest1 = JSON.parse(await readFile(join(snapRoot, SRC, 'turn-1.files.json'), 'utf8'));
+    assert.ok(typeof manifest1['f.txt'] === 'string', 'manifest hashes f.txt');
+    assert.ok(manifest1['.git'] === undefined && manifest1['node_modules'] === undefined, 'manifest excludes .git/node_modules');
 
     // turn/start 2 snapshots the state AFTER turn 1 (before turn 2's work)
     handlers.get('session/event').forEach((h) => h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } }));
@@ -154,7 +165,8 @@ test('A+B+C: snapshot, fork inheritance, rollback (code restore + archive + pref
     const forkIno1 = (await stat(join(snapRoot, FORK, 'turn-1.tar.zst'))).ino;
     assert.strictEqual(forkIno1, srcIno1, 'fork snapshot is a hardlink (same inode)');
     const forkEntries = await readdir(join(snapRoot, FORK));
-    assert.deepStrictEqual(forkEntries.filter((e) => e.startsWith('turn-')).sort(), ['turn-1.tar.zst', 'turn-2.tar.zst'], 'fork inherits turn-1..2');
+    assert.deepStrictEqual(forkEntries.filter((e) => e.endsWith('.tar.zst')).sort(), ['turn-1.tar.zst', 'turn-2.tar.zst'], 'fork inherits turn-1..2 snapshots');
+    assert.deepStrictEqual(forkEntries.filter((e) => e.endsWith('.files.json')).sort(), ['turn-1.files.json', 'turn-2.files.json'], 'fork inherits turn-1..2 hash manifests');
 
     // C: rollback to turn-1 assistant message (seq 3) -> restore turn-2 snapshot
     const req = { url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' };
@@ -347,3 +359,260 @@ test('D: legacy snapshot containing .git does not rewind the repository', async 
     await rm(snapRoot, { recursive: true, force: true });
   }
 });
+
+test('G: preflight — per-file hash conflict detection', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-pf-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-pf-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-pf';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+
+    // turn 1: start (snapshot + manifest) then end (post-turn manifest)
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.files.json')).catch(() => null)) !== null), 'turn-1 start manifest');
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(SRC), { type: 'turn/end', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.end.files.json')).catch(() => null)) !== null), 'turn-1 end manifest');
+
+    // turn 2: start snapshot = state after turn 1 (f.txt still 'one'), then work
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.files.json')).catch(() => null)) !== null), 'turn-2 start manifest');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(SRC), { type: 'turn/end', data: { turn: 2 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.end.files.json')).catch(() => null)) !== null), 'turn-2 end manifest');
+
+    const preflight = async () => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/preflight')({ url: '/chat-rollback/preflight?session=' + SRC + '&seq=6' }, res);
+      return { body: JSON.parse(res.body), status: res.status };
+    };
+
+    // only this session changed f.txt -> current == our last write -> clean
+    let r = await preflight();
+    assert.strictEqual(r.status, 200, 'preflight HTTP 200');
+    assert.strictEqual(r.body.ok, true, 'preflight ok');
+    assert.strictEqual(r.body.conflict, false, 'no conflict when only this session edited');
+    assert.deepStrictEqual(r.body.files, [], 'no conflict files');
+    assert.strictEqual(r.body.sourceTurn, 1, 'sourceTurn = last completed turn (1)');
+
+    // simulate another session editing after turn 2: change f.txt + add new.txt
+    await writeFile(join(workspace, 'f.txt'), 'three\n');
+    await writeFile(join(workspace, 'new.txt'), 'x\n');
+    r = await preflight();
+    assert.strictEqual(r.body.ok, true, 'preflight ok (2)');
+    assert.strictEqual(r.body.conflict, true, 'conflict flagged after external edits');
+    assert.deepStrictEqual(r.body.files, ['f.txt', 'new.txt'], 'conflict lists f.txt and new.txt');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+test('H: two sessions on one file — rollback B then A, conflict only while B\'s write is live', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-2s-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-2s-snap-'));
+  try {
+    await writeFile(join(workspace, 'a'), '');
+
+    const A = 'session-a';
+    const B = 'session-b';
+    const eventsA = makeEvents([{ turn: 1, user: 'A write', assistant: 'A done' }]);
+    const eventsB = makeEvents([{ turn: 1, user: 'B write', assistant: 'B done' }]);
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [A]: eventsA, [B]: eventsB });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+
+    // A turn 1: snapshot a="" , then write "123", then end (last-write "123")
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(A), { type: 'turn/start', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, A, 'turn-1.files.json')).catch(() => null)) !== null), 'A turn-1 start manifest');
+    await writeFile(join(workspace, 'a'), '123');
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(A), { type: 'turn/end', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, A, 'turn-1.end.files.json')).catch(() => null)) !== null), 'A turn-1 end manifest');
+
+    // B turn 1: snapshot a="123" , then write "456", then end (last-write "456")
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(B), { type: 'turn/start', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, B, 'turn-1.files.json')).catch(() => null)) !== null), 'B turn-1 start manifest');
+    await writeFile(join(workspace, 'a'), '456');
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(B), { type: 'turn/end', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, B, 'turn-1.end.files.json')).catch(() => null)) !== null), 'B turn-1 end manifest');
+
+    const preflight = async (sessionId) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/preflight')({ url: '/chat-rollback/preflight?session=' + sessionId + '&seq=2' }, res);
+      return JSON.parse(res.body);
+    };
+
+    // current a = "456"
+    assert.strictEqual(await readFile(join(workspace, 'a'), 'utf8'), '456', 'current a=456');
+
+    // Preflight A: current "456" != A last-write "123" -> conflict
+    let pa = await preflight(A);
+    assert.strictEqual(pa.ok, true, 'preflight A ok');
+    assert.strictEqual(pa.conflict, true, 'A rollback flags conflict while B write is live');
+    assert.deepStrictEqual(pa.files, ['a'], 'A conflict lists a');
+
+    // Preflight B: current "456" == B last-write "456" -> clean
+    const pb = await preflight(B);
+    assert.strictEqual(pb.ok, true, 'preflight B ok');
+    assert.strictEqual(pb.conflict, false, 'B rollback has no conflict');
+    assert.deepStrictEqual(pb.files, [], 'B conflict list empty');
+
+    // Rollback B: restores B's turn-1 (a="123"), archives B
+    const resB = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + B + '&seq=2' }, resB);
+    const bodyB = JSON.parse(resB.body);
+    assert.strictEqual(bodyB.ok, true, 'B rollback ok');
+    assert.strictEqual(await readFile(join(workspace, 'a'), 'utf8'), '123', 'B rollback restored a=123');
+
+    // Preflight A again: current "123" == A last-write "123" -> clean
+    pa = await preflight(A);
+    assert.strictEqual(pa.ok, true, 'preflight A (2) ok');
+    assert.strictEqual(pa.conflict, false, 'A rollback no longer flags conflict after B rolled back');
+    assert.deepStrictEqual(pa.files, [], 'A conflict list empty after B rollback');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+test('H2: A CREATES the file — rollback B then A end-to-end (end manifests present)', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-2c-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-2cs-'));
+  try {
+    // workspace starts EMPTY: A is the creator of test.md (the user scenario:
+    // "新增一个test.md" -> another session adds content -> rollback session 2
+    // -> rollback session 1)
+    const A = 'session-a';
+    const B = 'session-b';
+    const eventsA = makeEvents([{ turn: 1, user: 'A creates test.md', assistant: 'A done' }]);
+    const eventsB = makeEvents([{ turn: 1, user: 'B adds content', assistant: 'B done' }]);
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [A]: eventsA, [B]: eventsB });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+
+    // A turn 1: snapshot (no test.md) -> create test.md="A\n" -> end (last-write "A")
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(A), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, A, 'turn-1.files.json')).catch(() => null)) !== null), 'A turn-1 start manifest');
+    await writeFile(join(workspace, 'test.md'), 'A\n');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(A), { type: 'turn/end', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, A, 'turn-1.end.files.json')).catch(() => null)) !== null), 'A turn-1 end manifest');
+
+    // B turn 1: snapshot (test.md="A") -> write "B\n" -> end (last-write "B")
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(B), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, B, 'turn-1.files.json')).catch(() => null)) !== null), 'B turn-1 start manifest');
+    await writeFile(join(workspace, 'test.md'), 'B\n');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(B), { type: 'turn/end', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, B, 'turn-1.end.files.json')).catch(() => null)) !== null), 'B turn-1 end manifest');
+
+    const preflight = async (sessionId) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/preflight')({ url: '/chat-rollback/preflight?session=' + sessionId + '&seq=2' }, res);
+      return JSON.parse(res.body);
+    };
+    const rollback = async (sessionId) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + sessionId + '&seq=2' }, res);
+      return JSON.parse(res.body);
+    };
+
+    assert.strictEqual(await readFile(join(workspace, 'test.md'), 'utf8'), 'B\n', 'current test.md = B');
+
+    // A preflight while B's write is live -> conflict (current != A last-write)
+    let pa = await preflight(A);
+    assert.strictEqual(pa.conflict, true, 'A rollback flags conflict while B write is live');
+    assert.deepStrictEqual(pa.files, ['test.md'], 'A conflict lists test.md');
+
+    // B preflight -> clean
+    const pb = await preflight(B);
+    assert.strictEqual(pb.conflict, false, 'B rollback has no conflict');
+
+    // Rollback B: restore to state before B's turn -> test.md back to A's content
+    const bodyB = await rollback(B);
+    assert.strictEqual(bodyB.ok, true, 'B rollback ok');
+    assert.strictEqual(await readFile(join(workspace, 'test.md'), 'utf8'), 'A\n', 'B rollback restored test.md=A');
+
+    // A preflight after B rolled back -> clean: current == A's last write
+    pa = await preflight(A);
+    assert.strictEqual(pa.conflict, false, 'A no longer conflicts after B rolled back');
+    assert.deepStrictEqual(pa.files, [], 'A conflict list empty');
+
+    // Rollback A -> test.md (created by A) is removed
+    const bodyA = await rollback(A);
+    assert.strictEqual(bodyA.ok, true, 'A rollback ok');
+    assert.ok((await stat(join(workspace, 'test.md')).catch(() => null)) === null, 'test.md removed by A rollback');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+test('H3: A has NO end manifest (its turn never ended) — rollback B then A reports no false conflict', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-2n-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-2ns-'));
+  try {
+    const A = 'session-a';
+    const B = 'session-b';
+    const eventsA = makeEvents([{ turn: 1, user: 'A creates test.md', assistant: 'A done' }]);
+    const eventsB = makeEvents([{ turn: 1, user: 'B adds content', assistant: 'B done' }]);
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [A]: eventsA, [B]: eventsB });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+
+    // A turn 1: snapshot + create test.md="A\n", but NO turn/end -> no end manifest
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(A), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, A, 'turn-1.files.json')).catch(() => null)) !== null), 'A turn-1 start manifest');
+    await writeFile(join(workspace, 'test.md'), 'A\n');
+
+    // B turn 1: snapshot + write "B\n" + end (B has an end manifest)
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(B), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, B, 'turn-1.files.json')).catch(() => null)) !== null), 'B turn-1 start manifest');
+    await writeFile(join(workspace, 'test.md'), 'B\n');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(B), { type: 'turn/end', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, B, 'turn-1.end.files.json')).catch(() => null)) !== null), 'B turn-1 end manifest');
+
+    const preflight = async (sessionId) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/preflight')({ url: '/chat-rollback/preflight?session=' + sessionId + '&seq=2' }, res);
+      return JSON.parse(res.body);
+    };
+    const rollback = async (sessionId) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + sessionId + '&seq=2' }, res);
+      return JSON.parse(res.body);
+    };
+
+    // With no end manifest there is no record of A's last write, so the gate
+    // cannot attribute test.md to A vs. B. It reports clean (reason
+    // no-end-manifest) instead of flagging every file A created as a false "?".
+    let pa = await preflight(A);
+    assert.strictEqual(pa.ok, true, 'preflight A ok');
+    assert.strictEqual(pa.conflict, false, 'no false conflict without end manifest');
+    assert.strictEqual(pa.reason, 'no-end-manifest', 'reason explains the missing reference');
+
+    const pb = await preflight(B);
+    assert.strictEqual(pb.conflict, false, 'B rollback has no conflict');
+
+    const bodyB = await rollback(B);
+    assert.strictEqual(bodyB.ok, true, 'B rollback ok');
+    assert.strictEqual(await readFile(join(workspace, 'test.md'), 'utf8'), 'A\n', 'B rollback restored test.md=A');
+
+    // The user-visible case: after B rolled back, A's rollback must NOT report
+    // a conflict — the file is back to A's own content (regression: previously
+    // flagged test.md as a conflict via the start-manifest fallback).
+    pa = await preflight(A);
+    assert.strictEqual(pa.conflict, false, 'A reports no conflict after B rolled back');
+    assert.deepStrictEqual(pa.files, [], 'A conflict list empty');
+    assert.strictEqual(pa.reason, 'no-end-manifest', 'reason stays no-end-manifest');
+
+    const bodyA = await rollback(A);
+    assert.strictEqual(bodyA.ok, true, 'A rollback ok');
+    assert.ok((await stat(join(workspace, 'test.md')).catch(() => null)) === null, 'test.md removed by A rollback');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+
+
