@@ -1,98 +1,79 @@
 // dsh-plugin-model-arena — node half
-// Persists the model-arena switch and serves it to the browser half.
-//
-// - The switch is a settings namespace ("model-arena"), persisted in
-//   ~/.dsh/settings.yaml and hot-reloaded; config.enabled is the composition
-//   base (the initial default, e.g. from cordis.patch.yml).
-// - Two webServer endpoints serve the browser half:
-//     GET  /model-arena/state -> { ok, enabled }
-//     POST /model-arena/set   -> body { enabled: boolean } -> { ok, enabled }
-// - The arena feature itself is not implemented yet: toggling only persists the
-//   flag for future work.
+// 1) Persists arena linkages (main -> arena) and the per-session persona map.
+// 2) Injects the challenge roles (Knowledge Expert / Challenger) into the
+//    SYSTEM PROMPT of the arena-enabled sessions via the
+//    system-prompt/assemble waterfall — no extra messages in the conversation,
+//    roles apply from the very first turn.
 import z from '@deepseek-ai/schemastery';
+import { PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt';
 
 const name = 'model-arena';
-const inject = ['webServer'];
-const SETTINGS_NS = 'model-arena';
+const inject = ['settings', 'systemPrompt'];
 
-const Config = z.object({ enabled: z.boolean() });
+// schemastery fields are optional by default.
+const Link = z.object({
+  sessionId: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  reasoningEffort: z.string(),
+  name: z.string()
+});
 
-function sendJson(res, status, body) {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store'
-  });
-  res.end(JSON.stringify(body));
-}
+// persona: sessionId -> role prompt text (main session gets the expert role,
+// the arena session gets the challenger role). Written by the browser half.
+const Config = z.object({
+  links: z.dict(Link).default({}),
+  enabled: z.boolean(),
+  persona: z.dict(z.string()).default({})
+});
 
-function readBody(req) {
-  return new Promise((done) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => done(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', () => done(''));
-  });
-}
-
-function apply(ctx, config = {}) {
-  // Local fallback: the config base (or the schema default) when the settings
-  // service is not mounted; kept in sync by scope.watch() once mounted.
-  let enabled = typeof config.enabled === 'boolean' ? config.enabled : false;
-  let scope = null;
-
-  const disposers = [
-    ctx.webServer.register({
-      kind: 'exact',
-      path: '/model-arena/state',
-      handler: (req, res) => {
-        const current = scope === null ? enabled : (scope.get().enabled ?? enabled);
-        sendJson(res, 200, { ok: true, enabled: current });
+function apply(ctx) {
+  ctx.inject(['settings', 'systemPrompt'], (settingsCtx) => {
+    let scope = null;
+    try {
+      scope = settingsCtx.settings.register(name, Config, { base: { links: {}, persona: {} } });
+    } catch (error) {
+      ctx.logger?.warn?.('model-arena: settings register failed: ' + String(error?.message ?? error));
+    }
+    // Live persona map (sessionId -> role text), refreshed from settings.
+    let personaMap = {};
+    const readPersona = () => {
+      try {
+        personaMap = scope?.get()?.persona ?? {};
+      } catch {
+        personaMap = {};
       }
-    }),
-    ctx.webServer.register({
-      kind: 'exact',
-      path: '/model-arena/set',
-      handler: async (req, res) => {
-        try {
-          const payload = JSON.parse((await readBody(req)) || '{}');
-          const next = payload.enabled;
-          if (typeof next !== 'boolean') {
-            sendJson(res, 400, { ok: false, code: 'bad-enabled', message: 'enabled must be a boolean' });
-            return;
-          }
-          if (scope === null) {
-            sendJson(res, 503, { ok: false, code: 'settings-unavailable', message: 'settings service is not mounted' });
-            return;
-          }
-          await scope.update({ enabled: next });
-          // scope.watch() below refreshes the local fallback; the response
-          // carries the resolved value (schema/base/user composition).
-          sendJson(res, 200, { ok: true, enabled: scope.get().enabled ?? next });
-        } catch (error) {
-          sendJson(res, 500, { ok: false, code: 'internal', message: String(error?.message ?? error) });
-        }
+    };
+    readPersona();
+    const unwatch = scope?.watch?.(() => readPersona());
+
+    // Inject the challenge role into the assembled system prompt for the
+    // arena-enabled sessions only. The global untagged listener is released by
+    // scopeTarget for every agent scope; we resolve the session from
+    // context.agent and skip everything that is not in the persona map.
+    const disposeAssembly = settingsCtx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      const assembled = await next();
+      const sessionId = context?.agent?.session?.id;
+      if (sessionId === void 0 || sessionId === null) return assembled;
+      const role = personaMap[sessionId];
+      if (role === void 0 || role === '') return assembled;
+      for (const section of assembled.sections) {
+        if (section.name !== PERSONA_SECTION) continue;
+        const current = typeof section.text === 'string' && section.text.length > 0 ? section.text : '';
+        section.text = current ? current + '\n\n' + role : role;
       }
-    })
-  ];
+      return assembled;
+    });
 
-  ctx.inject(['settings'], (settingsCtx) => {
-    scope = settingsCtx.settings.register(SETTINGS_NS, Config, {
-      base: { enabled }
-    });
-    enabled = scope.get().enabled ?? enabled;
-    settingsCtx.effect(() => () => {
-      scope = null;
-    }, 'model-arena: settings scope');
-    scope.watch(() => {
-      enabled = scope.get().enabled ?? false;
-    });
+    return () => {
+      try {
+        unwatch?.();
+      } catch {}
+      try {
+        disposeAssembly?.();
+      } catch {}
+    };
   });
-
-  ctx.logger.info('model-arena: /arena toggle ready (settings namespace ' + SETTINGS_NS + ')');
-
-  return () => {
-    for (const dispose of disposers) dispose();
-  };
 }
 
 export { Config, apply, inject, name };

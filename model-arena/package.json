@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-model-arena",
-  "version": "0.1.0",
-  "description": "dsh web 模型竞技场开关：在命令菜单（“+” / “/”）中注册普通命令 /arena，弹出开关面板切换并持久化竞技场启用状态（settings.yaml，model-arena 命名空间）；竞技场功能开发中，开启暂不影响对话。",
+  "version": "0.2.0",
+  "description": "dsh web 模型竞技场·挑战模式：空会话 hero 视图旁显示「竞技场」toggle，开启后选择场景（知识沉淀/测试用例）与竞技场模型；用户提问一次后输入框锁定，流程自动执行 模型1回答 → 模型2质疑 → 模型1修正 → 模型2终评（4 步收尾），模型2 的质疑/终评以用户消息注入主对话（原生渲染），角色/禁止辩论指令按场景注入，结束后解锁可提新一轮。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -9,12 +9,19 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
+  "files": [
+    "lib",
+    "README.md"
+  ],
   "dsh": {
     "client": {
       "platform": "web",
       "inject": [
         "locale",
-        "commandUi"
+        "sessions",
+        "modelDirectories",
+        "remote",
+        "slots"
       ],
       "immediately": false
     }
@@ -23,7 +30,8 @@
     "test": "node test/smoke.mjs && node test/client-smoke.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.7"
   },
   "license": "MIT"
 }
