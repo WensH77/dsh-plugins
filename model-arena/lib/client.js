@@ -1841,6 +1841,11 @@ window.__ModuleLoader__.load({
 				const ChallengeStatus = (props) => {
 					const sessionId = props.sessionId;
 					React.useSyncExternalStore(arenaTick.subscribe, arenaTick.getSnapshot);
+					// The strip belongs to the MAIN session header only — a competitor
+					// (arena) session never shows it, whatever the runtime state:
+					// clicking into an ended/interrupted competitor session must not
+					// resurrect the header.
+					if (sessionId === void 0 || isArenaSessionId(sessionId)) return null;
 					if (arenaMount === null || arenaMount.sessionId !== sessionId) return null;
 					if (!shouldShowChallengeHeader(arenaMount.challenge)) return null;
 					const c = arenaMount.challenge;
@@ -3260,7 +3265,20 @@ window.__ModuleLoader__.load({
 						}
 						if (mainId !== void 0) {
 							lastGuardedSelection = current;
-							const sessionsApi = typeof ctx.get === "function" ? ctx.get("sessions") : void 0;
+							// ctx.get resolves RUNTIME services only; the sessions service
+							// is the injected ctx.sessions face ("sessions" is in the plugin's
+							// inject list), whose open(id) selects a session as current.
+							// Falling back to it keeps the bounce working when ctx.get
+							// cannot resolve "sessions".
+							let sessionsApi = void 0;
+							try {
+								sessionsApi = typeof ctx.get === "function" ? ctx.get("sessions") : void 0;
+							} catch {
+								sessionsApi = void 0;
+							}
+							if ((sessionsApi === void 0 || typeof sessionsApi.open !== "function") && ctx.sessions !== void 0 && typeof ctx.sessions.open === "function") {
+								sessionsApi = ctx.sessions;
+							}
 							if (sessionsApi !== void 0 && typeof sessionsApi.open === "function") sessionsApi.open(mainId);
 						}
 					} catch (_guardFailure) {

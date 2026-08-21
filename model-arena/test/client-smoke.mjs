@@ -485,6 +485,10 @@ const mockCtx = {
       createCalls.push(opts);
       return "arena-1";
     },
+    open: (id) => {
+      openCalls.push(id);
+      currentSession = id;
+    },
     selectModel: async (payload) => {
       selectCalls.push(payload);
     },
@@ -1187,6 +1191,15 @@ listSub();
 await sleep(120);
 check("re-entering an ended arena session keeps the challenge done", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
 check("re-entering an ended arena session hides the challenge header", loaded.shouldShowChallengeHeader(internals.getArenaMount()?.challenge) === false);
+
+// ── clicking the COMPETITOR (arena) session: the selection guard bounces
+// back to the main session, and an ended challenge never shows its header ──
+currentSession = "arena-1";
+listSub();
+await sleep(120);
+check("clicking the competitor session bounces back to the main session", currentSession === "s1");
+check("clicking the competitor session restores the main runtime", internals.getArenaMount() !== null && internals.getArenaMount().sessionId === "s1");
+check("ended challenge header stays hidden after the competitor click", internals.getArenaMount() !== null && loaded.shouldShowChallengeHeader(internals.getArenaMount().challenge) === false);
 // a new question starts a fresh business round
 mainStore._set({
   chat: {
