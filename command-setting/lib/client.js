@@ -387,7 +387,10 @@ window.__ModuleLoader__.load({
 				inject: (sessionId) => ({
 					sessionId,
 					execute: async (sid, line) => {
-						const result = await ctx.remote.commands.execute(sid, line);
+						// images must be passed explicitly: the wire contract for
+						// commands/execute is (agentId, line, images) and images is a
+						// required strict-array parameter — omitting it fails the call.
+						const result = await ctx.remote.commands.execute(sid, line, []);
 						if (!result.ok) return result.error.message + " (" + result.error.code + ")";
 						if (result.value === void 0) return "unknown command: " + line;
 						return null;
