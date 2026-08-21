@@ -21,13 +21,14 @@ const Link = z.object({
 
 // persona: sessionId -> role prompt text (main session gets the expert role,
 // the arena session gets the challenger role). Written by the browser half.
-// workspaceSkills: workspace path -> challenger skill path (file or folder),
-// persisted per workspace so new sessions in the same workspace reuse it.
+// workspaceSkills: workspace path -> (scene -> challenger skill path). Each
+// workspace × scene pair remembers its own skill (file or folder); a new
+// session in the same workspace defaults to its scene's entry (empty = none).
 const Config = z.object({
   links: z.dict(Link).default({}),
   enabled: z.boolean(),
   persona: z.dict(z.string()).default({}),
-  workspaceSkills: z.dict(z.string()).default({})
+  workspaceSkills: z.dict(z.dict(z.string())).default({})
 });
 
 function apply(ctx) {

@@ -161,6 +161,7 @@ function findInTree(node, pred) {
 }
 const byClass = (cls) => (el) => el.className === cls;
 const byData = (key) => (el) => el.dataset[key] !== void 0;
+const headStyles = [];
 
 const documentStub = {
   querySelector: (selector) => {
@@ -178,7 +179,13 @@ const documentStub = {
     return [];
   },
   createElement: (tag) => new FakeElement(tag),
-  head: { appendChild() {} },
+  head: {
+    appendChild(el) {
+      // Capture injected <style> tags so the CSS regression checks can assert
+      // on the plugin's own stylesheet (e.g. the .ma-questionOpt base rule).
+      headStyles.push(el);
+    }
+  },
   body: bodyRoot,
   addEventListener() {},
   removeEventListener() {}
@@ -212,10 +219,35 @@ const reactStub = {
   useEffect: () => {},
   useSyncExternalStore: () => 0
 };
+// Native primitives + react-dom/client stubs: `loadMd` resolves these as seed
+// modules through the factory `require`, so the arena pane takes the NATIVE
+// render path (MarkdownText / DisclosureRow / native copy button) instead of
+// the plain-text fallback. createRoot records the rendered vnode on the host
+// element so the tests can assert which native component was used.
+const primitivesStub = {
+  MarkdownText: () => null,
+  DisclosureRow: () => null,
+  IconThinkOutline16: () => null,
+  IconThinkOutline14: () => null,
+  IconBrowseOutline16: () => null,
+  IconCodeOutline16: () => null,
+  IconCopyOutline16: () => null,
+  IconCheckOutline16: () => null,
+  writeClipboard: async () => true,
+  Tooltip: () => null
+};
+const reactDomClientStub = {
+  createRoot: (el) => ({
+    render(vnode) { el._react = vnode; },
+    unmount() {}
+  })
+};
 sandbox.window.__ModuleLoader__ = {
   load: ({ factory }) => {
     loaded = factory((id) => {
       if (id === "react") return reactStub;
+      if (id === "react-dom/client") return reactDomClientStub;
+      if (id === "@deepseek-ai/dsh-client-ui-primitives") return primitivesStub;
       throw new Error("unexpected require: " + id);
     });
   }
@@ -236,6 +268,8 @@ function check(label, cond, detail) {
 check("apply exported", typeof loaded.apply === "function");
 check("inject exported", Array.isArray(loaded.inject) && loaded.inject.join(",") === "locale,sessions,modelDirectories,remote,slots");
 check("helpers exported", ["buildModelOptions", "buildEffortChoices", "conflictsWithInput", "findArenaModel"].every((k) => typeof loaded[k] === "function"));
+check("arena stylesheet injected", headStyles.length === 1 && headStyles[0].dataset.pluginCss === "dsh-plugin-model-arena/arena.css");
+check("question option base rule present (regression guard)", headStyles.length === 1 && headStyles[0].textContent.includes(".ma-questionOpt{"));
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 const t = (key) => "T:" + key;
@@ -527,6 +561,13 @@ check("parseReviewVerdict READY", loaded.parseReviewVerdict("**Overall Verdict**
 check("parseReviewVerdict NEEDS REVISION (space)", loaded.parseReviewVerdict("**Overall Verdict**: NEEDS REVISION") === "NEEDS_REVISION");
 check("parseReviewVerdict NOT READY", loaded.parseReviewVerdict("**Overall Verdict**: NOT READY") === "NOT_READY");
 check("parseReviewVerdict unparseable -> empty", loaded.parseReviewVerdict("no verdict here") === "");
+check("roundLabelOf exported", typeof loaded.roundLabelOf === "function");
+check("roundLabelOf challenge", loaded.roundLabelOf("请用中文对上述回答逐条质疑", realT) === "质疑轮");
+check("roundLabelOf final", loaded.roundLabelOf("请不再质疑，仅给出最终评审结论", realT) === "终评轮");
+check("roundLabelOf review (逐条审查)", loaded.roundLabelOf("请作为审查者用中文逐条审查", realT) === "审查轮");
+check("roundLabelOf review (Overall Verdict)", loaded.roundLabelOf("**Overall Verdict**: READY", realT) === "审查轮");
+check("roundLabelOf default", loaded.roundLabelOf("随便一句话", realT) === "回合");
+check("roundLabelOf empty -> empty", loaded.roundLabelOf("") === "" && loaded.roundLabelOf(void 0) === "");
 const reviseMsg = loaded.buildReviseMessage("objection text", chCtx, realT);
 check("revise message = directive + review text", reviseMsg.includes("不认可") && reviseMsg.includes("审查意见") && reviseMsg.includes("objection text"));
 check("stripMarkdown removes emphasis and code", loaded.stripMarkdown("**bold** and `code` and [link](http://x)") === "bold and code and link");
@@ -542,6 +583,10 @@ const finalPrompt = loaded.buildRoundPrompt("final", chCtx, realT);
 check("final prompt (original flow): verdict directive", finalPrompt.includes("修正后的回答") && finalPrompt.includes("最终评审结论") && !finalPrompt.includes("Overall Verdict"));
 check("extractFileRefs finds code/link paths", loaded.extractFileRefs("see `docs/a.md` and [x](src/b.ts)").join(",") === "docs/a.md,src/b.ts");
 check("fmt substitutes placeholders", loaded.fmt("a {x} b", { x: "1" }) === "a 1 b");
+check("pathBasename strips dirs to the last segment", loaded.pathBasename("/ws/skills/knowledge/skill.md") === "skill.md");
+check("pathBasename returns the folder name for a dir path", loaded.pathBasename("/ws/skills/knowledge") === "knowledge");
+check("pathBasename trims a trailing slash", loaded.pathBasename("/ws/skills/knowledge/") === "knowledge");
+check("pathBasename handles a bare name / empty", loaded.pathBasename("skill.md") === "skill.md" && loaded.pathBasename("") === "" && loaded.pathBasename(void 0) === "");
 // ── tool-call trail in round prompts (assistant-node blocks only) ────────
 check("formatToolTrail empty input -> empty string", loaded.formatToolTrail([]) === "" && loaded.formatToolTrail(void 0) === "" && loaded.formatToolTrail(null) === "");
 check("formatToolTrail prefers description summary", loaded.formatToolTrail([{ name: "read_file", argsRaw: JSON.stringify({ description: "读取 src/query.ts", path: "src/query.ts" }) }]) === "1. read_file「读取 src/query.ts」");
@@ -644,14 +689,47 @@ const skillInput = collectByClass(skillPopover, "ma-questionInput")[0];
 skillInput.value = "/ws/.github/skills/theseus-review-spec";
 const skillConfirm = collectByClassContains(skillPopover, "ma-questionBtn").find((b) => b.textContent === "L:skill.confirm");
 click(skillConfirm);
-check("skill applied to trigger label", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "/ws/.github/skills/theseus-review-spec");
-check("skill persisted per workspace", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "workspaceSkills" && m.ops[0].path[1] === "/ws1" && m.ops[0].value === "/ws/.github/skills/theseus-review-spec"));
+check("skill applied to trigger label (basename)", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "theseus-review-spec");
+check("skill persisted per workspace + scene", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "workspaceSkills" && m.ops[0].path[1] === "/ws1" && m.ops[0].value?.knowledge === "/ws/.github/skills/theseus-review-spec"));
 check("skill row hidden popover after apply", skillHost.children.length === 0);
 // clear -> back to empty + persisted empty
 click(skillTrigger);
 const clearBtn = collectByClassContains(skillHost.children[0], "ma-questionBtn").find((b) => b.textContent === "L:skill.clear");
 click(clearBtn);
-check("skill cleared", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder" && settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "workspaceSkills" && m.ops[0].path[1] === "/ws1" && m.ops[0].value === ""));
+check("skill cleared", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder" && settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "workspaceSkills" && m.ops[0].path[1] === "/ws1" && m.ops[0].value?.knowledge === ""));
+// skill is bound to the scene: each scene remembers its own skill (current = knowledge)
+click(skillTrigger);
+let skPop = skillHost.children[0];
+let skIn = collectByClass(skPop, "ma-questionInput")[0];
+skIn.value = "/ws/skills/knowledge";
+click(collectByClassContains(skPop, "ma-questionBtn").find((b) => b.textContent === "L:skill.confirm"));
+check("knowledge scene remembers its own skill", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "knowledge");
+// business has no remembered skill yet -> switching there empties the pick
+click(sceneBtnEls[0]);
+check("switching to business loads its (empty) skill", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder");
+// set a different business-scoped skill
+click(skillTrigger);
+skPop = skillHost.children[0];
+skIn = collectByClass(skPop, "ma-questionInput")[0];
+skIn.value = "/ws/skills/business";
+click(collectByClassContains(skPop, "ma-questionBtn").find((b) => b.textContent === "L:skill.confirm"));
+check("business scene remembers its own skill", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "business");
+// switching back to knowledge restores its remembered skill
+click(sceneBtnEls[1]);
+check("switching back to knowledge restores its skill", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "knowledge");
+// and business restores its own again
+click(sceneBtnEls[0]);
+check("switching back to business restores its skill", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "business");
+// clean up: clear both scene skills and return to knowledge (empty) for the next section
+click(skillTrigger);
+skPop = skillHost.children[0];
+click(collectByClassContains(skPop, "ma-questionBtn").find((b) => b.textContent === "L:skill.clear"));
+check("business skill cleared (scene-scoped)", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder");
+click(sceneBtnEls[1]); // back to knowledge
+click(skillTrigger);
+skPop = skillHost.children[0];
+click(collectByClassContains(skPop, "ma-questionBtn").find((b) => b.textContent === "L:skill.clear"));
+check("knowledge skill cleared (scene-scoped)", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder");
 // role seed carries the skill instruction when set; unchanged when empty
 check("role seed with skill carries the instruction", loaded.buildRoleSeed({ scene: "knowledge", skill: "/x/skill" }, realT).includes("挑战者技能：/x/skill") && loaded.buildRoleSeed({ scene: "knowledge", skill: "/x/skill" }, realT).includes("SKILL.md"));
 check("role seed without skill unchanged", !loaded.buildRoleSeed({ scene: "knowledge" }, realT).includes("挑战者技能"));
@@ -768,9 +846,13 @@ arenaStore._set({
 });
 await sleep(10);
 const bubbles = collectByClassContains(paneBody, "ma-bubble");
-check("arena pane renders reply without a duplicated user bubble (shared input)", bubbles.length >= 1 && !bubbles.some((b) => b.className.includes("user")) && bubbles.some((b) => b.textContent.includes("arena answer") || b.className.includes("assistant")));
-check("arena pane renders assistant reply", bubbles.some((b) => b.className.includes("assistant") && b.textContent === "arena answer"));
-check("arena pane renders reasoning", bubbles.some((b) => (b.className.includes("reasoning") || b.className.includes("think")) && b.textContent === "thinking"));
+check("arena pane renders no duplicated user bubble (shared input)", !bubbles.some((b) => b.className.includes("user")));
+const asstHost = findInTree(paneBody, (el) => el.className === "ma-assistantMd");
+check("arena pane renders assistant reply via native MarkdownText", asstHost !== null && asstHost._react?.type === primitivesStub.MarkdownText && asstHost._react?.props?.text === "arena answer");
+const thinkEl = bubbles.find((b) => b.className.includes("think"));
+check("arena pane renders reasoning via native DisclosureRow", thinkEl !== void 0 && thinkEl._react?.type === primitivesStub.DisclosureRow);
+const roundEl = findInTree(paneBody, (el) => el.dataset?.arenaRound !== void 0);
+check("arena pane renders a labeled round divider for the round prompt", roundEl !== null && roundEl.className === "ma-arenaRound" && roundEl.children.some((c) => c.className === "ma-arenaRoundLabel"));
 
 // streaming: an empty reasoning placeholder block arrives first, content
 // later — the non-md signature must still flip when reasoning turns
@@ -796,7 +878,7 @@ arenaStore._set({
   }
 });
 await sleep(10);
-check("reasoning filled in later renders the think row", collectByClassContains(paneBody, "ma-bubble").some((b) => (b.className.includes("reasoning") || b.className.includes("think")) && b.textContent === "thinking"));
+check("reasoning filled in later renders the think row (DisclosureRow)", collectByClassContains(paneBody, "ma-bubble").some((b) => b.className.includes("think") && b._react?.type === primitivesStub.DisclosureRow));
 
 // a legacy prompt-based permission grant (user node + assistant reply) is
 // hidden from the pane: the grant + its whole reply turn vanish
@@ -815,7 +897,7 @@ await sleep(10);
 const bubblesAfterGrant = collectByClassContains(paneBody, "ma-bubble");
 check("permission grant node hidden from the pane", !bubblesAfterGrant.some((b) => b.textContent.includes("/permission")));
 check("permission grant reply hidden from the pane", !bubblesAfterGrant.some((b) => b.textContent.includes("permission granted")));
-check("content after the grant still renders", !bubblesAfterGrant.some((b) => b.className.includes("user")) && bubblesAfterGrant.some((b) => b.className.includes("assistant") && b.textContent === "real answer"));
+check("content after the grant still renders", !bubblesAfterGrant.some((b) => b.className.includes("user")) && findInTree(paneBody, (el) => el.className === "ma-assistantMd" && el._react?.props?.text === "real answer") !== null);
 
 // ── arena question answering ──────────────────────────────────────────────
 const questionResults = [];

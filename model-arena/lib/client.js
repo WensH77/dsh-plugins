@@ -56,6 +56,10 @@ window.__ModuleLoader__.load({
 			"arena.paneTitle": "竞技场",
 			"arena.pane.empty": "发送消息后，竞技场模型将在此回复",
 			"arena.sessionTitle": "竞技场",
+			"arena.round.challenge": "质疑轮",
+			"arena.round.final": "终评轮",
+			"arena.round.review": "审查轮",
+			"arena.round.default": "回合",
 			"arena.question.header": "竞技场模型提问",
 			"arena.question.submit": "提交回答",
 			"arena.question.cancel": "跳过",
@@ -128,6 +132,10 @@ window.__ModuleLoader__.load({
 			"arena.paneTitle": "Arena",
 			"arena.pane.empty": "Send a message to start the arena duel",
 			"arena.sessionTitle": "Arena",
+			"arena.round.challenge": "Challenge round",
+			"arena.round.final": "Final verdict",
+			"arena.round.review": "Review round",
+			"arena.round.default": "Round",
 			"arena.question.header": "The arena model asks",
 			"arena.question.submit": "Submit",
 			"arena.question.cancel": "Skip",
@@ -342,6 +350,16 @@ window.__ModuleLoader__.load({
 		// {placeholder} substitution (the locale binder does not interpolate).
 		const fmt = (template, vars) => typeof template === "string" ? template.replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m) : "";
 		const looksLikeFile = (path) => typeof path === "string" && path.length > 1 && (/\.[a-z0-9]{1,8}$/i.test(path) || path.includes("/"));
+		// Last path segment (file or folder name) for compact display — the
+		// challenger-skill trigger shows just the basename instead of the full
+		// (and ellipsized) path, which would otherwise hide the meaningful tail.
+		const pathBasename = (path) => {
+			if (typeof path !== "string") return "";
+			const trimmed = path.replace(/[\\/]+$/, "");
+			if (trimmed === "") return path;
+			const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+			return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+		};
 		// File references mentioned in a model reply (markdown links, inline
 		// code paths, bare paths) — handed to the challenger as context so it can
 		// read and review them with its workspace tools.
@@ -405,6 +423,17 @@ window.__ModuleLoader__.load({
 			if (!match) return "";
 			const verdict = match[1].replace(/\s+/g, "_").toUpperCase();
 			return verdict === "READY" || verdict === "NEEDS_REVISION" || verdict === "NOT_READY" ? verdict : "";
+		};
+		// Compact round label for one arena round prompt (a user node injected
+		// into the arena session by the orchestrator). The prompts are authored
+		// in Chinese regardless of locale, so keyword matching is stable; the
+		// label itself comes from the locale binder. Empty for non-round text.
+		const roundLabelOf = (text, t) => {
+			if (typeof text !== "string" || text === "") return "";
+			if (text.includes("逐条质疑")) return t("arena.round.challenge");
+			if (text.includes("最终评审结论")) return t("arena.round.final");
+			if (text.includes("逐条审查") || text.includes("Overall Verdict")) return t("arena.round.review");
+			return t("arena.round.default");
 		};
 		// Round prompt assembly: context + a per-stage directive to the arena
 		// session. "review" drives the review loop (knowledge scene);
@@ -583,6 +612,12 @@ window.__ModuleLoader__.load({
 			".ma-arenaView{flex-direction:column;flex:1;min-height:0;background:var(--dsw-alias-bg-base);display:flex}",
 			".ma-arenaViewHead{flex:none;min-height:36px;align-items:center;gap:8px;border-bottom:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);padding:0 28px 0 20px;font-size:13px;font-weight:500;line-height:20px;display:flex}",
 			".ma-arenaNode{flex-direction:column;gap:16px;min-width:0;display:flex}",
+			// round divider (质疑轮 / 终评轮 / 审查轮): a prominent horizontal
+			// rule + centered label so the challenger's rounds read as separate
+			// turns instead of one continuous block.
+			".ma-arenaRound{flex:none;align-items:center;gap:10px;color:var(--dsw-alias-label-caption);font-size:12px;font-weight:500;line-height:18px;display:flex}",
+			".ma-arenaRound:before,.ma-arenaRound:after{content:\"\";flex:1;height:1px;background:var(--dsw-alias-border-l2)}",
+			".ma-arenaRoundLabel{flex:none;white-space:nowrap}",
 			".ma-arenaInteractions{flex-direction:column;gap:16px;min-width:0;display:flex}",
 			".ma-arenaFlow{flex-direction:column;gap:16px;min-width:0;display:flex}",
 			".ma-paneBody{flex:1;min-height:0;width:100%;max-width:var(--dsh-chat-content-width);margin:0 auto;flex-direction:column;gap:16px;padding:16px;overflow-y:auto;display:flex}",
@@ -598,9 +633,10 @@ window.__ModuleLoader__.load({
 			// arena question/approval cards
 			".ma-question{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-specific-input-major);border-radius:12px;flex-direction:column;gap:10px;padding:12px;display:flex}",
 			".ma-questionTitle{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px}",
-			".ma-questionText{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;white-space:pre-wrap}",,
+			".ma-questionText{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;white-space:pre-wrap}",
 			".ma-questionDetail{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
 			".ma-questionBlock{flex-direction:column;gap:6px;display:flex}",
+			".ma-questionOpt{width:100%;min-height:34px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;font-size:13px;line-height:20px}",
 			".ma-questionOpt:hover,.ma-questionOpt.selected{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-state-business-primary)}",
 			".ma-questionInput{width:100%;min-height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 10px;font-size:13px;line-height:20px}",
 			".ma-questionInput:focus{border-color:var(--dsw-alias-state-business-primary)}",
@@ -611,7 +647,7 @@ window.__ModuleLoader__.load({
 			".ma-paneError{color:var(--dsw-alias-state-error-primary);font-size:13px;line-height:20px;white-space:pre-wrap}",
 			// tool + image rows (left-chat visual language)
 			".ma-toolTitle{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:24px}",
-			".ma-toolArgs{margin:0;color:var(--dsw-alias-label-tertiary);font:12px/18px var(--dsw-font-mono);white-space:pre-wrap;word-break:break-all}",
+			".ma-toolArgs{margin:0;color:var(--dsw-alias-label-tertiary);font:12px/18px var(--ds-font-family-code);white-space:pre-wrap;word-break:break-all}",
 			".ma-thinkBody{color:var(--dsw-alias-label-tertiary);white-space:pre-wrap;word-break:break-word;padding:4px 0 4px 22px;font-size:14px;line-height:24px}",
 			".ma-bubble.context,.ma-bubble.turnTail{align-self:stretch;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:24px;white-space:nowrap}",
 						
@@ -969,6 +1005,24 @@ window.__ModuleLoader__.load({
 					return el;
 				};
 
+				// Round divider: a labeled horizontal rule rendered for each round
+				// prompt (user node) the orchestrator injects into the arena session.
+				// Makes the challenger's rounds (质疑 / 终评 / 审查) read as clearly
+				// separate turns instead of one continuous reply.
+				const roundDivider = (node) => {
+					const el = document.createElement("div");
+					el.className = "ma-arenaRound";
+					el.dataset.arenaRound = "";
+					const label = roundLabelOf(textOfContent(contentOf(node)), t);
+					if (label !== "") {
+						const span = document.createElement("span");
+						span.className = "ma-arenaRoundLabel";
+						span.textContent = label;
+						el.appendChild(span);
+					}
+					return el;
+				};
+
 				// React-rendered disclosure rows (think / tool-call), matching the
 				// native left chat exactly: DisclosureRow = icon + title + summary,
 				// click to expand. Used only when the native components are loaded;
@@ -1115,14 +1169,15 @@ window.__ModuleLoader__.load({
 					if (mdApi !== null || mdLoading) return mdApi;
 					mdLoading = true;
 					try {
-						const M = window.__DSH_MODULES__;
-						if (M === null || M === void 0 || typeof M.import !== "function") return null;
-						const [prim, React, rd] = await Promise.all([
-							M.import("@deepseek-ai/dsh-client-ui-primitives"),
-							M.import("react"),
-							M.import("react-dom/client")
-						]);
-						if (prim !== null && prim !== void 0 && prim.MarkdownText !== void 0 && prim.DisclosureRow !== void 0 && React !== null && React !== void 0 && rd !== null && rd !== void 0 && typeof rd.createRoot === "function") {
+						// The native primitives are seed modules in the client module
+						// system: the factory `require` resolves them synchronously
+						// (same as `require("react")` above). There is no
+						// `window.__DSH_MODULES__` global — the module system is
+						// provided as `ctx.modules`, and the factory's `require` is
+						// its `makeRequire` face.
+						const prim = require("@deepseek-ai/dsh-client-ui-primitives");
+						const rd = require("react-dom/client");
+						if (prim !== null && prim !== void 0 && prim.MarkdownText !== void 0 && prim.DisclosureRow !== void 0 && rd !== null && rd !== void 0 && typeof rd.createRoot === "function") {
 							mdApi = { MarkdownText: prim.MarkdownText, DisclosureRow: prim.DisclosureRow, IconThinkOutline16: prim.IconThinkOutline16, IconThinkOutline14: prim.IconThinkOutline14, IconBrowseOutline16: prim.IconBrowseOutline16, IconCodeOutline16: prim.IconCodeOutline16, IconCopyOutline16: prim.IconCopyOutline16, IconCheckOutline16: prim.IconCheckOutline16, writeClipboard: prim.writeClipboard, Tooltip: prim.Tooltip, React, createRoot: rd.createRoot };
 						}
 					} catch {
@@ -1261,6 +1316,12 @@ window.__ModuleLoader__.load({
 						const text = toolResultText(contentOf(node));
 						const name = node.call?.name ?? node.data?.call?.name ?? "";
 						container.appendChild(toolResultRow(name, text, node.isError === true));
+					} else if (isUserNode(node)) {
+						// A round prompt (user node) injected by the orchestrator:
+						// render it as a labeled divider, not a user bubble.
+						unmountContainerRoots(container);
+						container.textContent = "";
+						container.appendChild(roundDivider(node));
 					}
 				};
 
@@ -1299,7 +1360,12 @@ window.__ModuleLoader__.load({
 								continue;
 							}
 							skipUntilUser = false;
-							// Shared input: the arena tab does not repeat user bubbles.
+							// Each non-permission user node in the arena session is an
+							// orchestrator round prompt (质疑 / 终评 / 审查). Render it
+							// as a visible round divider so the challenger's replies
+							// read as separate turns instead of one continuous block.
+							rows.push({ key, node, sig: nodeSig(node, "") });
+							hasContent = true;
 						} else if (isCommandNode(node)) {
 							if (isPermissionGrant(node)) skipUntilUser = true;
 						} else if (isTurnTailNode(node)) {
@@ -2566,9 +2632,10 @@ window.__ModuleLoader__.load({
 
 				// ── arena linkage persistence (settings "model-arena" namespace) ──
 				let linksCache = {};
-				// Per-workspace challenger skill (workspace path -> skill path).
-				// Persisted in the same namespace; a new session in the same
-				// workspace defaults to its entry (empty = no skill).
+				// Per-workspace × per-scene challenger skill
+				// (workspace path -> scene -> skill path). Persisted in the same
+				// namespace; a new session in the same workspace defaults to its
+				// scene's entry (empty = no skill).
 				let workspaceSkillsCache = {};
 				const workspacePathOf = (sessionId) => {
 					try {
@@ -2583,17 +2650,22 @@ window.__ModuleLoader__.load({
 						return void 0;
 					}
 				};
-				const saveWorkspaceSkill = (sessionId, skill) => {
+				const saveWorkspaceSkill = (sessionId, scene, skill) => {
 					const ws = workspacePathOf(sessionId);
+					const sceneKey = typeof scene === "string" && scene !== "" ? scene : "business";
 					const cleaned = typeof skill === "string" ? skill : "";
-					if (ws !== void 0) workspaceSkillsCache[ws] = cleaned;
-					try {
-						apiSettings()?.mutate?.({
-							ns: "model-arena",
-							ops: [{ op: "set", path: ["workspaceSkills", ws], value: cleaned }]
-						}).catch(() => {});
-					} catch {
-						// persistence failed — the in-memory cache still applies
+					if (ws !== void 0) {
+						const entry = workspaceSkillsCache[ws] !== null && typeof workspaceSkillsCache[ws] === "object" && !Array.isArray(workspaceSkillsCache[ws]) ? workspaceSkillsCache[ws] : {};
+						entry[sceneKey] = cleaned;
+						workspaceSkillsCache[ws] = entry;
+						try {
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [{ op: "set", path: ["workspaceSkills", ws], value: entry }]
+							}).catch(() => {});
+						} catch {
+							// persistence failed — the in-memory cache still applies
+						}
 					}
 				};
 				const apiSettings = () => {
@@ -2610,7 +2682,19 @@ window.__ModuleLoader__.load({
 						const namespaces = response?.result?.value?.namespaces ?? [];
 						const view = namespaces.find((n) => n !== null && n !== void 0 && n.ns === "model-arena");
 						linksCache = view?.value?.links ?? {};
-						workspaceSkillsCache = view?.value?.workspaceSkills ?? {};
+						const rawSkills = view?.value?.workspaceSkills ?? {};
+						workspaceSkillsCache = {};
+						if (rawSkills !== null && typeof rawSkills === "object") {
+							for (const ws of Object.keys(rawSkills)) {
+								const v = rawSkills[ws];
+								if (typeof v === "string") {
+									// legacy workspace-level entry (pre-scene) → default scene
+									workspaceSkillsCache[ws] = { business: v };
+								} else if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+									workspaceSkillsCache[ws] = { ...v };
+								}
+							}
+						}
 					} catch {
 						linksCache = {};
 						workspaceSkillsCache = {};
@@ -2649,12 +2733,14 @@ window.__ModuleLoader__.load({
 						state.arena = { sessionId: link.sessionId };
 						if (link.scene !== void 0) state.scene = link.scene;
 					}
-					// Seed the per-session challenger skill from the WORKSPACE's
-					// historical entry once (undefined -> the workspace default, which
-					// may be "" = no skill). The user's own pick/clear afterwards
-					// overrides it for this session AND updates the workspace default.
+					// Seed the per-session challenger skill from the WORKSPACE × SCENE
+					// historical entry once (undefined -> the workspace+scene default,
+					// which may be "" = no skill). The user's own pick/clear afterwards
+					// overrides it for this session AND updates that scene's default.
 					if (state !== void 0 && state.skill === void 0) {
-						state.skill = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""] ?? "";
+						const wsEntry = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""];
+						const seedScene = state.scene ?? "business";
+						state.skill = (wsEntry !== null && typeof wsEntry === "object" && !Array.isArray(wsEntry) ? wsEntry[seedScene] : void 0) ?? "";
 					}
 					const active = state !== void 0 && state.enabled === true && state.model !== null && state.model !== void 0;
 					if (!active) {
@@ -3019,8 +3105,16 @@ window.__ModuleLoader__.load({
 						btn.addEventListener("click", () => {
 							if (state.scene === key) return;
 							state.scene = key;
-							if (arenaMount !== null && arenaMount.sessionId === sessionId) arenaMount.challenge.scene = key;
+							// Skill is bound to the scene: switching scenes loads that
+							// scene's remembered skill (empty = none).
+							const wsEntry = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""];
+							state.skill = (wsEntry !== null && typeof wsEntry === "object" && !Array.isArray(wsEntry) ? wsEntry[key] : void 0) ?? "";
+							if (arenaMount !== null && arenaMount.sessionId === sessionId) {
+								arenaMount.challenge.scene = key;
+								arenaMount.challenge.skill = state.skill;
+							}
 							repaintPanel();
+							syncPersona();
 						});
 						sceneBtns[key] = btn;
 						sceneSeg.appendChild(btn);
@@ -3066,7 +3160,7 @@ window.__ModuleLoader__.load({
 					const applySkill = (skill) => {
 						state.skill = typeof skill === "string" ? skill : "";
 						if (arenaMount !== null && arenaMount.sessionId === sessionId) arenaMount.challenge.skill = state.skill;
-						saveWorkspaceSkill(sessionId, state.skill);
+						saveWorkspaceSkill(sessionId, state.scene ?? "business", state.skill);
 						closeSkill();
 						repaintPanel();
 						syncPersona();
@@ -3118,7 +3212,7 @@ window.__ModuleLoader__.load({
 						}
 						skillHost.appendChild(pop);
 						skillOutside = (event) => {
-							if (skillTrigger.contains(event.target)) return;
+							if (skillSel.contains(event.target)) return;
 							closeSkill();
 						};
 						document.addEventListener("mousedown", skillOutside);
@@ -3175,7 +3269,7 @@ window.__ModuleLoader__.load({
 						triggerLabel.textContent = modelLabel;
 						triggerEffort.textContent = effortLabel === null ? "" : effortLabel;
 						trigger.setAttribute("aria-label", t("menu.aria") + "：" + (effortLabel === null ? modelLabel : modelLabel + " · " + effortLabel));
-						skillValue.textContent = typeof state.skill === "string" && state.skill !== "" ? state.skill : t("skill.placeholder");
+						skillValue.textContent = typeof state.skill === "string" && state.skill !== "" ? pathBasename(state.skill) : t("skill.placeholder");
 						skillTrigger.setAttribute("aria-label", t("skill.label") + "：" + (typeof state.skill === "string" && state.skill !== "" ? state.skill : t("skill.placeholder")));
 						if (conflict) {
 							note.className = "ma-conflict";
@@ -3516,8 +3610,10 @@ window.__ModuleLoader__.load({
 		exports.SCENES = SCENES;
 		exports.fmt = fmt;
 		exports.extractFileRefs = extractFileRefs;
+		exports.pathBasename = pathBasename;
 		exports.buildRoundPrompt = buildRoundPrompt;
 		exports.parseReviewVerdict = parseReviewVerdict;
+		exports.roundLabelOf = roundLabelOf;
 		exports.MAX_REJECTS = MAX_REJECTS;
 		exports.formatToolTrail = formatToolTrail;
 		exports.toolArgsSummary = toolArgsSummary;
