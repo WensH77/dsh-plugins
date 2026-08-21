@@ -267,6 +267,23 @@ check("conflict false", loaded.conflictsWithInput({ provider: "p1", model: "m2" 
 check("findArenaModel resolves", loaded.findArenaModel(directory, { provider: "p1", model: "m2" })?.name === "M2");
 check("findArenaModel missing", loaded.findArenaModel(directory, { provider: "p9", model: "x" }) === void 0);
 
+// ── two-model auto arena model (pure helpers) ───────────────────────────────
+const twoModelDir = {
+  current: { provider: "p1", model: "m1", reasoningEffort: "low" },
+  groups: [
+    { id: "p1", name: "P1", models: [{ id: "m1", name: "M1", reasoning: reasoningA }, { id: "m2", name: "M2", reasoning: reasoningB }] }
+  ]
+};
+const autoOf = (dir) => loaded.autoArenaModel(dir);
+check("autoArenaModel exported", typeof loaded.autoArenaModel === "function" && typeof loaded.totalModelsOf === "function");
+check("totalModelsOf counts across groups", loaded.totalModelsOf(directory) === 3 && loaded.totalModelsOf(twoModelDir) === 2 && loaded.totalModelsOf({ groups: [] }) === 0);
+check("two models -> complement of the input model", autoOf(twoModelDir)?.provider === "p1" && autoOf(twoModelDir)?.model === "m2" && autoOf(twoModelDir)?.name === "M2");
+check("complement carries the model's default effort", autoOf(twoModelDir)?.reasoningEffort === "fast");
+check("composer switch flips the complement", autoOf({ ...twoModelDir, current: { provider: "p1", model: "m2" } })?.model === "m1");
+check("three models -> null (manual picking applies)", autoOf(directory) === null);
+check("no current model -> null", autoOf({ groups: twoModelDir.groups }) === null);
+check("empty/missing directory -> null", autoOf(null) === null && autoOf({ groups: [] }) === null);
+
 // arena mirror/pane pure helpers
 check("textOfContent extracts text", loaded.textOfContent([{ type: "text", text: "hi" }, { type: "image", attachment: {} }]) === "hi");
 check("textOfContent skips non-text", loaded.textOfContent([{ type: "image" }]) === "");
@@ -371,7 +388,7 @@ const mockCtx = {
     if (name === "slots") {
       return {
         register: (opts, component) => {
-          const rec = { name: opts.name, id: opts.id, order: opts.order, label: opts.label, locale: opts.locale, component };
+          const rec = { name: opts.name, id: opts.id, key: opts.key, order: opts.order, label: opts.label, locale: opts.locale, component };
           slotRegisterCalls.push(rec);
           return () => {
             const at = slotRegisterCalls.indexOf(rec);
@@ -493,6 +510,9 @@ check("SCENES has business/knowledge/qa", loaded.SCENES.business !== void 0 && l
 check("knowledge is the review scene", loaded.SCENES.knowledge.review === true);
 check("business/qa keep the original challenge flow", loaded.SCENES.business.review === false && loaded.SCENES.qa.review === false);
 check("MAX_REJECTS exported = 3", loaded.MAX_REJECTS === 3);
+check("header predicate + STALL_MS exported", typeof loaded.shouldShowChallengeHeader === "function" && typeof loaded.STALL_MS === "number");
+check("header hidden for null / fresh / terminal states", loaded.shouldShowChallengeHeader(null) === false && loaded.shouldShowChallengeHeader({ active: false, phase: "idle" }) === false && loaded.shouldShowChallengeHeader({ active: true, phase: "done" }) === false && loaded.shouldShowChallengeHeader({ active: true, phase: "aborted" }) === false && loaded.shouldShowChallengeHeader({ active: false, phase: "answer" }) === false);
+check("header shown only for in-flight phases", ["answer", "challenge", "revise", "final", "propose", "review"].every((p) => loaded.shouldShowChallengeHeader({ active: true, phase: p }) === true));
 const realT = (k) => (dicts?.zh?.[k]) ?? k;
 const chCtx = { scene: "knowledge", userQuestion: "Q1", lastMainText: "answer with `docs/plan.md`", lastArenaText: "objection" };
 const reviewPrompt = loaded.buildRoundPrompt("review", chCtx, realT);
@@ -554,7 +574,7 @@ click(sceneBtnEls[1]); // back to knowledge for the review-loop flow
 const selector = panel.children[1];
 const trigger = selector.children[0];
 const menuHost = selector.children[1];
-const note = panel.children[3];
+const note = panel.children.find((c) => /^ma-(hint|conflict|error)/.test(c.className));
 const triggerLabel = collectByClass(trigger, "ma-triggerLabel")[0];
 const triggerEffort = collectByClass(trigger, "ma-triggerEffort")[0];
 check("trigger placeholder", triggerLabel.textContent === "L:model.placeholder" && triggerEffort.textContent === "");
@@ -606,10 +626,77 @@ check("conflict clears arena model", triggerLabel.textContent === "L:model.place
 check("composer re-blocked after conflict (arena on, no model)", blockCalls[blockCalls.length - 1].block?.reason === "L:block.reason");
 check("conflict note shown", note.className === "ma-conflict" && note.textContent === "L:conflict");
 
+// ── challenger skill picker (workspace-persisted) ─────────────────────────
+const skillRow = panel.children.find((c) => c.dataset.arenaSkillRow !== void 0);
+const skillTrigger = skillRow === void 0 ? void 0 : skillRow.children[1].children[0];
+const skillHost = skillRow === void 0 ? void 0 : skillRow.children[1].children[1];
+check("skill row mounted after scene row", skillTrigger !== void 0 && skillHost !== void 0);
+check("skill placeholder initially", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder");
+// open the popover, type a manual path, confirm -> applied + persisted per workspace
+click(skillTrigger);
+const skillPopover = skillHost.children[0];
+check("skill popover opened", skillPopover !== void 0 && skillPopover.dataset.arenaSkillPopover !== void 0);
+const skillInput = collectByClass(skillPopover, "ma-questionInput")[0];
+skillInput.value = "/ws/.github/skills/theseus-review-spec";
+const skillConfirm = collectByClassContains(skillPopover, "ma-questionBtn").find((b) => b.textContent === "L:skill.confirm");
+click(skillConfirm);
+check("skill applied to trigger label", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "/ws/.github/skills/theseus-review-spec");
+check("skill persisted per workspace", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "workspaceSkills" && m.ops[0].path[1] === "/ws1" && m.ops[0].value === "/ws/.github/skills/theseus-review-spec"));
+check("skill row hidden popover after apply", skillHost.children.length === 0);
+// clear -> back to empty + persisted empty
+click(skillTrigger);
+const clearBtn = collectByClassContains(skillHost.children[0], "ma-questionBtn").find((b) => b.textContent === "L:skill.clear");
+click(clearBtn);
+check("skill cleared", collectByClassContains(skillTrigger, "ma-triggerLabel")[0].textContent === "L:skill.placeholder" && settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.path?.[0] === "workspaceSkills" && m.ops[0].path[1] === "/ws1" && m.ops[0].value === ""));
+// role seed carries the skill instruction when set; unchanged when empty
+check("role seed with skill carries the instruction", loaded.buildRoleSeed({ scene: "knowledge", skill: "/x/skill" }, realT).includes("挑战者技能：/x/skill") && loaded.buildRoleSeed({ scene: "knowledge", skill: "/x/skill" }, realT).includes("SKILL.md"));
+check("role seed without skill unchanged", !loaded.buildRoleSeed({ scene: "knowledge" }, realT).includes("挑战者技能"));
+
 // toggle off removes the panel
 click(toggle);
 check("toggle off removes panel", heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0) === void 0);
 check("toggle aria-pressed off", toggle.getAttribute("aria-pressed") === "false");
+
+// ── two-model auto arena model (hero flow) ────────────────────────────────
+// With exactly TWO models in the directory, enabling the arena auto-selects
+// the complement of the input box's current model (no manual pick) and the
+// composer is never blocked; switching the composer model flips the arena
+// model to the new complement.
+const prevSnap = snap;
+const blockCountBeforeAuto = blockCalls.length;
+snap = twoModelDir;
+snapSub();
+click(toggle); // arena on
+const autoPanel = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
+const autoTrigger = autoPanel?.children[1]?.children[0];
+check("two-model auto: toggle on auto-selects the complement (no placeholder)", collectByClass(autoTrigger, "ma-triggerLabel")[0]?.textContent === "M2");
+check("two-model auto: effort shows the complement's default", collectByClass(autoTrigger, "ma-triggerEffort")[0]?.textContent === "Fast");
+check("two-model auto: composer NOT blocked (arena ready without a pick)", blockCalls.length > blockCountBeforeAuto && blockCalls[blockCalls.length - 1].block === void 0);
+// composer switch: m1 -> m2 flips the arena model to m1 (complement follows)
+snap = { ...twoModelDir, current: { provider: "p1", model: "m2", reasoningEffort: void 0 } };
+snapSub();
+check("two-model auto: composer switch flips the arena model", (() => {
+  const p = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
+  const lbl = collectByClass(p?.children[1]?.children[0], "ma-triggerLabel")[0];
+  return lbl?.textContent === "M1";
+})());
+check("two-model auto: flipped model shows its own effort default", (() => {
+  const p = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
+  const eff = collectByClass(p?.children[1]?.children[0], "ma-triggerEffort")[0];
+  return eff?.textContent === "L:effort.default";
+})());
+// composer back to m1 -> arena returns to m2
+snap = twoModelDir;
+snapSub();
+check("two-model auto: arena follows back when the composer returns", (() => {
+  const p = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
+  const lbl = collectByClass(p?.children[1]?.children[0], "ma-triggerLabel")[0];
+  return lbl?.textContent === "M2";
+})());
+click(toggle); // arena off again
+snap = prevSnap;
+snapSub();
+check("two-model auto: toggle off removes the panel", heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0) === void 0);
 
 // ── arena runtime: first message spawns the arena session + split ───────────
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -648,6 +735,17 @@ check("arena session titled", renameCalls.length === 1 && renameCalls[0].session
 const arenaTabEntry = slotRegisterCalls.find((c) => c.name === "conversation.view" && c.id === "arena");
 check("arena view tab registered (native view ring)", arenaTabEntry !== void 0 && typeof arenaTabEntry.component === "function");
 check("arena tab label", typeof arenaTabEntry?.label === "function" && arenaTabEntry.label() === "L:view.arena");
+check("arena settings section registered (settings.section)", slotRegisterCalls.some((c) => c.name === "settings.section" && c.id === "model-arena" && typeof c.label === "function" && c.label() === "L:settings.title" && typeof c.component === "function"));
+// the card must render without throwing and carry scene docs + real prompts
+const arenaSettingsEntry = slotRegisterCalls.find((c) => c.name === "settings.section" && c.id === "model-arena");
+let arenaSettingsText = "";
+try {
+  arenaSettingsText = JSON.stringify(arenaSettingsEntry.component());
+} catch (settingsRenderError) {
+  arenaSettingsText = "RENDER ERROR: " + String(settingsRenderError?.message ?? settingsRenderError);
+}
+check("arena settings card renders scenes", arenaSettingsText.includes("Technical Expert") && arenaSettingsText.includes("Knowledge Expert") && arenaSettingsText.includes("QA Expert"));
+check("arena settings card renders injected prompts", arenaSettingsText.includes("逐条质疑") && arenaSettingsText.includes("Overall Verdict") && arenaSettingsText.includes("评审"));
 
 // the arena session replies -> the arena tab's container renders it
 const tabRoot = new FakeElement("div");
@@ -1025,6 +1123,7 @@ mainStore._set({
 });
 await sleep(20);
 check("challenge prompt sent after main answer", internals.getArenaMount().challenge.phase === "challenge" && promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("质疑")));
+check("challenge prompt carries the main answer text", promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("business answer")));
 // switch away mid-challenge: the runtime tears down
 currentSession = "s2";
 listSub();
@@ -1063,6 +1162,85 @@ currentSession = "s1";
 listSub();
 await sleep(120);
 check("catch-up advances to final after away-revision", internals.getArenaMount() !== null && internals.getArenaMount().challenge.phase === "final" && promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("修正后")));
+
+// ── main-model question mid-answer must NOT abort the challenge ───────────
+// finish the pending final round first (challenger gives the verdict)
+const beforeFinalPrompts = promptCalls.length;
+arenaStore._set({
+  chat: {
+    order: [...arenaStore.snapshot.chat.order, "fv1"],
+    nodes: new Map([...arenaStore.snapshot.chat.nodes, ["fv1", { key: "fv1", kind: "assistant-step", anchorSeq: 90, data: { status: "settled", turn: 11, step: 1, blocks: [{ kind: "text", text: "**质疑**：修正到位，结论成立" }] } }]])
+  },
+  running: false
+});
+await sleep(20);
+check("final verdict injected (done)", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done" && promptCalls.length > beforeFinalPrompts);
+
+// ── re-entering a session whose arena round already ended: the progress
+// header must stay hidden — the terminal challenge state survives the
+// teardown/restore across a session switch and is never resurrected.
+currentSession = "s2";
+listSub();
+await sleep(80);
+currentSession = "s1";
+listSub();
+await sleep(120);
+check("re-entering an ended arena session keeps the challenge done", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+check("re-entering an ended arena session hides the challenge header", loaded.shouldShowChallengeHeader(internals.getArenaMount()?.challenge) === false);
+// a new question starts a fresh business round
+mainStore._set({
+  chat: {
+    order: [...mainStore.snapshot.chat.order, "q3"],
+    nodes: new Map([...mainStore.snapshot.chat.nodes, ["q3", { key: "q3", kind: "user", anchorSeq: 100, data: { content: [{ type: "text", text: "business question 2" }] } }]])
+  },
+  running: true
+});
+await sleep(20);
+check("new round started (answer phase)", internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "answer");
+// the main is answering (running) ...
+mainStore._set({ chat: mainStore.snapshot.chat, running: true });
+await sleep(10);
+// ... then pauses to ask the user a question: running dips + a pending wait —
+// this must NEVER count as "stopped without output" (answering would otherwise
+// exit the arena mode and the challenger would never challenge)
+mainStore._set({
+  chat: mainStore.snapshot.chat,
+  pending: [{ kind: "question", key: "q:3", sessionId: "s1", payload: { questions: [{ id: "qa3", question: "Pick one", options: [{ label: "A" }, { label: "B" }] }] }, respond: async () => {} }],
+  running: false
+});
+await sleep(20);
+check("question wait does not abort the challenge", internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "answer");
+// user answers -> the main resumes -> completes the answer
+mainStore._set({
+  chat: mainStore.snapshot.chat,
+  running: true
+});
+await sleep(10);
+mainStore._set({
+  chat: {
+    order: [...mainStore.snapshot.chat.order, "ans3"],
+    nodes: new Map([...mainStore.snapshot.chat.nodes, ["ans3", { key: "ans3", kind: "assistant-step", anchorSeq: 101, data: { status: "settled", turn: 2, step: 1, blocks: [{ kind: "text", text: "answer after the question" }] } }]])
+  },
+  running: false
+});
+await sleep(20);
+check("challenger prompted to challenge after the question round", internals.getArenaMount().challenge.phase === "challenge" && promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("逐条质疑")));
+check("challenge prompt demands point-by-point review", promptCalls.some((c) => c.sessionId === "arena-1" && c.content[0].text.includes("逐点审查") && c.content[0].text.includes("每个观点")));
+
+// ── stalled-start watchdog: the arena is prompted but never runs (a prompt
+// that failed silently) — the round must end instead of leaving the header
+// (and composer lock) up forever. Arm a stale stall timer and let the poll
+// catch-up abort the challenge.
+const stalledMount = internals.getArenaMount();
+if (stalledMount !== null && stalledMount.challenge.active === true && stalledMount.challenge.phase === "challenge") {
+  stalledMount.challenge.stallSince = Date.now() - (loaded.STALL_MS + 1000);
+  listSub();
+  await sleep(80);
+  check("stalled arena round aborted by the watchdog", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "aborted");
+  check("stalled round hides the challenge header", loaded.shouldShowChallengeHeader(internals.getArenaMount()?.challenge) === false);
+} else {
+  check("stalled arena round aborted by the watchdog", false, "no in-flight arena-waiting challenge to stall");
+}
 
 console.log(failed === 0 ? "CLIENT SMOKE PASS" : failed + " CLIENT SMOKE FAILURES");
 process.exit(failed === 0 ? 0 : 1);

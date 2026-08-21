@@ -69,7 +69,29 @@ window.__ModuleLoader__.load({
 			"arena.ttft": "首 token {seconds}",
 			"arena.tokensPerSecond": "{tps} tok/s",
 			"arena.error.generic": "竞技场会话启动失败",
-			"arena.error.retry": "重试"
+			"arena.error.retry": "重试",
+			"settings.title": "模型竞技场",
+			"settings.scenes": "场景",
+			"settings.flow.review": "审查循环",
+			"settings.flow.challenge": "挑战流程",
+			"settings.scene.business.desc": "业务探索：主模型直接回答，挑战者逐条质疑，主模型修正后挑战者终评。适合需求梳理、方案探讨、影响面分析。",
+			"settings.scene.knowledge.desc": "知识沉淀：主模型产出结构化方案，挑战者作为审查者给出 READY / NEEDS_REVISION 结论；不认可则主模型修正后终审，累计 3 次不认可结束。",
+			"settings.scene.qa.desc": "测试用例：主模型产出测试用例，挑战者以用户视角逐条质疑，主模型修正后终评。",
+			"settings.prompt.roles": "角色种子（system prompt persona 注入）",
+			"settings.prompt.roleMain": "【主模型角色】",
+			"settings.prompt.roleArena": "【挑战者角色】",
+			"settings.prompt.rounds": "回合提示词（以 user 消息注入竞技场会话）",
+			"settings.prompt.kind.challenge": "质疑轮",
+			"settings.prompt.kind.review": "审查轮",
+			"settings.prompt.kind.final": "终评轮",
+			"settings.note": "注：注入内容不含主模型思维链；工具操作记录仅含工具名与参数摘要，不含工具结果。",
+			"skill.label": "挑战者技能",
+			"skill.placeholder": "选择技能…",
+			"skill.browse": "浏览文件夹…",
+			"skill.manual": "输入路径（文件或文件夹）",
+			"skill.confirm": "确认",
+			"skill.clear": "清除",
+			"skill.empty": "（无）"
 		};
 		const en = {
 			"toggle.label": "Arena",
@@ -119,7 +141,29 @@ window.__ModuleLoader__.load({
 			"arena.ttft": "first token {seconds}",
 			"arena.tokensPerSecond": "{tps} tok/s",
 			"arena.error.generic": "Arena session failed to start",
-			"arena.error.retry": "Retry"
+			"arena.error.retry": "Retry",
+			"settings.title": "Model Arena",
+			"settings.scenes": "Scenes",
+			"settings.flow.review": "Review loop",
+			"settings.flow.challenge": "Challenge flow",
+			"settings.scene.business.desc": "Business exploration: the main model answers directly, the challenger challenges point by point, the main model revises, then the challenger gives the final verdict. Good for requirement analysis, design discussion, and impact assessment.",
+			"settings.scene.knowledge.desc": "Knowledge distillation: the main model produces a structured proposal, the challenger reviews with a READY / NEEDS_REVISION verdict; on rejection the main model revises and the challenger re-reviews, ending after 3 rejections.",
+			"settings.scene.qa.desc": "Test cases: the main model produces test cases, the challenger challenges point by point from the user's perspective, the main model revises, then the final verdict.",
+			"settings.prompt.roles": "Role seeds (injected via system-prompt persona)",
+			"settings.prompt.roleMain": "[Main-model role]",
+			"settings.prompt.roleArena": "[Challenger role]",
+			"settings.prompt.rounds": "Round prompts (injected into the arena session as user messages)",
+			"settings.prompt.kind.challenge": "Challenge round",
+			"settings.prompt.kind.review": "Review round",
+			"settings.prompt.kind.final": "Final-verdict round",
+			"settings.note": "Note: the main model's thinking chain is never injected; the tool trail is tool name + args summary only, never tool results.",
+			"skill.label": "Challenger skill",
+			"skill.placeholder": "Pick a skill…",
+			"skill.browse": "Browse folder…",
+			"skill.manual": "Path (file or folder)",
+			"skill.confirm": "OK",
+			"skill.clear": "Clear",
+			"skill.empty": "(none)"
 		};
 
 		// ── pure helpers (exported for the client smoke test) ─────────────────
@@ -187,6 +231,42 @@ window.__ModuleLoader__.load({
 			return void 0;
 		}
 
+		/** Total model count across every provider group in the directory snapshot. */
+		function totalModelsOf(directory) {
+			return (Array.isArray(directory?.groups) ? directory.groups : [])
+				.reduce((n, g) => n + (Array.isArray(g?.models) ? g.models.length : 0), 0);
+		}
+
+		/**
+		* Auto arena model: with EXACTLY two models in the directory, the arena
+		* model is DERIVED as the complement of the input box's current model —
+		* the arena always duels the model the composer does NOT have, so enabling
+		* the arena needs no manual pick and composer switches flip the arena
+		* model to the new complement. Returns null when the directory is not in
+		* the two-model shape (manual picking applies) or has no current model.
+		*/
+		function autoArenaModel(directory) {
+			if (directory === null || directory === void 0) return null;
+			const current = directory?.current ?? null;
+			if (current === null || current === void 0) return null;
+			let complement = null;
+			let count = 0;
+			for (const group of Array.isArray(directory?.groups) ? directory.groups : []) {
+				for (const model of Array.isArray(group?.models) ? group.models : []) {
+					count += 1;
+					if (complement !== null) continue;
+					if (group.id === current.provider && model.id === current.model) continue;
+					complement = {
+						provider: group.id,
+						model: model.id,
+						name: model.name,
+						...(model.reasoning?.defaultEffort === void 0 ? {} : { reasoningEffort: model.reasoning.defaultEffort })
+					};
+				}
+			}
+			return count === 2 ? complement : null;
+		}
+
 		/** Plain text of a user message's content blocks. */
 		function textOfContent(content) {
 			return (Array.isArray(content) ? content : [])
@@ -223,6 +303,30 @@ window.__ModuleLoader__.load({
 			.join("|");
 
 		/** Text blocks of a tool result's content. */
+		// ── dsh snapshot contract (session-chat projection) ─────────────────
+		// The orchestration and the arena-pane rendering are built on the session
+		// chat projection shape (chat.order / chat.nodes / node.kind+anchorSeq /
+		// data.content / data.blocks / running / pending). ALL reads funnel
+		// through these helpers, so a dsh web upgrade that reshapes the
+		// projection is fixed in exactly ONE place.
+		const orderOf = (snap) => (Array.isArray(snap?.chat?.order) ? snap.chat.order : []);
+		const nodesOf = (snap) => { try { return snap?.chat?.nodes; } catch { return void 0; } };
+		const nodeOf = (snap, key) => { try { return nodesOf(snap)?.get?.(key); } catch { return void 0; } };
+		const runningOf = (snap) => snap?.running === true;
+		const pendingOf = (snap) => (Array.isArray(snap?.pending) ? snap.pending : []);
+		const isUserNode = (node) => node !== null && node !== void 0 && (node.kind === "user" || node.kind === "steering");
+		const isAssistantNode = (node) => node !== null && node !== void 0 && (node.kind === "assistant" || node.kind === "assistant-step");
+		const isCommandNode = (node) => node !== null && node !== void 0 && node.kind === "command";
+		const isTurnTailNode = (node) => node !== null && node !== void 0 && node.kind === "turn-tail";
+		const isContextNode = (node) => node !== null && node !== void 0 && node.kind === "context";
+		const isToolResultNode = (node) => node !== null && node !== void 0 && node.kind === "tool-result";
+		const anchorSeqOf = (node) => (typeof node?.anchorSeq === "number" ? node.anchorSeq : -1);
+		const contentOf = (node) => (node?.data?.content ?? node?.content);
+		const blocksOf = (node) => (node?.data?.blocks ?? node?.blocks ?? []);
+		const commandNameOf = (node) => (node?.data?.name ?? node?.data?.command);
+		const isQuestionWait = (wait) => wait !== null && wait !== void 0 && wait.kind === "question";
+		const isApprovalWait = (wait) => wait !== null && wait !== void 0 && wait.kind === "approval";
+		const isWait = (wait) => isQuestionWait(wait) || isApprovalWait(wait);
 		// ── challenge-mode pure helpers (exported for the client smoke test) ──
 		// Scenario role table: each scene maps the main-session model (model 1)
 		// to the arena model (model 2, higher-ranked challenger). The challenge
@@ -276,6 +380,23 @@ window.__ModuleLoader__.load({
 		};
 		// Maximum number of "不认可" (NEEDS_REVISION) reviews before the loop ends.
 		const MAX_REJECTS = 3;
+		// A challenge phase waits on a session (main or arena) that stays idle
+		// with zero progress — no running flag, no new output, no pending
+		// interaction — for this long, the round can never advance (e.g. a prompt
+		// that failed silently): end the challenge instead of leaving the header
+		// (and composer lock) up forever. A real turn keeps the session running,
+		// so sustained idle can only mean the round is stuck. (ms)
+		const STALL_MS = 120000;
+		// The ONLY phases that represent a genuinely in-flight challenge.
+		// Everything else (idle / done / aborted) is terminal — the progress
+		// strip must never render for it, so entering a session whose arena
+		// round already ended never resurrects the header (or the composer
+		// lock). Pure helper, exported for the client smoke test.
+		const RUNNING_CHALLENGE_PHASES = new Set(["answer", "challenge", "revise", "final", "propose", "review"]);
+		const shouldShowChallengeHeader = (challenge) => {
+			if (challenge === null || challenge === void 0) return false;
+			return challenge.active === true && RUNNING_CHALLENGE_PHASES.has(challenge.phase);
+		};
 		// Parse the challenger's review verdict from its `**Overall Verdict**` line.
 		// Returns "READY" | "NEEDS_REVISION" | "NOT_READY" | "" (unparseable).
 		const parseReviewVerdict = (text) => {
@@ -297,14 +418,14 @@ window.__ModuleLoader__.load({
 			const toolsPart = trail === "" ? "" : "\n" + fmt("{mainRole} 的工具操作记录：\n{tools}", { mainRole, tools: trail });
 			if (kind === "review") {
 				return fmt("用户问题：「{question}」\n{mainRole} 的结构化方案：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
-					+ "\n\n请作为审查者用中文审查上述结构化方案（需求清晰度、设计合理性、风险、任务拆解、相关规格），只输出审查结论：先一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再列出 Action Items（需修正的具体点）。禁止辩论，不要自我称呼角色名。";
+					+ "\n\n请作为审查者用中文**逐条审查**上述结构化方案：逐点核对需求清晰度、设计合理性、风险、任务拆解、相关规格，指出每处问题；只输出审查结论：先一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再列出 Action Items（需修正的具体点）。禁止辩论，不要自我称呼角色名。";
 			}
 			if (kind === "final") {
 				return fmt("{mainRole}修正后的回答：「{mainText}」\n提到的文件：{files}", { mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 					+ "\n\n修正已完成，请不再质疑，仅给出最终评审结论（认可或仍存疑）。禁止辩论，只输出你的结论，不要提出新的质疑。";
 			}
 			return fmt("用户问题：「{question}」\n{mainRole}的回答：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
-				+ "\n\n请用中文对上述回答提出质疑或补充，指出问题。禁止辩论，只输出你的质疑（直接以质疑者口吻表达，不要自我称呼角色名）。";
+				+ "\n\n请用中文对上述回答**逐条质疑**：逐点审查回答中的每个观点、结论与依据，指出问题或漏洞；禁止辩论，只输出你的质疑（直接以质疑者口吻表达，不要自我称呼角色名）。";
 		};
 		// Markdown stripped to plain text for user-message injection: the native
 		// user bubble is plain text (projectUserText, no markdown).
@@ -343,10 +464,16 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			const arenaRole = scene.arena;
-			if (scene.review === true) {
-				return fmt("你是{arenaRole}，身份高于{mainRole}。在审查流程中，你作为审查者负责审查{mainRole}产出的结构化方案，并给出 **Overall Verdict**: READY（认可）或 NEEDS_REVISION（不认可）的结论。禁止辩论，只按指示输出。", { arenaRole, mainRole });
+			const base = scene.review === true
+				? fmt("你是{arenaRole}，身份高于{mainRole}。在审查流程中，你作为审查者负责审查{mainRole}产出的结构化方案，并给出 **Overall Verdict**: READY（认可）或 NEEDS_REVISION（不认可）的结论。禁止辩论，只按指示输出。", { arenaRole, mainRole })
+				: fmt("你是{arenaRole}，身份高于{mainRole}。接下来的挑战流程中，你将负责用中文质疑并给出终评。禁止辩论，只按指示输出。", { arenaRole, mainRole });
+			// Optional challenger skill (workspace-persisted, user-picked file or
+			// folder): the challenger reads the skill (SKILL.md for a folder) before
+			// every review/challenge round and follows it.
+			if (typeof challenge?.skill === "string" && challenge.skill !== "") {
+				return base + "\n\n挑战者技能：" + challenge.skill + "。审查/质疑前先读取该技能（目录读取其中的 SKILL.md，文件直接读取），并严格遵循技能要求执行。";
 			}
-			return fmt("你是{arenaRole}，身份高于{mainRole}。接下来的挑战流程中，你将负责用中文质疑并给出终评。禁止辩论，只按指示输出。", { arenaRole, mainRole });
+			return base;
 		};
 		// Main-session role seed: same persona channel, active from the first
 		// turn so model 1 carries its identity while producing the proposal.
@@ -367,6 +494,20 @@ window.__ModuleLoader__.load({
 				.slice(0, 400);
 		}
 
+		// ── dsh bundle anchors ───────────────────────────────────────────────
+		// Native DOM selectors / class names the plugin depends on (hero row,
+		// sidebar rows, session-header layout, disclosure separators). CSS
+		// Modules re-hashes these on ANY dsh web style change — after an
+		// upgrade, grep for "ANCHORS" and update the values in exactly ONE place.
+		const ANCHORS = {
+			heroRow: '[data-phase="hero"] .wSkVaW_heroWorkspaceRow',
+			heroChip: '[data-phase="hero"] button[aria-label*="工作区"], [data-phase="hero"] button[aria-label*="workspace"]',
+			sidebarRow: ".YDXeBa_sessionRow",
+			sidebarTitle: ".YDXeBa_title",
+			headerCluster: ".wSkVaW_titleCluster",
+			headerActions: ".wSkVaW_headerActions",
+			disclosureSeparator: "QWLzlG_separator"
+		};
 		// ── styles (injected once, tagged like the built bundles) ──────────────
 		const css = [
 			// toggle pill in the hero workspace row (mirrors the workspace chip)
@@ -419,7 +560,14 @@ window.__ModuleLoader__.load({
 			".ma-sceneBtn:hover{color:var(--dsw-alias-label-primary)}",
 			".ma-sceneBtn[aria-pressed=true]{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary);font-weight:500}",
 			// main-session header progress strip
-			".ma-challengeHeader{flex:none;align-items:center;gap:6px;min-width:0;display:flex}",
+			".ma-challengeHeader{flex:none;align-items:center;gap:6px;row-gap:2px;min-width:0;max-width:100%;flex-wrap:wrap;display:flex}",
+			// Make the header longer while a challenge is running: the challenge
+			// stepper lives in the native header-actions area (inside the title
+			// cluster, next to the breadcrumbs). Let that area grow to fill the
+			// rest of the title row, so every step stays visible on one line
+			// (crumbs keep their natural width and only shrink when space is
+			// tight; the stepper wraps as a last resort instead of being clipped).
+			"." + ANCHORS.headerCluster + ":has(.ma-challengeHeader) ." + ANCHORS.headerActions + "{flex:1 1 auto;min-width:0;justify-content:flex-end}",
 			".ma-challengeStage{flex:none;color:var(--dsw-alias-label-caption);white-space:nowrap;font-size:12px;line-height:18px;transition:color .25s var(--ds-ease-in-out),opacity .25s var(--ds-ease-in-out);opacity:.55}",
 			".ma-challengeStage.active{color:var(--dsw-alias-state-business-primary);font-weight:600;opacity:1;animation:ma-stage-pulse 1.6s ease-in-out infinite}",
 			".ma-challengeStage.done{color:var(--dsw-alias-label-tertiary);opacity:.85}",
@@ -450,10 +598,9 @@ window.__ModuleLoader__.load({
 			// arena question/approval cards
 			".ma-question{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-specific-input-major);border-radius:12px;flex-direction:column;gap:10px;padding:12px;display:flex}",
 			".ma-questionTitle{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px}",
-			".ma-questionText{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;white-space:pre-wrap}",
+			".ma-questionText{color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;white-space:pre-wrap}",,
 			".ma-questionDetail{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
 			".ma-questionBlock{flex-direction:column;gap:6px;display:flex}",
-			".ma-questionOpt{width:100%;min-height:34px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;font-size:13px;line-height:20px}",
 			".ma-questionOpt:hover,.ma-questionOpt.selected{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-state-business-primary)}",
 			".ma-questionInput{width:100%;min-height:34px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 10px;font-size:13px;line-height:20px}",
 			".ma-questionInput:focus{border-color:var(--dsw-alias-state-business-primary)}",
@@ -481,7 +628,24 @@ window.__ModuleLoader__.load({
 			".ma-bubble.toolresult{align-self:stretch;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:24px;white-space:pre-wrap}",
 			".ma-bubble.toolresult.error{color:var(--dsw-alias-state-error-primary)}",
 			".ma-bubble.image{align-self:flex-start;padding:0;background:0 0;border:none;font-size:14px;line-height:24px}",
-			".ma-image{max-width:100%;max-height:320px;border-radius:10px;object-fit:contain}"
+			".ma-image{max-width:100%;max-height:320px;border-radius:10px;object-fit:contain}",
+			// settings page: arena card (scene docs + injected prompts)
+			".ma-settingsCard{flex-direction:column;gap:14px;max-width:760px;display:flex}",
+			".ma-settingsHead{margin:0;font-size:18px;font-weight:600;line-height:26px}",
+			".ma-settingsSection{flex-direction:column;gap:8px;display:flex}",
+			".ma-settingsSectionTitle{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}",
+			".ma-settingsScene{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex-direction:column;gap:6px;padding:12px 14px;display:flex}",
+			".ma-settingsSceneTitle{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600;line-height:20px}",
+			".ma-settingsSceneMeta{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
+			".ma-settingsSceneDesc{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}",
+			".ma-settingsPromptLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px;margin-top:4px}",
+			".ma-settingsPrompt{margin:0;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-markdown-code-block);border-radius:8px;padding:8px 10px;font:400 12px/18px var(--ds-font-family-code);white-space:pre-wrap;word-break:break-word}",
+			".ma-settingsNote{color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}",
+			// hero panel: challenger skill picker (workspace-persisted)
+			".ma-skillRow{align-items:center;gap:10px;min-width:0;padding-left:20px;display:flex}",
+			".ma-skillValue{max-width:280px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}",
+			".ma-skillPopover{z-index:30;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);width:min(320px,calc(100vw - 32px));box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);border-radius:12px;flex-direction:column;gap:8px;padding:10px;display:flex;position:absolute;top:calc(100% + 6px);left:0;animation:ma-menu-in .14s var(--ds-ease-in-out)}",
+			".ma-skillPath{color:var(--dsw-alias-label-tertiary);font:400 12px/18px var(--ds-font-family-code);word-break:break-all;margin:0}"
 		].join("\n");
 		const tagId = "dsh-plugin-model-arena/arena.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
@@ -509,7 +673,9 @@ window.__ModuleLoader__.load({
 				const stateFor = (sessionId) => {
 					let state = stateBySession.get(sessionId);
 					if (state === void 0) {
-						state = { enabled: false, model: null, scene: "business", challenge: null };
+						// skill starts undefined = "not seeded from the workspace yet";
+						// it becomes "" (explicitly none) or a path once resolved.
+						state = { enabled: false, model: null, scene: "business", skill: void 0, challenge: null };
 						stateBySession.set(sessionId, state);
 					}
 					return state;
@@ -530,9 +696,9 @@ window.__ModuleLoader__.load({
 
 				const findHeroRow = () => {
 					try {
-						const row = document.querySelector('[data-phase="hero"] .wSkVaW_heroWorkspaceRow');
+						const row = document.querySelector(ANCHORS.heroRow);
 						if (row instanceof HTMLElement) return row;
-						const chip = document.querySelector('[data-phase="hero"] button[aria-label*="工作区"], [data-phase="hero"] button[aria-label*="workspace"]');
+						const chip = document.querySelector(ANCHORS.heroChip);
 						if (chip instanceof HTMLElement && chip.parentElement instanceof HTMLElement) return chip.parentElement;
 						return null;
 					} catch (_heroLookupFailure) {
@@ -836,7 +1002,7 @@ window.__ModuleLoader__.load({
 							onToggle: () => renderThink(!open),
 							keepContentWhenOpen: false,
 							collapsedContent: React.createElement(React.Fragment, null,
-								React.createElement("span", { className: "QWLzlG_separator", "aria-hidden": true }),
+								React.createElement("span", { className: ANCHORS.disclosureSeparator, "aria-hidden": true }),
 								React.createElement("span", { className: "ma-disclosureSummary" }, summary)),
 							children: body
 						}));
@@ -891,7 +1057,7 @@ window.__ModuleLoader__.load({
 							onToggle: () => renderTool(!open),
 							keepContentWhenOpen: false,
 							collapsedContent: toolSummary === "" ? void 0 : React.createElement(React.Fragment, null,
-								React.createElement("span", { className: "QWLzlG_separator", "aria-hidden": true }),
+								React.createElement("span", { className: ANCHORS.disclosureSeparator, "aria-hidden": true }),
 								React.createElement("span", { className: "ma-disclosureSummary" }, toolSummary)),
 							children: body
 						}));
@@ -1025,7 +1191,7 @@ window.__ModuleLoader__.load({
 				// re-rendered through the SAME React root (in-place diff, no flicker);
 				// otherwise the block is rebuilt wholesale.
 				const renderAsstNode = (container, node) => {
-					const blocks = node.data?.blocks ?? node.blocks ?? [];
+					const blocks = blocksOf(node);
 					const nmd = nonMdSig(blocks);
 					const mdHost = container.querySelector(".ma-assistantMd");
 					if (mdHost !== null && nmd === container.dataset.arenaNmd) {
@@ -1074,11 +1240,11 @@ window.__ModuleLoader__.load({
 				// Render one node into its keyed container (create or repaint).
 				const renderNodeInto = (container, row) => {
 					const node = row.node;
-					if (node.kind === "context") {
+					if (isContextNode(node)) {
 						unmountContainerRoots(container);
 						container.textContent = "";
 						container.appendChild(contextRow(node));
-					} else if (node.kind === "turn-tail") {
+					} else if (isTurnTailNode(node)) {
 						unmountContainerRoots(container);
 						container.textContent = "";
 						const tail = turnTailRow(node);
@@ -1087,12 +1253,12 @@ window.__ModuleLoader__.load({
 						actRow.appendChild(copyButton(row.turnText ?? ""));
 						if (tail.style.display !== "none") actRow.appendChild(tail);
 						container.appendChild(actRow);
-					} else if (node.kind === "assistant" || node.kind === "assistant-step") {
+					} else if (isAssistantNode(node)) {
 						renderAsstNode(container, node);
-					} else if (node.kind === "tool-result") {
+					} else if (isToolResultNode(node)) {
 						unmountContainerRoots(container);
 						container.textContent = "";
-						const text = toolResultText(node.content ?? node.data?.content);
+						const text = toolResultText(contentOf(node));
 						const name = node.call?.name ?? node.data?.call?.name ?? "";
 						container.appendChild(toolResultRow(name, text, node.isError === true));
 					}
@@ -1110,7 +1276,6 @@ window.__ModuleLoader__.load({
 					} catch {
 						snap = void 0;
 					}
-					const chat = snap?.chat;
 					// Build the render list: order + per-node signature + the turn text a
 					// turn-tail's copy button carries. Skip logic matches the old build.
 					const rows = [];
@@ -1119,47 +1284,39 @@ window.__ModuleLoader__.load({
 					let skipUntilUser = false;
 					const isPermissionGrant = (node) => {
 						if (node === null || node === void 0) return false;
-						const text = textOfContent(node.data?.content ?? node.content);
+						const text = textOfContent(contentOf(node));
 						if (/^\/permission\s/.test(text.trim())) return true;
-						const cmd = node.data?.name ?? node.data?.command;
+						const cmd = commandNameOf(node);
 						if (cmd === "permission") return true;
 						return false;
 					};
-					if (chat !== void 0 && chat !== null) {
-						for (const key of Array.isArray(chat.order) ? chat.order : []) {
-							let node;
-							try {
-								node = chat.nodes.get(key);
-							} catch {
+					for (const key of orderOf(snap)) {
+						const node = nodeOf(snap, key);
+						if (node === void 0) continue;
+						if (isUserNode(node)) {
+							if (isPermissionGrant(node)) {
+								skipUntilUser = true;
 								continue;
 							}
-							if (node === void 0) continue;
-							if (node.kind === "user" || node.kind === "steering") {
-								if (isPermissionGrant(node)) {
-									skipUntilUser = true;
-									continue;
-								}
-								skipUntilUser = false;
-								// Shared input: the arena tab does not repeat user bubbles.
-							} else if (node.kind === "command") {
-								if (isPermissionGrant(node)) skipUntilUser = true;
-							} else if (node.kind === "turn-tail") {
-								rows.push({ key, node, sig: nodeSig(node, turnText), turnText });
-								hasContent = true;
-							} else if (node.kind === "assistant" || node.kind === "assistant-step") {
-								if (skipUntilUser) continue;
-								const blocks = node.data?.blocks ?? node.blocks ?? [];
-								for (const row of assistantRows(blocks)) if (row.kind === "assistant") turnText += row.text + "\n";
-								rows.push({ key, node, sig: nodeSig(node, "") });
-								hasContent = true;
-							} else if (node.kind === "context") {
-								rows.push({ key, node, sig: nodeSig(node, "") });
-								hasContent = true;
-							} else if (node.kind === "tool-result") {
-								if (skipUntilUser) continue;
-								rows.push({ key, node, sig: nodeSig(node, "") });
-								hasContent = true;
-							}
+							skipUntilUser = false;
+							// Shared input: the arena tab does not repeat user bubbles.
+						} else if (isCommandNode(node)) {
+							if (isPermissionGrant(node)) skipUntilUser = true;
+						} else if (isTurnTailNode(node)) {
+							rows.push({ key, node, sig: nodeSig(node, turnText), turnText });
+							hasContent = true;
+						} else if (isAssistantNode(node)) {
+							if (skipUntilUser) continue;
+							for (const row of assistantRows(blocksOf(node))) if (row.kind === "assistant") turnText += row.text + "\n";
+							rows.push({ key, node, sig: nodeSig(node, "") });
+							hasContent = true;
+						} else if (isContextNode(node)) {
+							rows.push({ key, node, sig: nodeSig(node, "") });
+							hasContent = true;
+						} else if (isToolResultNode(node)) {
+							if (skipUntilUser) continue;
+							rows.push({ key, node, sig: nodeSig(node, "") });
+							hasContent = true;
 						}
 					}
 					// Diff: drop containers whose node disappeared from the order.
@@ -1237,9 +1394,7 @@ window.__ModuleLoader__.load({
 					// The interactions host is rebuilt on every repaint (the incremental
 					// node diff leaves it alone, so without this cards would accumulate).
 					body.textContent = "";
-					const waits = Array.isArray(snap?.pending)
-						? snap.pending.filter((w) => w !== null && w !== void 0 && (w.kind === "question" || w.kind === "approval"))
-						: [];
+					const waits = pendingOf(snap).filter(isWait);
 					if (waits.length === 0) return;
 					const wait = waits[0];
 					if (wait.kind === "approval") {
@@ -1398,7 +1553,7 @@ window.__ModuleLoader__.load({
 						workspace = items.find((w) => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId));
 						if (workspace === void 0) {
 							// fallback: match the session's cwd against workspace paths
-							const summaryCwd = ctx.sessions.list.getSnapshot()?.byId?.[sessionId]?.cwd;
+							const summaryCwd = sessionSummaryOf(sessionId)?.cwd;
 							if (summaryCwd !== void 0) {
 								workspace = items.find((w) => w.path === summaryCwd);
 							}
@@ -1454,7 +1609,7 @@ window.__ModuleLoader__.load({
 					// the grant never enters the arena context and the arena model
 					// never replies to it (a prompt-based grant would do both).
 					try {
-						const permission = ctx.sessions.list.getSnapshot()?.byId?.[sessionId]?.projectionValues?.permissions?.currentValue;
+						const permission = sessionSummaryOf(sessionId)?.projectionValues?.permissions?.currentValue;
 						if (permission !== void 0 && permission !== "" && permission !== "custom") {
 							const arenaBinding = ctx.sessions.binding(arenaSessionId)?.session;
 							if (arenaBinding !== void 0 && typeof arenaBinding.command === "function") {
@@ -1686,10 +1841,9 @@ window.__ModuleLoader__.load({
 				const ChallengeStatus = (props) => {
 					const sessionId = props.sessionId;
 					React.useSyncExternalStore(arenaTick.subscribe, arenaTick.getSnapshot);
-					if (arenaMount === null || arenaMount.sessionId !== sessionId || arenaMount.challenge.active !== true) return null;
+					if (arenaMount === null || arenaMount.sessionId !== sessionId) return null;
+					if (!shouldShowChallengeHeader(arenaMount.challenge)) return null;
 					const c = arenaMount.challenge;
-					if (c.phase === "idle" || c.phase === "done") return null;
-					const mainRole = (SCENES[c.scene] ?? SCENES.business).main;
 					const stopBtn = React.createElement("button", {
 						type: "button",
 						className: "ma-challengeStop",
@@ -1699,6 +1853,7 @@ window.__ModuleLoader__.load({
 						onClick: () => { try { abortChallenge(); } catch {} }
 					}, "■");
 					const nodes = [];
+					const mainRole = (SCENES[c.scene] ?? SCENES.business).main;
 					if ((SCENES[c.scene] ?? SCENES.business).review === true) {
 						// Review loop: current stage + reject counter.
 						const stageLabel = c.phase === "propose" ? mainRole + " Propose…"
@@ -1707,7 +1862,7 @@ window.__ModuleLoader__.load({
 						nodes.push(React.createElement("span", { key: "stage", className: "ma-challengeStage active" }, stageLabel));
 						if (c.rejectCount > 0) {
 							nodes.push(React.createElement("span", { key: "sep", className: "ma-challengeSep" }, "·"));
-							nodes.push(React.createElement("span", { key: "rejects", className: "ma-challengeStage" }, "不认可 " + c.rejectCount + "/3"));
+							nodes.push(React.createElement("span", { key: "rejects", className: "ma-challengeStage" }, "Rejected " + c.rejectCount + "/3"));
 						}
 					} else {
 						// Original challenge flow: answer -> challenge -> revise -> final.
@@ -1744,6 +1899,69 @@ window.__ModuleLoader__.load({
 						order: -20,
 						locale: NS
 					}, ChallengeStatus));
+				}
+
+				// Settings page: a read-only "竞技场" card documenting the three
+				// scenes and every prompt the plugin injects (role seeds via the
+				// system-prompt persona waterfall, round prompts as user messages
+				// into the arena session). Built from the REAL builders so the
+				// documentation can never drift from the injected text.
+				const buildPromptDocs = () => {
+					const sample = (scene) => ({
+						scene,
+						userQuestion: "用户的问题原文",
+						lastMainText: "主模型的回答正文（不含思维链/思考过程）",
+						lastMainTools: [{ name: "run_code", argsRaw: JSON.stringify({ description: "执行脚本：核实某处代码逻辑" }) }]
+					});
+					const out = {};
+					for (const key of Object.keys(SCENES)) {
+						const c = sample(key);
+						const review = SCENES[key].review === true;
+						out[key] = {
+							mainSeed: buildMainRoleSeed(c, t),
+							arenaSeed: buildRoleSeed(c, t),
+							rounds: (review ? ["review"] : ["challenge", "final"]).map((kind) => ({ kind, text: buildRoundPrompt(kind, c, t) }))
+						};
+					}
+					return out;
+				};
+				const ArenaSettingsCard = () => {
+					const docs = buildPromptDocs();
+					const sceneKeys = ["business", "knowledge", "qa"];
+					const nodes = [React.createElement("h2", { key: "head", className: "ma-settingsHead" }, t("settings.title"))];
+					nodes.push(React.createElement("div", { key: "scenes-label", className: "ma-settingsSectionTitle" }, t("settings.scenes")));
+					for (const key of sceneKeys) {
+						const scene = SCENES[key];
+						const d = docs[key];
+						const meta = scene.main + " → " + scene.arena + " · " + (scene.review === true ? t("settings.flow.review") : t("settings.flow.challenge"));
+						const block = React.createElement("div", { key: key, className: "ma-settingsScene" },
+							React.createElement("div", { className: "ma-settingsSceneTitle" }, t("scene." + key)),
+							React.createElement("div", { className: "ma-settingsSceneMeta" }, meta),
+							React.createElement("div", { className: "ma-settingsSceneDesc" }, t("settings.scene." + key + ".desc")),
+							React.createElement("div", { className: "ma-settingsPromptLabel" }, t("settings.prompt.roles")),
+							React.createElement("pre", { className: "ma-settingsPrompt" }, t("settings.prompt.roleMain") + "\n" + d.mainSeed + "\n\n" + t("settings.prompt.roleArena") + "\n" + d.arenaSeed),
+
+							...d.rounds.map((round) => React.createElement("pre", { key: round.kind, className: "ma-settingsPrompt" }, "[" + t("settings.prompt.kind." + round.kind) + "]\n" + round.text))
+						);
+						nodes.push(block);
+					}
+					nodes.push(React.createElement("p", { key: "note", className: "ma-settingsNote" }, t("settings.note")));
+					return React.createElement("div", { className: "ma-settingsCard", "data-arena-settings": "" }, ...nodes);
+				};
+				const settingsSlots = typeof ctx.get === "function" ? ctx.get("slots") : void 0;
+				if (settingsSlots !== void 0 && typeof settingsSlots.inject === "function") {
+					// Top-level settings nav entry ("设置 → 竞技场"), registered into
+					// the settings.section list slot that the settings page core always
+					// declares — more reliable than the per-plugin card surface, and it
+					// is exactly the "an option named Arena in settings" the user asked
+					// for. The nav row label comes from the settings.title locale key.
+					settingsSlots.inject("settings.section", () => settingsSlots.register({
+						name: "settings.section",
+						id: "model-arena",
+						order: 20,
+						label: () => t("settings.title"),
+						locale: NS
+					}, ArenaSettingsCard));
 				}
 
 				// Register/unregister the "竞技场" view-ring tab: the ledger is
@@ -1811,13 +2029,18 @@ window.__ModuleLoader__.load({
 				// Last chat node key of a session (turn-completion anchor).
 				const lastKeyOfSnapshot = (sessionId) => {
 					try {
-						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
-						const order = Array.isArray(snap?.chat?.order) ? snap.chat.order : [];
+						const order = orderOf(ctx.sessions.binding(sessionId)?.session?.getSnapshot?.());
 						return order.length > 0 ? order[order.length - 1] : null;
 					} catch {
 						return null;
 					}
 				};
+				// A session pausing on a user interaction (question / tool-permission)
+				// is legitimately not-producing: the agent may briefly read as
+				// not-running while it awaits the user's answer. A pending wait must
+				// never count as "stopped without output" — otherwise answering a
+				// main-model question mid-round would abort the whole challenge.
+				const hasPendingInteraction = (snap) => pendingOf(snap).some(isWait);
 				// Key of the main-session node carrying the last injected round text
 				// (the challenger's feedback injected as a user message). Re-anchoring
 				// to THIS node — instead of the newest node — keeps the turn check
@@ -1828,22 +2051,25 @@ window.__ModuleLoader__.load({
 					if (typeof text !== "string" || text === "") return null;
 					try {
 						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
-						const chat = snap?.chat;
-						if (chat === void 0 || chat === null) return null;
 						let found = null;
-						for (const key of Array.isArray(chat.order) ? chat.order : []) {
-							let node;
-							try {
-								node = chat.nodes.get(key);
-							} catch {
-								continue;
-							}
+						for (const key of orderOf(snap)) {
+							const node = nodeOf(snap, key);
 							if (node === void 0) continue;
-							if ((node.kind === "user" || node.kind === "steering") && textOfContent(node.data?.content ?? node.content) === text) found = key;
+							if (isUserNode(node) && textOfContent(contentOf(node)) === text) found = key;
 						}
 						return found;
 					} catch {
 						return null;
+					}
+				};
+				// Session-list summary entry (cwd / permission preset projection).
+				// Part of the session-contract reads: a dsh upgrade that reshapes the
+				// byId summary is fixed here, not at the call sites.
+				const sessionSummaryOf = (sessionId) => {
+					try {
+						return ctx.sessions.list.getSnapshot()?.byId?.[sessionId];
+					} catch {
+						return void 0;
 					}
 				};
 				// A turn counts as complete when the session is idle and a NEW model
@@ -1853,17 +2079,11 @@ window.__ModuleLoader__.load({
 				// previous reply is reused (e.g. the challenge text as the verdict).
 				const turnCompleted = (snap, sinceKey) => {
 					if (snap === void 0 || snap === null) return false;
-					if (snap.running === true) return false;
-					const order = Array.isArray(snap.chat?.order) ? snap.chat.order : [];
+					if (runningOf(snap)) return false;
+					const order = orderOf(snap);
 					if (order.length === 0 || order[order.length - 1] === sinceKey) return false;
 					for (let i = order.length - 1; i >= 0 && order[i] !== sinceKey; i--) {
-						let node;
-						try {
-							node = snap.chat?.nodes?.get?.(order[i]);
-						} catch {
-							continue;
-						}
-						if (node !== void 0 && (node.kind === "assistant" || node.kind === "assistant-step")) return true;
+						if (isAssistantNode(nodeOf(snap, order[i]))) return true;
 					}
 					return false;
 				};
@@ -1872,15 +2092,13 @@ window.__ModuleLoader__.load({
 				const extractLastAssistantText = (sessionId) => {
 					try {
 						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
-						const chat = snap?.chat;
-						if (chat === void 0 || chat === null) return "";
-						const order = Array.isArray(chat.order) ? chat.order : [];
+						const order = orderOf(snap);
 						let out = "";
 						for (let i = order.length - 1; i >= 0; i--) {
-							let node;
-							try { node = chat.nodes.get(order[i]); } catch { continue; }
-							if (node !== void 0 && (node.kind === "assistant" || node.kind === "assistant-step")) {
-								for (const row of assistantRows(node.data?.blocks ?? node.blocks)) {
+							const node = nodeOf(snap, order[i]);
+							if (node === void 0) continue;
+							if (isAssistantNode(node)) {
+								for (const row of assistantRows(blocksOf(node))) {
 										if (row.kind === "assistant") out += row.text + "\n";
 								}
 								break;
@@ -1897,15 +2115,13 @@ window.__ModuleLoader__.load({
 				const extractLastAssistantTools = (sessionId) => {
 					try {
 						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
-						const chat = snap?.chat;
-						if (chat === void 0 || chat === null) return [];
-						const order = Array.isArray(chat.order) ? chat.order : [];
+						const order = orderOf(snap);
 						for (let i = order.length - 1; i >= 0; i--) {
-							let node;
-							try { node = chat.nodes.get(order[i]); } catch { continue; }
-							if (node !== void 0 && (node.kind === "assistant" || node.kind === "assistant-step")) {
+							const node = nodeOf(snap, order[i]);
+							if (node === void 0) continue;
+							if (isAssistantNode(node)) {
 								const out = [];
-								for (const row of assistantRows(node.data?.blocks ?? node.blocks)) {
+								for (const row of assistantRows(blocksOf(node))) {
 									if (row.kind === "tool") out.push({ name: row.name, argsRaw: row.argsRaw });
 								}
 								return out;
@@ -1927,6 +2143,14 @@ window.__ModuleLoader__.load({
 					// pick could have run before the directory resolved its current).
 					try {
 						const dirSnap = models.directoryFor(sessionId).store.getSnapshot();
+						// Two-model auto mode: derive the complement of the input box's
+						// current model even if the hero materialization has not run
+						// yet (belt and suspenders — the composer gate already covers
+						// the normal flow).
+						if (state.model === null) {
+							const auto = autoArenaModel(dirSnap);
+							if (auto !== null) state.model = auto;
+						}
 						if (conflictsWithInput(state.model, dirSnap)) {
 							state.model = null;
 							arenaMount.error = t("conflict");
@@ -1986,9 +2210,11 @@ window.__ModuleLoader__.load({
 						// Model 1's role comes from the system-prompt waterfall (persona
 						// map synced to settings), active from the first turn — no message.
 						c.phase = isReviewScene(c) ? "propose" : "answer";
+						c.skill = state.skill ?? "";
 						c.rejectCount = 0;
 						c.verdict = "";
 						c.round = 0;
+						c.stallSince = 0;
 						c.mainAnchor = lastKeyOfSnapshot(sessionId);
 						c.arenaAnchor = lastKeyOfSnapshot(arenaMount.arenaSessionId);
 						updateBlock(sessionId, state);
@@ -2053,9 +2279,23 @@ window.__ModuleLoader__.load({
 						}
 						const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
 						const running = snap?.running === true;
-						if (c.mainWasRunning && !running && !turnCompleted(snap, c.mainAnchor)) {
+						// User pressed stop: the main session went idle without producing a
+						// new node — end the whole challenge (and cancel the challenger).
+						// A pending question/approval wait is NOT a stop: the agent is
+						// paused for the user's answer, so never abort on it.
+						const stalled = !running && !turnCompleted(snap, c.mainAnchor) && !hasPendingInteraction(snap);
+						if (stalled && (c.mainWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
 							abortChallenge();
 							return;
+						}
+						// Stalled-start watchdog: the awaited session was never seen
+						// running and stays idle with zero progress (a prompt that failed
+						// silently can never advance the round) — arm the timer so the
+						// check above ends the challenge instead of hanging forever.
+						if (stalled) {
+							if (c.stallSince === 0) c.stallSince = Date.now();
+						} else {
+							c.stallSince = 0;
 						}
 						c.mainWasRunning = running;
 						if (turnCompleted(snap, c.mainAnchor)) {
@@ -2080,9 +2320,21 @@ window.__ModuleLoader__.load({
 					} else if (c.phase === "challenge" || c.phase === "final") {
 						const snap = ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
 						const running = snap?.running === true;
-						if (c.arenaWasRunning && !running && !turnCompleted(snap, c.arenaAnchor)) {
+						// The challenger went idle without producing output (stopped or
+						// failed) — end the challenge so the flow never hangs. A pending
+						// question/approval wait is the challenger pausing for the user,
+						// not a stop — never abort on it.
+						const stalled = !running && !turnCompleted(snap, c.arenaAnchor) && !hasPendingInteraction(snap);
+						if (stalled && (c.arenaWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
 							abortChallenge();
 							return;
+						}
+						// Stalled-start watchdog (see the main-waiting branch): arm the
+						// timer when the arena was never seen running and stays idle.
+						if (stalled) {
+							if (c.stallSince === 0) c.stallSince = Date.now();
+						} else {
+							c.stallSince = 0;
 						}
 						c.arenaWasRunning = running;
 						if (turnCompleted(snap, c.arenaAnchor)) {
@@ -2129,10 +2381,20 @@ window.__ModuleLoader__.load({
 							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
 							// User pressed stop: the main session went idle without producing a
 							// new node — end the whole challenge (and cancel the challenger).
+							// A pending question/approval wait is NOT a stop: the agent is
+							// paused for the user's answer, so never abort on it.
 							const running = snap?.running === true;
-							if (c.mainWasRunning && !running && !turnCompleted(snap, c.mainAnchor)) {
+							const stalled = !running && !turnCompleted(snap, c.mainAnchor) && !hasPendingInteraction(snap);
+							if (stalled && (c.mainWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
 								abortChallenge();
 								return;
+							}
+							// Stalled-start watchdog (see advanceChallenge): arm the timer
+							// when the awaited session was never seen running and stays idle.
+							if (stalled) {
+								if (c.stallSince === 0) c.stallSince = Date.now();
+							} else {
+								c.stallSince = 0;
 							}
 							c.mainWasRunning = running;
 							if (turnCompleted(snap, c.mainAnchor)) {
@@ -2151,11 +2413,21 @@ window.__ModuleLoader__.load({
 							// Waiting on the ARENA session (challenger review verdict).
 							const snap = ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
 							// The challenger went idle without producing output (stopped or failed)
-							// — end the challenge so the flow never hangs.
+							// — end the challenge so the flow never hangs. A pending
+							// question/approval wait is the challenger pausing for the user,
+							// not a stop — never abort on it.
 							const running = snap?.running === true;
-							if (c.arenaWasRunning && !running && !turnCompleted(snap, c.arenaAnchor)) {
+							const stalled = !running && !turnCompleted(snap, c.arenaAnchor) && !hasPendingInteraction(snap);
+							if (stalled && (c.arenaWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
 								abortChallenge();
 								return;
+							}
+							// Stalled-start watchdog (see advanceChallenge): arm the timer
+							// when the awaited session was never seen running and stays idle.
+							if (stalled) {
+								if (c.stallSince === 0) c.stallSince = Date.now();
+							} else {
+								c.stallSince = 0;
 							}
 							c.arenaWasRunning = running;
 							if (turnCompleted(snap, c.arenaAnchor)) {
@@ -2228,20 +2500,13 @@ window.__ModuleLoader__.load({
 					} catch {
 						return;
 					}
-					const chat = snap?.chat;
-					if (chat === void 0 || chat === null) return;
 					let lastSeen = arenaMount.lastSeenSeq;
-					for (const key of Array.isArray(chat.order) ? chat.order : []) {
-						let node;
-						try {
-							node = chat.nodes.get(key);
-						} catch {
-							continue;
-						}
+					for (const key of orderOf(snap)) {
+						const node = nodeOf(snap, key);
 						if (node === void 0) continue;
-						if ((node.kind === "user" || node.kind === "steering") && typeof node.anchorSeq === "number" && node.anchorSeq > lastSeen) {
-							lastSeen = node.anchorSeq;
-							const text = textOfContent(node.data?.content ?? node.content);
+						if (isUserNode(node) && anchorSeqOf(node) > lastSeen) {
+							lastSeen = anchorSeqOf(node);
+							const text = textOfContent(contentOf(node));
 							if (text === "") continue;
 							// Orchestrator-injected user messages (challenger output, revise
 							// instruction, final verdict) must never start a new round.
@@ -2283,18 +2548,12 @@ window.__ModuleLoader__.load({
 					} catch {
 						return 0;
 					}
-					const chat = snap?.chat;
-					if (chat === void 0 || chat === null) return 0;
 					let max = 0;
-					for (const key of Array.isArray(chat.order) ? chat.order : []) {
-						let node;
-						try {
-							node = chat.nodes.get(key);
-						} catch {
-							continue;
-						}
-						if (node !== void 0 && (node.kind === "user" || node.kind === "steering") && typeof node.anchorSeq === "number") {
-							max = Math.max(max, node.anchorSeq);
+					for (const key of orderOf(snap)) {
+						const node = nodeOf(snap, key);
+						if (node === void 0) continue;
+						if (isUserNode(node)) {
+							max = Math.max(max, anchorSeqOf(node));
 						}
 					}
 					return max;
@@ -2302,6 +2561,36 @@ window.__ModuleLoader__.load({
 
 				// ── arena linkage persistence (settings "model-arena" namespace) ──
 				let linksCache = {};
+				// Per-workspace challenger skill (workspace path -> skill path).
+				// Persisted in the same namespace; a new session in the same
+				// workspace defaults to its entry (empty = no skill).
+				let workspaceSkillsCache = {};
+				const workspacePathOf = (sessionId) => {
+					try {
+						const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
+						const items = Array.isArray(workspaces?.list?.getSnapshot?.()?.items) ? workspaces.list.getSnapshot().items : [];
+						const ws = items.find((w) => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId));
+						if (ws !== void 0 && typeof ws.path === "string" && ws.path !== "") return ws.path;
+						const summaryCwd = ctx.sessions.list.getSnapshot()?.byId?.[sessionId]?.cwd;
+						if (typeof summaryCwd === "string" && summaryCwd !== "") return summaryCwd;
+						return void 0;
+					} catch {
+						return void 0;
+					}
+				};
+				const saveWorkspaceSkill = (sessionId, skill) => {
+					const ws = workspacePathOf(sessionId);
+					const cleaned = typeof skill === "string" ? skill : "";
+					if (ws !== void 0) workspaceSkillsCache[ws] = cleaned;
+					try {
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [{ op: "set", path: ["workspaceSkills", ws], value: cleaned }]
+						}).catch(() => {});
+					} catch {
+						// persistence failed — the in-memory cache still applies
+					}
+				};
 				const apiSettings = () => {
 					try {
 						const connection = typeof ctx.get === "function" ? ctx.get("connection") : void 0;
@@ -2316,8 +2605,10 @@ window.__ModuleLoader__.load({
 						const namespaces = response?.result?.value?.namespaces ?? [];
 						const view = namespaces.find((n) => n !== null && n !== void 0 && n.ns === "model-arena");
 						linksCache = view?.value?.links ?? {};
+						workspaceSkillsCache = view?.value?.workspaceSkills ?? {};
 					} catch {
 						linksCache = {};
+						workspaceSkillsCache = {};
 					}
 				};
 				const saveLink = async (mainId, link) => {
@@ -2352,6 +2643,13 @@ window.__ModuleLoader__.load({
 						};
 						state.arena = { sessionId: link.sessionId };
 						if (link.scene !== void 0) state.scene = link.scene;
+					}
+					// Seed the per-session challenger skill from the WORKSPACE's
+					// historical entry once (undefined -> the workspace default, which
+					// may be "" = no skill). The user's own pick/clear afterwards
+					// overrides it for this session AND updates the workspace default.
+					if (state !== void 0 && state.skill === void 0) {
+						state.skill = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""] ?? "";
 					}
 					const active = state !== void 0 && state.enabled === true && state.model !== null && state.model !== void 0;
 					if (!active) {
@@ -2393,6 +2691,7 @@ window.__ModuleLoader__.load({
 							active: false,
 							phase: "idle",
 							scene: state.scene ?? "business",
+							skill: state.skill ?? "",
 							userQuestion: "",
 							mainAnchor: null,
 							arenaAnchor: null,
@@ -2404,7 +2703,10 @@ window.__ModuleLoader__.load({
 							pendingAnchor: false,
 							lastInjectedText: "",
 							mainWasRunning: false,
-							arenaWasRunning: false
+							arenaWasRunning: false,
+							// ms timestamp when the awaited session first went idle
+							// without progress; 0 = not stalled (see STALL_MS).
+							stallSince: 0
 						}
 					};
 					// Seed from the current snapshot so pre-existing messages are not re-mirrored.
@@ -2637,8 +2939,22 @@ window.__ModuleLoader__.load({
 					const conversation = ctx.get("conversation");
 					if (conversation === void 0 || conversation.blocks === void 0) return;
 					if (state.enabled && state.model === null) {
+						// Two-model auto mode derives the arena model from the
+						// directory (complement of the input box's current model) —
+						// never block on a tick where that materialization has not
+						// run yet: the arena is ready as soon as the directory
+						// resolves two models.
+						try {
+							const auto = autoArenaModel(models.directoryFor(sessionId)?.store?.getSnapshot?.() ?? null);
+							if (auto !== null) {
+								conversation.blocks.set(sessionId, void 0);
+								return;
+							}
+						} catch (_autoBlockFailure) {
+							// fall through to the plain block
+						}
 						conversation.blocks.set(sessionId, { reason: t("block.reason") });
-					} else if (arenaMount !== null && arenaMount.sessionId === sessionId && arenaMount.challenge.active === true && arenaMount.challenge.phase !== "done" && arenaMount.challenge.phase !== "idle") {
+					} else if (arenaMount !== null && arenaMount.sessionId === sessionId && shouldShowChallengeHeader(arenaMount.challenge)) {
 						conversation.blocks.set(sessionId, { reason: challengePhaseReason(arenaMount.challenge.phase) });
 					} else {
 						conversation.blocks.set(sessionId, void 0);
@@ -2707,14 +3023,134 @@ window.__ModuleLoader__.load({
 					sceneRow.appendChild(sceneSeg);
 					panel.appendChild(sceneRow);
 
+					// Challenger skill: optional workspace-persisted skill path (file or
+					// folder) the challenger reads and follows. Empty = no skill. Picked
+					// in this hero panel; persisted per workspace so new sessions in the
+					// same workspace reuse it.
+					const skillRow = document.createElement("div");
+					skillRow.className = "ma-skillRow";
+					skillRow.dataset.arenaSkillRow = "";
+					const skillLabel = document.createElement("span");
+					skillLabel.className = "ma-panelLabel";
+					skillLabel.textContent = t("skill.label");
+					skillRow.appendChild(skillLabel);
+					const skillSel = document.createElement("div");
+					skillSel.className = "ma-selector";
+					const skillTrigger = document.createElement("button");
+					skillTrigger.type = "button";
+					skillTrigger.className = "ma-trigger";
+					skillTrigger.dataset.arenaSkillTrigger = "";
+					const skillValue = document.createElement("span");
+					skillValue.className = "ma-triggerLabel ma-skillValue";
+					const skillChevron = document.createElement("span");
+					skillChevron.className = "ma-chevron";
+					skillChevron.textContent = "▾";
+					skillTrigger.append(skillValue, skillChevron);
+					const skillHost = document.createElement("div");
+					skillHost.className = "ma-skillHost";
+					skillSel.append(skillTrigger, skillHost);
+					skillRow.appendChild(skillSel);
+					panel.appendChild(skillRow);
+					let skillOpen = false;
+					let skillOutside = null;
+					const closeSkill = () => {
+						skillOpen = false;
+						skillHost.textContent = "";
+						if (skillOutside !== null) { document.removeEventListener("mousedown", skillOutside); skillOutside = null; }
+					};
+					const applySkill = (skill) => {
+						state.skill = typeof skill === "string" ? skill : "";
+						if (arenaMount !== null && arenaMount.sessionId === sessionId) arenaMount.challenge.skill = state.skill;
+						saveWorkspaceSkill(sessionId, state.skill);
+						closeSkill();
+						repaintPanel();
+						syncPersona();
+					};
+					const openSkill = () => {
+						skillOpen = true;
+						skillHost.textContent = "";
+						const pop = document.createElement("div");
+						pop.className = "ma-skillPopover";
+						pop.dataset.arenaSkillPopover = "";
+						const cur = document.createElement("p");
+						cur.className = "ma-skillPath";
+						cur.textContent = state.skill === void 0 || state.skill === "" ? t("skill.empty") : state.skill;
+						pop.appendChild(cur);
+						const browse = document.createElement("button");
+						browse.type = "button";
+						browse.className = "ma-questionBtn";
+						browse.textContent = t("skill.browse");
+						browse.addEventListener("click", () => {
+							const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
+							Promise.resolve(workspaces?.pickDirectory?.()).then((path) => {
+								if (typeof path === "string" && path !== "") applySkill(path);
+							}).catch(() => {});
+						});
+						pop.appendChild(browse);
+						const manual = document.createElement("div");
+						manual.className = "ma-questionActions";
+						const input = document.createElement("input");
+						input.type = "text";
+						input.className = "ma-questionInput";
+						input.placeholder = t("skill.manual");
+						input.value = typeof state.skill === "string" ? state.skill : "";
+						const confirm = document.createElement("button");
+						confirm.type = "button";
+						confirm.className = "ma-questionBtn primary";
+						confirm.textContent = t("skill.confirm");
+						confirm.addEventListener("click", () => {
+							applySkill((input.value ?? "").trim());
+						});
+						manual.append(input, confirm);
+						pop.appendChild(manual);
+						if (typeof state.skill === "string" && state.skill !== "") {
+							const clear = document.createElement("button");
+							clear.type = "button";
+							clear.className = "ma-questionBtn";
+							clear.textContent = t("skill.clear");
+							clear.addEventListener("click", () => applySkill(""));
+							pop.appendChild(clear);
+						}
+						skillHost.appendChild(pop);
+						skillOutside = (event) => {
+							if (skillTrigger.contains(event.target)) return;
+							closeSkill();
+						};
+						document.addEventListener("mousedown", skillOutside);
+					};
+					skillTrigger.addEventListener("click", () => {
+						if (skillOpen) closeSkill();
+						else openSkill();
+					});
 					const note = document.createElement("span");
 					note.className = "ma-hint";
 					panel.appendChild(note);
 
 					const repaintPanel = () => {
 						const snap = directory === null ? null : directory.store.getSnapshot();
+						// Two-model auto mode: with exactly two models the arena model
+						// is DERIVED (the complement of the input box's current model)
+						// and follows composer switches — no manual pick needed. It
+						// applies only while the arena session does not exist yet;
+						// once created the arena model is frozen (a composer switch
+						// mid-duel must never rewire the running challenger), and the
+						// conflict-clear below must not clobber the frozen pick either.
+						const arenaLocked = state.enabled && arenaMount !== null && arenaMount.sessionId === sessionId && arenaMount.arenaSessionId !== void 0;
+						if (state.enabled && !arenaLocked) {
+							const auto = autoArenaModel(snap);
+							if (auto !== null) {
+								// Keep a user-chosen reasoning effort on the SAME
+								// model across unrelated repaints (a composer switch
+								// lands on the other complement and falls back to
+								// that model's default).
+								if (state.model !== null && state.model.provider === auto.provider && state.model.model === auto.model && state.model.reasoningEffort !== auto.reasoningEffort) {
+									auto.reasoningEffort = state.model.reasoningEffort;
+								}
+								state.model = auto;
+							}
+						}
 						let conflict = false;
-						if (conflictsWithInput(state.model, snap)) {
+						if (!arenaLocked && conflictsWithInput(state.model, snap)) {
 							state.model = null;
 							conflict = true;
 						}
@@ -2734,6 +3170,8 @@ window.__ModuleLoader__.load({
 						triggerLabel.textContent = modelLabel;
 						triggerEffort.textContent = effortLabel === null ? "" : effortLabel;
 						trigger.setAttribute("aria-label", t("menu.aria") + "：" + (effortLabel === null ? modelLabel : modelLabel + " · " + effortLabel));
+						skillValue.textContent = typeof state.skill === "string" && state.skill !== "" ? state.skill : t("skill.placeholder");
+						skillTrigger.setAttribute("aria-label", t("skill.label") + "：" + (typeof state.skill === "string" && state.skill !== "" ? state.skill : t("skill.placeholder")));
 						if (conflict) {
 							note.className = "ma-conflict";
 							note.textContent = t("conflict");
@@ -2781,14 +3219,15 @@ window.__ModuleLoader__.load({
 				// (avoids the MutationObserver feedback loop).
 				const hideArenaSessionRows = () => {
 					try {
-						for (const row of document.querySelectorAll(".YDXeBa_sessionRow")) {
+						for (const row of document.querySelectorAll(ANCHORS.sidebarRow)) {
 							if (!(row instanceof HTMLElement)) continue;
 							if (row.dataset.arenaHidden !== void 0) continue;
 							// The arena session is renamed to "竞技场"/"Arena" at create;
-							// its row title lives in .YDXeBa_title (status/time are separate
-							// sibling spans). Match the title span exactly so a user session
-							// merely mentioning 竞技场 is never hidden.
-							const titleEl = row.querySelector?.(".YDXeBa_title");
+							// its row title lives in the ANCHORS.sidebarTitle span
+							// (status/time are separate sibling spans). Match the title
+							// span exactly so a user session merely mentioning 竞技场 is
+							// never hidden.
+							const titleEl = row.querySelector?.(ANCHORS.sidebarTitle);
 							const titleText = titleEl instanceof HTMLElement ? (titleEl.textContent || "").trim() : "";
 							const isArena = titleText === "竞技场" || titleText === "Arena";
 							if (isArena) {
@@ -2887,25 +3326,29 @@ window.__ModuleLoader__.load({
 					row.appendChild(toggle);
 					repaint();
 					}
-					// Arena runtime first (it may restore a persisted linkage and
-					// re-enable the toggle), then the view-ring tab follows the same
-					// enabled state, and the persona map follows the arena state.
-					syncArena(sessionId);
-					syncViewEntry();
-					syncPersona();
-					// Poll-based catch-up: session live events can be missed while
-					// the arena runtime is unmounted (session switch) or when an
-					// archived arena session drops events — advance the challenge
-					// straight from the current snapshots on every sync tick, so a
-					// round that finished while away is caught up on return and a
-					// conclusion is never silently lost.
-					if (arenaMount !== null && arenaMount.challenge.active === true) {
-						detectChallengeTurn();
-					}
-					} catch (_syncFailure) {
-						// one bad tick must never kill the schedule chain
-					}
-				};
+				// Arena runtime, view-ring tab, persona map and the poll-based
+				// catch-up track the CURRENT session — not the hero row. Message
+				// sessions have no hero row, so without this the runtime is never
+				// torn down on switch-away, never restored on entry (including a
+				// persisted linkage after reload), and the catch-up poll never runs
+				// there — leaving a round stranded mid-flight (archived arena
+				// sessions can drop live events) with the header up forever.
+				syncArena(sessionId);
+				syncViewEntry();
+				syncPersona();
+				// Poll-based catch-up: session live events can be missed while
+				// the arena runtime is unmounted (session switch) or when an
+				// archived arena session drops events — advance the challenge
+				// straight from the current snapshots on every sync tick, so a
+				// round that finished while away is caught up on return and a
+				// conclusion is never silently lost.
+				if (arenaMount !== null && arenaMount.challenge.active === true) {
+					detectChallengeTurn();
+				}
+				} catch (_syncFailure) {
+					// one bad tick must never kill the schedule chain
+				}
+			};
 
 				const cleanup = () => {
 					if (mounted === null) return;
@@ -3047,6 +3490,8 @@ window.__ModuleLoader__.load({
 		exports.buildEffortChoices = buildEffortChoices;
 		exports.conflictsWithInput = conflictsWithInput;
 		exports.findArenaModel = findArenaModel;
+		exports.totalModelsOf = totalModelsOf;
+		exports.autoArenaModel = autoArenaModel;
 		exports.textOfContent = textOfContent;
 		exports.assistantRows = assistantRows;
 		exports.nonMdSig = nonMdSig;
@@ -3061,6 +3506,8 @@ window.__ModuleLoader__.load({
 		exports.buildReviseMessage = buildReviseMessage;
 		exports.stripMarkdown = stripMarkdown;
 		exports.buildRoleSeed = buildRoleSeed;
+		exports.shouldShowChallengeHeader = shouldShowChallengeHeader;
+		exports.STALL_MS = STALL_MS;
 		return module.exports;
 	}
 });
