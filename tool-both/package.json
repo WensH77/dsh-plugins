@@ -1,0 +1,37 @@
+{
+  "name": "dsh-plugin-tool-both",
+  "version": "0.1.0",
+  "description": "一键开启 dsh「both」工具呈现模式：激活时自动在 ~/.dsh/.agent-presets/ 安装「BOTH模式」预设（原生工具直调与 run_code 生成式 SDK 并存、无 code-only 限制），另提供可挂进任意 agent preset 的呈现行组件（./presentation）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./presentation": "./lib/presentation.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "preset",
+    "README.md"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "locale",
+        "slots"
+      ],
+      "immediately": false
+    }
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "license": "MIT"
+}
