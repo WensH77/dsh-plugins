@@ -441,11 +441,24 @@ window.__ModuleLoader__.load({
 		const buildRoundPrompt = (kind, challenge, _t) => {
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
-			const arenaRole = scene.arena;
 			const files = extractFileRefs(challenge?.lastMainText ?? "").join("\n") || "（无）";
 			const trail = formatToolTrail(challenge?.lastMainTools);
 			const toolsPart = trail === "" ? "" : "\n" + fmt("{mainRole} 的工具操作记录：\n{tools}", { mainRole, tools: trail });
 			if (kind === "review") {
+				const proposalPath = challenge?.proposalPath;
+				const designPath = challenge?.designPath;
+				const tasksPath = challenge?.tasksPath;
+				const reviewPath = challenge?.reviewPath;
+				const hasArtifacts = [proposalPath, designPath, tasksPath].some((p) => typeof p === "string" && p !== "");
+				if (hasArtifacts) {
+					return "请读取以下方案产物文件并审查：\n"
+						+ "proposal.md: " + (typeof proposalPath === "string" && proposalPath !== "" ? proposalPath : "（无）") + "\n"
+						+ "design.md: " + (typeof designPath === "string" && designPath !== "" ? designPath : "（无）") + "\n"
+						+ "tasks.md: " + (typeof tasksPath === "string" && tasksPath !== "" ? tasksPath : "（无）") + "\n"
+						+ "review.md 输出路径: " + (typeof reviewPath === "string" && reviewPath !== "" ? reviewPath : "（无）") + "\n"
+						+ "用户问题：「" + (challenge?.userQuestion ?? "") + "」\n\n"
+						+ "请按你 persona 中指定的挑战者技能审查这些文件（需求清晰度、设计合理性、风险、任务拆解、相关规格），先写出 review.md（含 Action Items）到上述输出路径，然后回复一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再附一句话说明。禁止辩论，不要自我称呼角色名。";
+				}
 				return fmt("用户问题：「{question}」\n{mainRole} 的结构化方案：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 					+ "\n\n请作为审查者用中文**逐条审查**上述结构化方案：逐点核对需求清晰度、设计合理性、风险、任务拆解、相关规格，指出每处问题；只输出审查结论：先一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再列出 Action Items（需修正的具体点）。禁止辩论，不要自我称呼角色名。";
 			}
@@ -481,7 +494,8 @@ window.__ModuleLoader__.load({
 		// challenge mode: the raw objection (the revise rule lives in the system prompt).
 		const buildReviseMessage = (arenaText, challenge, _t) => {
 			if (isReviewScene(challenge)) {
-				return "审查结论：不认可，需修正。请按以下审查意见修正你的结构化方案（仅修正，不要重新回答用户问题）：\n\n" + stripMarkdown(arenaText ?? "");
+				const reviewPath = typeof challenge?.reviewPath === "string" && challenge.reviewPath !== "" ? challenge.reviewPath : "（未提供）";
+				return "挑战者审查结论：不认可，需修正。请先 record review.completed NEEDS_REVISION（回到 propose），再读 review.md（" + reviewPath + "）的 Action Items 修改方案文件，最后 record propose.completed 重新送审。";
 			}
 			return stripMarkdown(arenaText ?? "");
 		};
@@ -510,7 +524,7 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			if (scene.review === true) {
-				return fmt("你是{mainRole}。在审查流程中，你作为方案提出者：先产出结构化方案回答用户问题，再根据审查者的审查意见修正方案，直到认可或达到最大修正次数。请用中文回答。禁止辩论。", { mainRole });
+				return fmt("你是{mainRole}。在 Theseus workflow 中，propose 阶段完成（record propose.completed）后立即停止本轮：不要 auto-advance 到 review，不要自己执行审查，不要自我审查/修正/给出 Overall Verdict，也不要向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你被动等待审查结论，收到结论后按注入的指令继续（NEEDS_REVISION 时回到 propose 修正并重新送审，READY 时继续后续阶段）。禁止辩论，请用中文回答。", { mainRole });
 			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
@@ -2286,8 +2300,26 @@ window.__ModuleLoader__.load({
 						c.verdict = "";
 						c.round = 0;
 						c.stallSince = 0;
+						c.lastReviewSeq = -1;
+						c.proposalPath = "";
+						c.designPath = "";
+						c.tasksPath = "";
+						c.reviewPath = "";
 						c.mainAnchor = lastKeyOfSnapshot(sessionId);
 						c.arenaAnchor = lastKeyOfSnapshot(arenaMount.arenaSessionId);
+						// Knowledge scene: arm the node half's propose.completed detector
+						// by persisting the main session id + cwd so it can poll the
+						// Theseus workflow state and write back `arena.reviewRequest`.
+						if (isReviewScene(c)) {
+							const arenaCwd = workspacePathOf(sessionId);
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [
+									{ op: "set", path: ["arena", "mainSessionId"], value: sessionId },
+									{ op: "set", path: ["arena", "cwd"], value: typeof arenaCwd === "string" ? arenaCwd : "" }
+								]
+							}).catch(() => {});
+						}
 						updateBlock(sessionId, state);
 						// The challenger session now exists: sync the persona map right away
 						// (main role + challenger role) instead of waiting for the next sync.
@@ -2323,6 +2355,8 @@ window.__ModuleLoader__.load({
 					}
 					c.active = false;
 					c.phase = "aborted";
+					// Stop the node half's propose.completed polling for this challenge.
+					if (isReviewScene(c)) stopArenaWatch();
 					updateBlock(arenaMount.sessionId, stateFor(arenaMount.sessionId));
 					arenaTick.bump();
 				};
@@ -2434,51 +2468,52 @@ window.__ModuleLoader__.load({
 				const advanceReview = (c, mainId, arenaId) => {
 					try {
 						if (c.phase === "propose" || c.phase === "revise") {
-							// Waiting on the MAIN session (model 1 answer / revision).
-							if (c.pendingAnchor) {
-								// An injection just landed (or is about to): re-anchor to
-								// the injected message node (see injectedNodeKey) once it
-								// appears, then wait for model 1's actual revision turn.
-								// Fall through so a revision that completed while the
-								// runtime was unmounted is advanced in this same pass.
-								const cur = injectedNodeKey(mainId, c.lastInjectedText) ?? lastKeyOfSnapshot(mainId);
-								if (cur !== null && cur !== c.mainAnchor) {
-									c.mainAnchor = cur;
-									c.pendingAnchor = false;
-								} else {
-									return; // the injected message has not landed yet
-								}
-							}
-							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
-							// User pressed stop: the main session went idle without producing a
-							// new node — end the whole challenge (and cancel the challenger).
-							// A pending question/approval wait is NOT a stop: the agent is
-							// paused for the user's answer, so never abort on it.
-							const running = snap?.running === true;
-							const stalled = !running && !turnCompleted(snap, c.mainAnchor) && !hasPendingInteraction(snap);
-							if (stalled && (c.mainWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
-								abortChallenge();
-								return;
-							}
-							// Stalled-start watchdog (see advanceChallenge): arm the timer
-							// when the awaited session was never seen running and stays idle.
-							if (stalled) {
-								if (c.stallSince === 0) c.stallSince = Date.now();
-							} else {
-								c.stallSince = 0;
-							}
-							c.mainWasRunning = running;
-							if (turnCompleted(snap, c.mainAnchor)) {
-								c.mainAnchor = lastKeyOfSnapshot(mainId);
-								c.lastMainText = extractLastAssistantText(mainId);
-								c.lastMainTools = extractLastAssistantTools(mainId);
-								// Hand the proposal (or latest revision) to the challenger for review.
+							// Knowledge scene: the main model runs Theseus workflow in
+							// its own workspace (explore → propose → record
+							// propose.completed). We do NOT advance on main-session turn
+							// completion — the node half observes the workflow's
+							// `propose.completed` transition and writes
+							// `arena.reviewRequest`, which we consume here to hand the
+							// proposal over to the challenger.
+							const req = latestReviewRequest;
+							if (req !== null && req.seq !== c.lastReviewSeq) {
+								c.lastReviewSeq = req.seq;
+								c.proposalPath = typeof req.proposalPath === "string" ? req.proposalPath : "";
+								c.designPath = typeof req.designPath === "string" ? req.designPath : "";
+								c.tasksPath = typeof req.tasksPath === "string" ? req.tasksPath : "";
+								c.reviewPath = typeof req.reviewPath === "string" ? req.reviewPath : "";
 								c.phase = "review";
 								c.round += 1;
 								promptSession(arenaId, buildRoundPrompt("review", c, t));
 								updateBlock(mainId, stateFor(mainId));
 								syncPersona();
 								arenaTick.bump();
+								return;
+							}
+							// Stop/stall watchdog: a main session that went running→idle
+							// with no new node is a user stop → end the whole challenge
+							// (and cancel the challenger). A pending question/approval
+							// wait is NOT a stop. Sustained idle with zero progress for
+							// STALL_MS (propose never completed) also aborts.
+							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
+							const running = snap?.running === true;
+							const stalled = !running && !turnCompleted(snap, c.mainAnchor) && !hasPendingInteraction(snap);
+							if (stalled && (c.mainWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
+								abortChallenge();
+								return;
+							}
+							if (stalled) {
+								if (c.stallSince === 0) c.stallSince = Date.now();
+							} else {
+								c.stallSince = 0;
+							}
+							c.mainWasRunning = running;
+							// A completed main turn only re-anchors the stop detector; it
+							// does NOT advance the flow (advancement is reviewRequest-driven).
+							if (turnCompleted(snap, c.mainAnchor)) {
+								c.mainAnchor = lastKeyOfSnapshot(mainId);
+								c.lastMainText = extractLastAssistantText(mainId);
+								c.lastMainTools = extractLastAssistantTools(mainId);
 							}
 						} else if (c.phase === "review") {
 							// Waiting on the ARENA session (challenger review verdict).
@@ -2507,11 +2542,14 @@ window.__ModuleLoader__.load({
 								const verdict = parseReviewVerdict(c.lastArenaText);
 								c.verdict = verdict === "" ? "NEEDS_REVISION" : verdict;
 								if (verdict === "READY") {
-									// 认可 → 结束审查循环并解锁（后续环节由宿主流程接管，本插件不改动）。
+									// 认可 → 结束审查循环；主模型自己 record review.completed
+									// READY 并按 Theseus workflow 继续后续阶段，本插件放手。
 									c.phase = "done";
 									c.active = false;
-									promptSession(mainId, stripMarkdown(c.lastArenaText));
-									c.lastInjectedText = stripMarkdown(c.lastArenaText);
+									const readyNote = "挑战者审查结论：READY（认可）。请 record review.completed READY 并按 Theseus workflow 继续后续阶段（user-readiness-review → apply → archive）。";
+									promptSession(mainId, readyNote);
+									c.lastInjectedText = readyNote;
+									stopArenaWatch();
 									updateBlock(mainId, stateFor(mainId));
 									arenaTick.bump();
 								} else {
@@ -2520,9 +2558,15 @@ window.__ModuleLoader__.load({
 									if (c.rejectCount >= MAX_REJECTS) {
 										c.phase = "done";
 										c.active = false;
-										const note = "审查未通过：累计 " + c.rejectCount + " 次不认可，审查循环结束。";
-										promptSession(mainId, note);
-										c.lastInjectedText = note;
+										latestReviewRequest = null;
+										// Ask the node half to write the Theseus state machine back
+										// to `propose` (review.completed NEEDS_REVISION) WITHOUT
+										// messaging the main model — messaging it would start a
+										// fresh turn and defeat "park for the human".
+										apiSettings()?.mutate?.({
+											ns: "model-arena",
+											ops: [{ op: "set", path: ["arena", "returnToPropose"], value: { seq: Date.now() } }]
+										}).catch(() => {});
 										updateBlock(mainId, stateFor(mainId));
 										arenaTick.bump();
 									} else {
@@ -2530,10 +2574,6 @@ window.__ModuleLoader__.load({
 										const injected = buildReviseMessage(c.lastArenaText, c, t);
 										promptSession(mainId, injected);
 										c.lastInjectedText = injected;
-										// The injected user message itself is NOT a completed main
-										// turn: re-anchor once it lands, then wait for model 1's
-										// revision. pendingAnchor defers the turn check for one beat.
-										c.pendingAnchor = true;
 										updateBlock(mainId, stateFor(mainId));
 										arenaTick.bump();
 									}
@@ -2637,6 +2677,20 @@ window.__ModuleLoader__.load({
 				// namespace; a new session in the same workspace defaults to its
 				// scene's entry (empty = no skill).
 				let workspaceSkillsCache = {};
+				// True once `loadLinks` has completed its first read: the seed must
+				// wait for the persisted skills to arrive, otherwise the first
+				// synchronous `sync()` seeds `state.skill` from an empty cache and
+				// the persisted skill is never shown.
+				let skillsLoaded = false;
+				// True while a local skill write (save/clear) is in flight. The
+				// write already updated `workspaceSkillsCache` synchronously, so a
+				// `document-updated` round-trip that reads a still-stale descriptor
+				// must not clobber it.
+				let skillWriteInFlight = false;
+				// Latest `arena.reviewRequest` written by the node half when it
+				// observes the main model's `propose.completed`. Consumed by
+				// advanceReview to hand the proposal to the challenger.
+				let latestReviewRequest = null;
 				const workspacePathOf = (sessionId) => {
 					try {
 						const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
@@ -2655,15 +2709,24 @@ window.__ModuleLoader__.load({
 					const sceneKey = typeof scene === "string" && scene !== "" ? scene : "business";
 					const cleaned = typeof skill === "string" ? skill : "";
 					if (ws !== void 0) {
-						const entry = workspaceSkillsCache[ws] !== null && typeof workspaceSkillsCache[ws] === "object" && !Array.isArray(workspaceSkillsCache[ws]) ? workspaceSkillsCache[ws] : {};
-						entry[sceneKey] = cleaned;
+						// Build a fresh entry (never mutate the frozen/cached object the
+						// snapshot may have handed out) and keep the in-memory cache
+						// authoritative while the persist round-trip is in flight.
+						const prev = workspaceSkillsCache[ws];
+						const entry = { ...(prev !== null && typeof prev === "object" && !Array.isArray(prev) ? prev : {}), [sceneKey]: cleaned };
 						workspaceSkillsCache[ws] = entry;
+						skillWriteInFlight = true;
 						try {
 							apiSettings()?.mutate?.({
 								ns: "model-arena",
 								ops: [{ op: "set", path: ["workspaceSkills", ws], value: entry }]
-							}).catch(() => {});
+							}).then(() => {
+								skillWriteInFlight = false;
+							}).catch(() => {
+								skillWriteInFlight = false;
+							});
 						} catch {
+							skillWriteInFlight = false;
 							// persistence failed — the in-memory cache still applies
 						}
 					}
@@ -2682,23 +2745,37 @@ window.__ModuleLoader__.load({
 						const namespaces = response?.result?.value?.namespaces ?? [];
 						const view = namespaces.find((n) => n !== null && n !== void 0 && n.ns === "model-arena");
 						linksCache = view?.value?.links ?? {};
-						const rawSkills = view?.value?.workspaceSkills ?? {};
-						workspaceSkillsCache = {};
-						if (rawSkills !== null && typeof rawSkills === "object") {
-							for (const ws of Object.keys(rawSkills)) {
-								const v = rawSkills[ws];
-								if (typeof v === "string") {
-									// legacy workspace-level entry (pre-scene) → default scene
-									workspaceSkillsCache[ws] = { business: v };
-								} else if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-									workspaceSkillsCache[ws] = { ...v };
+						// A local skill write already updated `workspaceSkillsCache`
+						// synchronously; skip the rebuild so a still-stale descriptor
+						// cannot clobber it (the write's own settle re-reads later if
+						// needed — the in-memory value is authoritative for now).
+						if (!skillWriteInFlight) {
+							const rawSkills = view?.value?.workspaceSkills ?? {};
+							workspaceSkillsCache = {};
+							if (rawSkills !== null && typeof rawSkills === "object") {
+								for (const ws of Object.keys(rawSkills)) {
+									const v = rawSkills[ws];
+									if (typeof v === "string") {
+										// legacy workspace-level entry (pre-scene) → default scene
+										workspaceSkillsCache[ws] = { business: v };
+									} else if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+										workspaceSkillsCache[ws] = { ...v };
+									}
 								}
 							}
 						}
+						const rawArena = view?.value?.arena;
+						const req = rawArena?.reviewRequest;
+						latestReviewRequest = (req !== null && typeof req === "object" && typeof req.seq === "number")
+							? req
+							: null;
 					} catch {
 						linksCache = {};
-						workspaceSkillsCache = {};
+						if (!skillWriteInFlight) workspaceSkillsCache = {};
 					}
+					// The persisted skills (if any) are now available: re-run the
+					// seed for any session whose skill has not been seeded yet.
+					skillsLoaded = true;
 				};
 				const saveLink = async (mainId, link) => {
 					linksCache[mainId] = link;
@@ -2709,6 +2786,23 @@ window.__ModuleLoader__.load({
 						});
 					} catch {
 						// persistence failed — the in-memory cache still links this session
+					}
+				};
+				// Stop the node half's propose.completed polling by clearing the
+				// watched main session id (and the stale review request). Called when
+				// the review loop ends (READY, 3 rejections) or the challenge aborts.
+				const stopArenaWatch = () => {
+					latestReviewRequest = null;
+					try {
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [
+								{ op: "set", path: ["arena", "mainSessionId"], value: "" },
+								{ op: "set", path: ["arena", "reviewRequest"], value: null }
+							]
+						}).catch(() => {});
+					} catch {
+						// best effort
 					}
 				};
 
@@ -2737,7 +2831,7 @@ window.__ModuleLoader__.load({
 					// historical entry once (undefined -> the workspace+scene default,
 					// which may be "" = no skill). The user's own pick/clear afterwards
 					// overrides it for this session AND updates that scene's default.
-					if (state !== void 0 && state.skill === void 0) {
+					if (state !== void 0 && skillsLoaded && state.skill === void 0) {
 						const wsEntry = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""];
 						const seedScene = state.scene ?? "business";
 						state.skill = (wsEntry !== null && typeof wsEntry === "object" && !Array.isArray(wsEntry) ? wsEntry[seedScene] : void 0) ?? "";
@@ -2795,6 +2889,15 @@ window.__ModuleLoader__.load({
 							lastInjectedText: "",
 							mainWasRunning: false,
 							arenaWasRunning: false,
+							// Theseus review-loop bridge: the node half writes
+							// arena.reviewRequest once the main model records
+							// `propose.completed`; we consume its monotonic seq and
+							// hand the artifact paths to the challenger.
+							lastReviewSeq: -1,
+							proposalPath: "",
+							designPath: "",
+							tasksPath: "",
+							reviewPath: "",
 							// ms timestamp when the awaited session first went idle
 							// without progress; 0 = not stalled (see STALL_MS).
 							stallSince: 0

@@ -379,6 +379,7 @@ const cancelCalls = [];
 const settingsMutateCalls = [];
 const slotRegisterCalls = [];
 let settingsNamespaces = [];
+let settingsUpdatedHandler = null;
 let listSub = null;
 let currentSession = "s1";
 const makeSessionStore = (id, initial) => {
@@ -476,6 +477,26 @@ const mockCtx = {
             }),
             mutate: async (payload) => {
               settingsMutateCalls.push(payload);
+              // Reflect the mutation into the describe view so loadLinks (and the
+              // settings/document-updated handler) sees persisted state, matching
+              // the real settings backend where mutate and describe are consistent.
+              let ns = settingsNamespaces.find((n) => n.ns === payload.ns);
+              if (ns === void 0) {
+                ns = { ns: payload.ns, value: {} };
+                settingsNamespaces.push(ns);
+              }
+              for (const op of payload.ops ?? []) {
+                if (op.op !== "set" || !Array.isArray(op.path)) continue;
+                let target = ns.value;
+                for (let i = 0; i < op.path.length - 1; i++) {
+                  const k = op.path[i];
+                  if (k === void 0 || k === null) break;
+                  if (target[k] === void 0 || target[k] === null || typeof target[k] !== "object" || Array.isArray(target[k])) target[k] = {};
+                  target = target[k];
+                }
+                const last = op.path[op.path.length - 1];
+                if (last !== void 0 && last !== null) target[last] = op.value;
+              }
               return { result: { ok: true, value: payload } };
             }
           }
@@ -485,7 +506,10 @@ const mockCtx = {
     return void 0;
   },
   remote: {
-    $on: () => () => {}
+    $on: (event, fn) => {
+      if (event === "settings/document-updated") settingsUpdatedHandler = fn;
+      return () => { if (settingsUpdatedHandler === fn) settingsUpdatedHandler = null; };
+    }
   },
   locale: {
     register: (ns, d) => {
@@ -569,10 +593,11 @@ check("roundLabelOf review (Overall Verdict)", loaded.roundLabelOf("**Overall Ve
 check("roundLabelOf default", loaded.roundLabelOf("随便一句话", realT) === "回合");
 check("roundLabelOf empty -> empty", loaded.roundLabelOf("") === "" && loaded.roundLabelOf(void 0) === "");
 const reviseMsg = loaded.buildReviseMessage("objection text", chCtx, realT);
-check("revise message = directive + review text", reviseMsg.includes("不认可") && reviseMsg.includes("审查意见") && reviseMsg.includes("objection text"));
+check("revise message = directive + review.md path (no inline action items)", reviseMsg.includes("不认可") && reviseMsg.includes("review.md") && reviseMsg.includes("Action Items") && !reviseMsg.includes("objection text"));
+check("revise message records the review->propose transition", reviseMsg.includes("record review.completed NEEDS_REVISION") && reviseMsg.includes("record propose.completed"));
 check("stripMarkdown removes emphasis and code", loaded.stripMarkdown("**bold** and `code` and [link](http://x)") === "bold and code and link");
 check("stripMarkdown keeps paragraphs", loaded.stripMarkdown("line1\n\n\n\nline2") === "line1\n\nline2");
-const reviseMd = loaded.buildReviseMessage("**核心问题**：方案有缺陷", chCtx, realT);
+const reviseMd = loaded.buildReviseMessage("**核心问题**：方案有缺陷", { ...chCtx, scene: "business" }, realT);
 check("revise message strips markdown before injection", reviseMd.includes("核心问题：方案有缺陷") && !reviseMd.includes("**"));
 const qaPrompt = loaded.buildRoundPrompt("review", { ...chCtx, scene: "qa" }, realT);
 check("qa scene role", qaPrompt.includes("QA Expert"));
@@ -981,20 +1006,29 @@ check("approval allow responds allowed-once", approvalResults.length === 1 && ap
 arenaStore._set({ chat: { order: [], nodes: new Map() } });
 await sleep(10);
 
-// ── review loop: propose → review → (revise → review)* ─────────────────
-// model 1 produces the structured proposal → challenger is prompted to review
-mainStore._set({
-  chat: {
-    order: ["u1", "a1"],
-    nodes: new Map([
-      ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "proposal from model1" }] } }]
-    ])
+// Simulate the node half writing `arena.reviewRequest` after it observes the
+// main model's `propose.completed`: patch the settings namespace value and fire
+// the settings/document-updated handler so the browser half reloads settings
+// and advances propose/revise -> review.
+const fireReviewRequest = (reviewRequest) => {
+  let ns = settingsNamespaces.find((n) => n.ns === "model-arena");
+  if (ns === void 0) {
+    ns = { ns: "model-arena", value: {} };
+    settingsNamespaces.push(ns);
   }
-});
+  ns.value = { ...(ns.value ?? {}), arena: { ...(ns.value?.arena ?? {}), reviewRequest } };
+  settingsUpdatedHandler?.("model-arena");
+};
+
+// ── review loop: propose → review → (revise → review)* ─────────────────
+// The node half observes `propose.completed` and writes arena.reviewRequest;
+// the browser half consumes it and prompts the challenger to review the
+// proposal artifacts (file paths, not chat text).
+fireReviewRequest({ workflowId: "wf1", seq: 1, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
 await sleep(20);
 const arenaPrompts = promptCalls.filter((c) => c.sessionId === "arena-1");
-check("challenger prompted to review after proposal", arenaPrompts.length === 1 && arenaPrompts[0].content[0].text.includes("结构化方案"));
+check("challenger prompted to review after proposal", arenaPrompts.length === 1 && arenaPrompts[0].content[0].text.includes("proposal.md"));
+check("review prompt carries artifact paths", arenaPrompts[0].content[0].text.includes("proposal.md") && arenaPrompts[0].content[0].text.includes("design.md") && arenaPrompts[0].content[0].text.includes("tasks.md") && arenaPrompts[0].content[0].text.includes("review.md 输出路径"));
 check("review phase = review", internals.getArenaMount().challenge.phase === "review");
 check("challenger persona carries review instruction", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.[0]?.value?.["arena-1"] !== void 0 && m.ops[0].value["arena-1"].includes("审查者")));
 
@@ -1015,39 +1049,16 @@ arenaStore._set({
   }
 });
 await sleep(20);
-check("reject verdict injects revision instruction into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("不认可") && c.content[0].text.includes("fix A")));
+check("reject verdict injects revision instruction into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("不认可") && c.content[0].text.includes("review.md") && !c.content[0].text.includes("fix A")));
 check("review phase = revise after rejection", internals.getArenaMount().challenge.phase === "revise");
 check("reject count = 1", internals.getArenaMount().challenge.rejectCount === 1);
 
-// the injected revise message lands (a user node) → re-anchor without advancing
-mainStore._set({
-  chat: {
-    order: ["u1", "a1", "inj1"],
-    nodes: new Map([
-      ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "proposal from model1" }] } }],
-      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }]
-    ])
-  }
-});
-await sleep(20);
-check("injected revise message does not advance the flow", internals.getArenaMount().challenge.phase === "revise" && promptCalls.filter((c) => c.sessionId === "arena-1").length === 1);
-
-// model 1 revises → challenger re-reviews (终审)
-mainStore._set({
-  chat: {
-    order: ["u1", "a1", "inj1", "r1"],
-    nodes: new Map([
-      ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "proposal from model1" }] } }],
-      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
-      ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised proposal" }] } }]
-    ])
-  }
-});
+// the main model revises the files and records propose.completed again → the
+// node half writes a fresh reviewRequest → challenger re-reviews (终审)
+fireReviewRequest({ workflowId: "wf1", seq: 2, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
 await sleep(20);
 const reviewPrompts = promptCalls.filter((c) => c.sessionId === "arena-1");
-check("re-review prompted after revision", reviewPrompts.length === 2 && reviewPrompts[1].content[0].text.includes("revised proposal"));
+check("re-review prompted after revision", reviewPrompts.length === 2);
 check("review phase = review again", internals.getArenaMount().challenge.phase === "review");
 
 // challenger approves (READY) → verdict injected + flow done + composer unlocked
@@ -1073,6 +1084,10 @@ const promptsAfterDone = promptCalls.length;
 arenaStore._set({ chat: arenaStore.snapshot.chat });
 await sleep(20);
 check("no re-trigger after flow done (phase guard)", promptCalls.length === promptsAfterDone);
+// Consume the historical user nodes (inj1/v1 placeholders) so the first-user-
+// message detector does not treat them as a fresh round — its anchor scan now
+// only sees the genuinely new "u2" question in the stop test below.
+internals.getArenaMount().lastSeenSeq = 5;
 // after approval, a late main-session reply must NEVER reach the challenger
 const promptsBeforeLateReply = promptCalls.length;
 mainStore._set({
@@ -1125,6 +1140,46 @@ await sleep(20);
 check("stop aborts the challenge", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "aborted");
 check("stop cancels BOTH sessions (main like native stop + challenger)", cancelCalls.includes("s1") && cancelCalls.includes("arena-1"));
 check("composer unlocked after stop", blockCalls[blockCalls.length - 1].block === void 0);
+
+// ── 3 rejections end the loop without messaging the main model ──────────────
+// start a third round, reject three times; on the 3rd the browser asks the node
+// half (arena.returnToPropose) to write Theseus back to propose, and must NOT
+// promptSession the main model (which would start a fresh turn).
+mainStore._set({
+  chat: {
+    order: ["u1", "a1", "inj1", "r1", "v1", "u2", "u3"],
+    nodes: new Map([
+      ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer" }] } }],
+      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
+      ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised" }] } }],
+      ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "Overall Verdict: READY" }] } }],
+      ["u2", { key: "u2", kind: "user", anchorSeq: 6, data: { content: [{ type: "text", text: "second question" }] } }],
+      ["u3", { key: "u3", kind: "user", anchorSeq: 7, data: { content: [{ type: "text", text: "third question" }] } }]
+    ])
+  },
+  running: true
+});
+await sleep(20);
+fireReviewRequest({ workflowId: "wf1", seq: 200, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
+await sleep(20);
+// reject 1
+arenaStore._set({ chat: { order: ["r1"], nodes: new Map([["r1", { key: "r1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION" }] } }]]) } });
+await sleep(20);
+fireReviewRequest({ workflowId: "wf1", seq: 201, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
+await sleep(20);
+// reject 2
+arenaStore._set({ chat: { order: ["r1", "r2"], nodes: new Map([["r1", { key: "r1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION" }] } }], ["r2", { key: "r2", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 2, step: 1, blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION" }] } }]]) } });
+await sleep(20);
+fireReviewRequest({ workflowId: "wf1", seq: 202, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
+await sleep(20);
+const promptsBeforeReject3 = promptCalls.length;
+// reject 3 → done + returnToPropose, no main-model message
+arenaStore._set({ chat: { order: ["r1", "r2", "r3"], nodes: new Map([["r1", { key: "r1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION" }] } }], ["r2", { key: "r2", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION" }] } }], ["r3", { key: "r3", kind: "assistant-step", anchorSeq: 3, data: { status: "settled", turn: 3, step: 1, blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION" }] } }]]) } });
+await sleep(20);
+check("3 rejections end the loop", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+check("3 rejections ask the node half to return to propose", settingsMutateCalls.some((m) => m.ns === "model-arena" && m.ops?.some((op) => op.path?.[0] === "arena" && op.path?.[1] === "returnToPropose")));
+check("3rd rejection does NOT message the main model", promptCalls.length === promptsBeforeReject3);
 
 // switching to a NEW session mid-challenge tears the runtime down cleanly
 currentSession = "s2";
