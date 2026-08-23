@@ -5,7 +5,6 @@
 //    system-prompt/assemble waterfall — no extra messages in the conversation,
 //    roles apply from the very first turn.
 import z from '@deepseek-ai/schemastery';
-import { PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -26,11 +25,14 @@ const Link = z.object({
 // workspaceSkills: workspace path -> (scene -> challenger skill path). Each
 // workspace × scene pair remembers its own skill (file or folder); a new
 // session in the same workspace defaults to its scene's entry (empty = none).
+// The union accepts the legacy workspace-level string value so pre-v14 settings
+// do not fail registration — the browser half migrates a string entry to the
+// default `business` scene on read.
 const Config = z.object({
   links: z.dict(Link).default({}),
   enabled: z.boolean(),
   persona: z.dict(z.string()).default({}),
-  workspaceSkills: z.dict(z.dict(z.string())).default({}),
+  workspaceSkills: z.dict(z.union([z.string(), z.dict(z.string())])).default({}),
   // arena: review-loop bridge. The browser half writes mainSessionId + cwd when
   // a knowledge-scene challenge starts; the node half polls the session's
   // Theseus workflow state and writes back `reviewRequest` once it observes a
@@ -53,6 +55,15 @@ const Config = z.object({
     // messaging the main model — so the main model stays parked for the human.
     returnToPropose: z.object({
       seq: z.number()
+    }),
+    // Progress heartbeat: the node half rewrites this whenever the Theseus
+    // state's history length or current stage changes, so the browser half can
+    // tell "still working" from "genuinely stuck" instead of guessing from the
+    // main session's idle time alone.
+    watch: z.object({
+      seq: z.number(),
+      stage: z.string(),
+      at: z.number()
     })
   }).default({})
 });
@@ -98,6 +109,8 @@ function apply(ctx) {
     let watchedSessionId = null;
     let lastSeq = -1;
     let lastReturnSeq = -1;
+    let lastWatchSeq = -1;
+    let lastWatchStage = null;
 
     const stopPoll = () => {
       if (pollTimer !== null) {
@@ -169,7 +182,19 @@ function apply(ctx) {
         if (state === null || typeof state !== 'object') return;
         const history = Array.isArray(state.history) ? state.history : [];
         const seq = history.length;
-        if (state.currentStage !== 'review' || seq <= lastSeq) return;
+        const stage = typeof state.currentStage === 'string' ? state.currentStage : '';
+        // Progress heartbeat: report any seq/stage change so the browser half
+        // can tell "Theseus still advancing" from "genuinely stuck" (rather than
+        // guessing from the main session's idle time). Merge preserves the other
+        // arena fields (reviewRequest/returnToPropose) between updates.
+        if (seq !== lastWatchSeq || stage !== lastWatchStage) {
+          lastWatchSeq = seq;
+          lastWatchStage = stage;
+          await scope?.update?.({
+            arena: { ...arena, watch: { seq, stage, at: Date.now() } }
+          });
+        }
+        if (stage !== 'review' || seq <= lastSeq) return;
         const last = history[seq - 1];
         if (last?.event !== 'propose.completed') return;
         lastSeq = seq;
@@ -199,11 +224,15 @@ function apply(ctx) {
         stopPoll();
         watchedSessionId = null;
         lastSeq = -1;
+        lastWatchSeq = -1;
+        lastWatchStage = null;
         return;
       }
       if (sessionId !== watchedSessionId) {
         watchedSessionId = sessionId;
         lastSeq = -1;
+        lastWatchSeq = -1;
+        lastWatchStage = null;
       }
       if (pollTimer === null) {
         pollTimer = setInterval(detectPropose, 1000);
@@ -213,22 +242,22 @@ function apply(ctx) {
     const unwatchArena = scope?.watch?.(() => syncPoll());
     syncPoll();
 
-    // Inject the challenge role into the assembled system prompt for the
-    // arena-enabled sessions only. The global untagged listener is released by
-    // scopeTarget for every agent scope; we resolve the session from
-    // context.agent and skip everything that is not in the persona map.
-    const disposeAssembly = settingsCtx.on('system-prompt/assemble', async (_assembly, context, next) => {
-      const assembled = await next();
-      const sessionId = context?.agent?.session?.id;
-      if (sessionId === void 0 || sessionId === null) return assembled;
-      const role = personaMap[sessionId];
-      if (role === void 0 || role === '') return assembled;
-      for (const section of assembled.sections) {
-        if (section.name !== PERSONA_SECTION) continue;
-        const current = typeof section.text === 'string' && section.text.length > 0 ? section.text : '';
-        section.text = current ? current + '\n\n' + role : role;
+    // Inject the challenge role as a HIGH-PRIORITY system-prompt section (order
+    // 1000, near the end of the assembled prompt) instead of the weak
+    // `deployment:persona` section. The Theseus workflow's own stage skills
+    // ("hand off to review") would otherwise override a soft persona and
+    // auto-advance the main model into review. A dynamic `text` fn resolves the
+    // role per session from the live persona map, so arena-enabled sessions get
+    // the stop-after-propose directive while every other session gets nothing.
+    const disposeRoleSection = settingsCtx.systemPrompt?.section?.({
+      name: 'model-arena:arena-role',
+      order: 1000,
+      text: (context) => {
+        const sessionId = context?.agent?.session?.id;
+        if (sessionId === void 0 || sessionId === null) return '';
+        const role = personaMap[sessionId];
+        return typeof role === 'string' && role !== '' ? role : '';
       }
-      return assembled;
     });
 
     return () => {
@@ -242,7 +271,7 @@ function apply(ctx) {
         unwatch?.();
       } catch {}
       try {
-        disposeAssembly?.();
+        disposeRoleSection?.();
       } catch {}
     };
   });

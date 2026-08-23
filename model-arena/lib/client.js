@@ -524,7 +524,7 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			if (scene.review === true) {
-				return fmt("你是{mainRole}。在 Theseus workflow 中，propose 阶段完成（record propose.completed）后立即停止本轮：不要 auto-advance 到 review，不要自己执行审查，不要自我审查/修正/给出 Overall Verdict，也不要向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你被动等待审查结论，收到结论后按注入的指令继续（NEEDS_REVISION 时回到 propose 修正并重新送审，READY 时继续后续阶段）。禁止辩论，请用中文回答。", { mainRole });
+				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你只负责 explore 和 propose 两个阶段。propose 阶段完成（record propose.completed）后本轮必须立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正，也不要主动向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你只能被动等待审查结论；收到结论后按注入指令继续（NEEDS_REVISION → 回 propose 修正重新送审；READY → record review.completed 并按 Theseus 继续后续阶段）。禁止辩论，请用中文回答。", { mainRole });
 			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
@@ -2490,27 +2490,46 @@ window.__ModuleLoader__.load({
 								arenaTick.bump();
 								return;
 							}
-							// Stop/stall watchdog: a main session that went running→idle
-							// with no new node is a user stop → end the whole challenge
-							// (and cancel the challenger). A pending question/approval
-							// wait is NOT a stop. Sustained idle with zero progress for
-							// STALL_MS (propose never completed) also aborts.
+							// Stop/stall watchdog — Theseus-driven, so the "stop" and
+							// "stall" signals both have to be read against the workflow
+							// heartbeat, not the chat turn alone:
+							//   • user stop = running→idle with no new chat node AND the
+							//     Theseus stage is still pre-review (propose did NOT just
+							//     complete) → abort now (cancel the challenger).
+							//   • Theseus at `review` = propose.completed, reviewRequest is
+							//     on its way → never treat as a stop.
+							//   • stall = idle with no progress (no heartbeat, or a
+							//     pre-review stage that stopped advancing) for STALL_MS.
 							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
 							const running = snap?.running === true;
-							const stalled = !running && !turnCompleted(snap, c.mainAnchor) && !hasPendingInteraction(snap);
-							if (stalled && (c.mainWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
-								abortChallenge();
-								return;
-							}
-							if (stalled) {
+							const hasNewNode = turnCompleted(snap, c.mainAnchor);
+							const idle = !running && !hasPendingInteraction(snap);
+							if (idle) {
 								if (c.stallSince === 0) c.stallSince = Date.now();
 							} else {
 								c.stallSince = 0;
 							}
+							const proposeDone = latestWatch !== null && latestWatch.stage === "review";
+							if (idle && !hasNewNode && c.mainWasRunning && !proposeDone) {
+								abortChallenge();
+								return;
+							}
+							// "Genuinely stuck" = the MAIN SESSION has been idle for
+							// STALL_MS while Theseus is still pre-review. Deliberately
+							// keyed on the session's own idle duration (stallSince), not
+							// on watch.at: a single Theseus step can take a long time
+							// (the model "thinks through two branches"), so the last
+							// progress timestamp can be old while the model is merely
+							// busy — only a sustained idle means it actually stopped.
+							const theseusStalled = idle && !proposeDone && c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS;
+							if (theseusStalled) {
+								abortChallenge();
+								return;
+							}
 							c.mainWasRunning = running;
 							// A completed main turn only re-anchors the stop detector; it
 							// does NOT advance the flow (advancement is reviewRequest-driven).
-							if (turnCompleted(snap, c.mainAnchor)) {
+							if (hasNewNode) {
 								c.mainAnchor = lastKeyOfSnapshot(mainId);
 								c.lastMainText = extractLastAssistantText(mainId);
 								c.lastMainTools = extractLastAssistantTools(mainId);
@@ -2691,6 +2710,14 @@ window.__ModuleLoader__.load({
 				// observes the main model's `propose.completed`. Consumed by
 				// advanceReview to hand the proposal to the challenger.
 				let latestReviewRequest = null;
+				// Latest `arena.watch` progress heartbeat from the node half
+				// (seq/stage/at). Used by advanceReview's watchdog to distinguish
+				// "Theseus still advancing" from "genuinely stuck".
+				let latestWatch = null;
+				// Timestamp of the last catch-up re-read of the arena bridge, so a
+				// network drop that missed the `document-updated` push can recover
+				// without hammering the settings describe endpoint every sync tick.
+				let lastLinksRefresh = 0;
 				const workspacePathOf = (sessionId) => {
 					try {
 						const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
@@ -2769,6 +2796,10 @@ window.__ModuleLoader__.load({
 						latestReviewRequest = (req !== null && typeof req === "object" && typeof req.seq === "number")
 							? req
 							: null;
+						const w = rawArena?.watch;
+						latestWatch = (w !== null && typeof w === "object" && typeof w.seq === "number" && typeof w.at === "number")
+							? w
+							: null;
 					} catch {
 						linksCache = {};
 						if (!skillWriteInFlight) workspaceSkillsCache = {};
@@ -2793,6 +2824,7 @@ window.__ModuleLoader__.load({
 				// the review loop ends (READY, 3 rejections) or the challenge aborts.
 				const stopArenaWatch = () => {
 					latestReviewRequest = null;
+					latestWatch = null;
 					try {
 						apiSettings()?.mutate?.({
 							ns: "model-arena",
@@ -3559,6 +3591,18 @@ window.__ModuleLoader__.load({
 				// conclusion is never silently lost.
 				if (arenaMount !== null && arenaMount.challenge.active === true) {
 					detectChallengeTurn();
+					// Recovery re-read: the node half writes `arena.reviewRequest`
+					// (and the watch heartbeat) via settings; if the network dropped
+					// right at the propose→challenger handoff (or during the
+					// challenger's review), the `document-updated` push may have been
+					// missed. Re-read the persisted bridge on a throttle, then advance
+					// once more so a fresh reviewRequest/watch is consumed immediately.
+					if (Date.now() - lastLinksRefresh > 2000) {
+						lastLinksRefresh = Date.now();
+						loadLinks().then(() => {
+							if (arenaMount !== null && arenaMount.challenge.active === true) detectChallengeTurn();
+						}).catch(() => {});
+					}
 				}
 				} catch (_syncFailure) {
 					// one bad tick must never kill the schedule chain
