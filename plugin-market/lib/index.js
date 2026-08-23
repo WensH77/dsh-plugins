@@ -2433,8 +2433,15 @@ async function handle(ctx, req, res) {
       const extra = patch.inserts.includes(entry.rowId)
       // 用户安装的 bundle（非默认）：进 dsh.profile.bundles 的第三方 bundle
       const userBundle = bundles.includes(entry.moduleName) && !DEFAULT_BUNDLES.includes(entry.moduleName)
-      // 仓库覆盖（安装时自动保存的来源仓库）：展示与 git 通道只取它，不回落到包内 repository 字段
+      // 仓库展示与 git 更新通道的回退链：marketplace 记录 > 包内 repository 字段 > github: 依赖 spec
+      // （CLI 安装的插件没有 marketplace 记录，也照样能显示来源、检查更新）
       const override = Object.prototype.hasOwnProperty.call(overrides, entry.moduleName) ? overrides[entry.moduleName] : null
+      const depSpec = typeof deps[entry.moduleName] === 'string' ? deps[entry.moduleName] : ''
+      const repository = (override !== null && override !== undefined && override !== '')
+        ? override
+        : (meta?.repository != null && meta.repository !== '')
+          ? meta.repository
+          : (depSpec.startsWith('github:') ? depSpec.replace(/^github:/u, '') : null)
       return {
         ...entry,
         userDisabled: patch.disables.includes(entry.rowId),
@@ -2445,7 +2452,7 @@ async function handle(ctx, req, res) {
         localInstalled: isLocalDependency(profileDir, entry.moduleName),
         localPath: localDependencyPath(profileDir, entry.moduleName),
         version: meta?.version ?? null,
-        repository: override,
+        repository,
       }
     })
     // 依赖 spec → 展示通道（git/link/file/npm）
