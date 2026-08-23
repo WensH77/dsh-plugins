@@ -15,7 +15,7 @@
 | 确认与冲突门 | 点一次 → 服务端逐文件比对 hash：无冲突 → 红色 ✓ 待确认；有冲突 → **?** 列出被其他会话改动的文件，再点一次 → ✓ 确认；焦点离开自动取消 |
 | 代码回滚 | 轮次快照（tar.zst + 逐文件 hash manifest）+ 恢复撤销目标轮次之后的改动；恢复前生成 recovery 备份 |
 | 快照继承 | 回滚 / fork 子会话**硬链接**继承祖先快照，seed 历史内可继续代码回滚 |
-| 自动归档 | 原会话归档（侧边栏隐藏、可恢复），避免旧分支与回滚会话并列 |
+| 自动归档 | 原会话归档（侧边栏隐藏；**当前 dsh 无 unarchive API，归档后不可从 UI 恢复**），避免旧分支与回滚会话并列 |
 | 降级路径 | 无快照 / 快照禁用 / 非 cwd 工作区 → 纯对话回滚并在界面提示 |
 
 ## 工作原理
@@ -114,16 +114,17 @@ dsh web
 
 ```bash
 node --test chat-rollback/test/fork-rollback.mjs   # 或 npm test（依赖仓库根 node_modules 解析 @deepseek-ai/*）
+node chat-rollback/test/client-emit.mjs            # 浏览器端：回滚预填 emit 定向性（vm 加载 bundle）
 ```
 
-覆盖：轮次快照排除 `.git`/`node_modules`；逐文件 hash manifest 写入与排除；fork 子会话硬链接继承（含 manifest）；**用户消息回滚**（截断到消息之前 + 预填自身文本 + open-turn 剪除、steer 场景排队消息保留）；助手消息回滚（旧版语义）；含 `.git` 的旧版快照恢复时**不回滚 git 状态**（解包侧 excludes 保护）；**preflight 冲突检测**（本会话自改 → 无冲突；外部改动/新增文件 → 命中冲突并列出文件）；**双会话端到端**（会话1新建文件 → 会话2改动 → 回滚2 → 回滚1：有 end manifest 时回滚1无冲突且删除文件；无 end manifest 时同样无冲突，`reason: 'no-end-manifest'`）。
+覆盖：轮次快照排除 `.git`/`node_modules`；逐文件 hash manifest 写入与排除；fork 子会话硬链接继承（含 manifest）；**用户消息回滚**（截断到消息之前 + 预填自身文本 + open-turn 剪除、steer 场景排队消息保留）；助手消息回滚（旧版语义）；含 `.git` 的旧版快照恢复时**不回滚 git 状态**（解包侧 excludes 保护）；**preflight 冲突检测**（本会话自改 → 无冲突；外部改动/新增文件 → 命中冲突并列出文件）；**双会话端到端**（会话1新建文件 → 会话2改动 → 回滚2 → 回滚1：有 end manifest 时回滚1无冲突且删除文件；无 end manifest 时同样无冲突，`reason: 'no-end-manifest'`）；**空目录保护**（快照内空目录恢复后保留、排除项空目录如空 `node_modules/` 不被剪枝清理删除）；**recovery 备份排除 `.git`/`node_modules`**；**含 `$` 路径的工作区**快照/恢复（shell 转义，防 `$HOME` 展开）；**`snapshotEnabled:false` 降级**（纯对话回滚、不写快照、工作区不动）；**恢复失败路径**（源会话不归档、快照保留可重试）。
 
 ## 已知限制
 
 - 快照粒度为**轮次**（每轮开始前一次），非每次工具调用；回滚恢复的是 seed 最后一个完成轮次**结束后**的状态（用户消息回滚 = 该消息所在轮次开始前的状态），轮次内部的中间状态无法恢复
 - 快照自插件启动后生效：插件安装/重启之前的历史会话没有快照（降级为纯对话回滚）；继承只覆盖源会话已有的档位
-- 恢复操作覆盖共享工作区（目标轮次之后的修改被撤销）；恢复前有 recovery 备份，可手动 `zstd -dc <backup> | tar -C <cwd> -xf -` 撤销
-- **恢复保护**：解包侧同样应用 excludes —— 即使快照内混入 `.git`/`node_modules`（旧版插件产物或外部归档），恢复也绝不动这两类路径（实测：含 `.git` 的快照恢复后仓库 HEAD 保持当前提交）
+- 恢复操作覆盖共享工作区（目标轮次之后的修改被撤销）；恢复前有 recovery 备份，可手动 `zstd -dc <backup> | tar -C <cwd> -xf -` 撤销（备份与快照一样排除 `.git`/`node_modules`——恢复对排除项路径三侧都不改动，无需备份它们）
+- **恢复保护**：解包、文件剪枝、空目录清理三侧均应用 excludes —— 即使快照内混入 `.git`/`node_modules`（旧版插件产物或外部归档），恢复也绝不动这两类路径；快照内本有的空目录也会被保留（实测：含 `.git` 的快照恢复后仓库 HEAD 保持当前提交，空的 `node_modules/` 目录不被清掉）
 - **清理策略：归档即清理** —— 回滚成功后源会话立即归档，其快照随即删除（recovery 备份位于新会话目录，不受影响）；其余已归档会话的快照在下次回滚时惰性清理，也可 `POST /chat-rollback/prune-archived` 手动清理；未归档会话的快照永久保留
 - **共享 cwd 与冲突门**：并存会话共享同一目录；回滚前按文件 hash 比对，被其他会话改动过的文件会先以 **?** 提示冲突、需二次确认才覆盖（`POST /chat-rollback/preflight`）。运行中的源会话（steer 中途）跳过冲突门——其未落盘改动与外部改动无法区分，回滚会取消该 agent
 - **无 end manifest 时的信息缺口**：本会话最后写入参照缺失（end manifest 未写入、且没有更晚的 start manifest）时，冲突门无法区分「文件是本会话自己写的」还是「其他会话改的」。此时按无冲突放行（`reason: 'no-end-manifest'`），避免把本会话新建的文件误报为冲突（场景：回滚会话2后文件已回到会话1内容，再回滚会话1不应提示冲突）；代价是同条件下若确有其他会话的未回滚写入，不会提前告警——恢复前生成的 recovery 备份可手动撤销
@@ -135,12 +136,13 @@ node --test chat-rollback/test/fork-rollback.mjs   # 或 npm test（依赖仓库
 - 参数校验：非数字 seq、越界 seq、不存在的会话均返回明确错误
 - 用户消息目标：seed 截断到该消息**之前**（open-turn 剪除、seed 以最后一个 turn/end 或排队消息收尾）、nextInput = 该消息自身文本、代码回滚 = seed 最后一个完成轮次的 turn-(turn+1) 快照、首条用户消息回滚 = seed 保留 request/header（全新开始）
 - 助手消息目标（旧语义）：seed = `events.slice(0, seq+1)`（含目标消息），meta 继承 cwd/seedLength/agentPreset，无 parentSession（顶层会话）
-- workspace 解析 = 包含源会话的 workspace，attachSession 调用成功；preset 组合失败 / workspace 挂载失败 / agents.create 异常均不阻断或返回 500
+- workspace 解析 = 包含源会话的 workspace，attachSession 调用成功；preset 组合失败 / workspace 挂载失败均不阻断回滚；agents.create 异常则回滚返回 500（先建会话后恢复，create 失败不触碰工作区）
 - 浏览器端：中英文文案；DOM 注入（MutationObserver → `chat.nodes` 解析 anchorSeq → 挂载按钮；steering 气泡同样挂载、未知/非用户节点不挂载）；两段式确认（自绘回滚箭头、确认态红色 ✓、busy 态旋转）；本地 Tooltip；blur 取消确认态
 - **locale 订阅修复**：locale-change 重绘原用 WeakMap 的 `.values()`（WeakMap 无此方法，任何插件注册字典都会触发 `locale subscriber crashed`）；`mounted` 改为 Map（行在 detach 时删除，无泄漏），控制台报错消除
 - 轮次快照：turn/start 触发 tar.zst 归档（排除 .git/node_modules）；同轮快照覆盖旧文件；快照失败仅告警不阻断对话
 - 代码回滚 e2e（真实目录演练）：修改+新建+删除文件后回滚，文件恢复旧内容、新增文件被清理、被删文件恢复、recovery 备份生成；无快照路径返回 restored:false 且会话照常创建
 - 预填通道：sessions.refresh() 后 binding 已物化，向新会话 emit `slash/input-insert-text`（draftRev 0）；用户已输入时静默跳过
+- **预填定向修复（emit 广播）**：原实现 `binding.ctx.emit('slash/input-insert-text', ...)` 不带 dispatch subject——cordis 的 dispatch 仅在给定 `thisArg` 时做 context 过滤（`thisArg[Context.filter]`），裸 emit 会跑 hooks 表上的**全部** listener，在共享 session-ctx 架构下把回滚文本预填进**所有已挂载的 composer**。改为 `binding.ctx.emit(binding.ctx, ...)`（与 dsh input-trigger 的 `actx.bail(actx, ...)` 同形），`Context.filter` 只放行目标会话的 composer shell。新增 `test/client-emit.mjs`（vm 加载浏览器 bundle + 双会话 ctx stub，驱动两段式点击）断言：预填 emit 仅发往新会话 ctx、首个 dispatch 参数是会话 ctx（thisArg）、payload 携带回滚文本
 - 快照继承：响应携带 inheritedSnapshots（界面提示可继续回滚）；硬链接共享 inode 零拷贝，跨文件系统降级 copyFile；继承失败不阻断，附 inheritNote
 - fork 继承：session/created 判据（parentSession 且无 origin/delegationDepth）命中 fork 子会话；子代理（origin:"subagent"）与回滚子会话（无 parentSession）均不触发；回调 async 化，同步抛错不污染会话 attach
 - 源 agent 取消：仅 running 时调用 agent.cancel（keepInbox），失败仅告警

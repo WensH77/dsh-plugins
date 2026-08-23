@@ -13,7 +13,7 @@
 // this point in a fresh session.
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { promises as fs, createReadStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
@@ -99,7 +99,9 @@ function tarExcludeArgs(excludes) {
 async function snapshotWorkspace(cwd, targetFile, excludes) {
   await fs.mkdir(dirname(targetFile), { recursive: true });
   const excl = tarExcludeArgs(excludes);
-  return runSh('tar -C "' + cwd + '" ' + excl + ' -cf - . | zstd -q -o "' + targetFile + '"');
+  // 路径一律 shq 单引号包裹：双引号内的 $/反引号会被 shell 展开，路径含
+  // 这些字符的工作区会被快照到错误的目标甚至执行命令。
+  return runSh('tar -C ' + shq(cwd) + ' ' + excl + ' -cf - . | zstd -q -o ' + shq(targetFile));
 }
 
 /** Restore cwd from a tar.zst snapshot: overwrite existing files, then prune
@@ -108,26 +110,33 @@ async function snapshotWorkspace(cwd, targetFile, excludes) {
  * side re-applies them, because a snapshot from an older plugin build (or a
  * foreign archive) may still contain excluded paths — restoring .git would
  * silently rewind the repository, and node_modules must never be clobbered.
+ * The prune side applies the same rule twice: file removal skips excluded
+ * paths, and the empty-dir cleanup skips both excluded directories and
+ * directories present in the snapshot (the latter are restored by the unpack
+ * and must survive — a bare `find -type d -empty -delete` deletes both).
  * Destructive. */
 async function restoreWorkspace(cwd, snapshotFile, excludes) {
   const excl = tarExcludeArgs(excludes);
-  const unpack = await runSh('zstd -dc "' + snapshotFile + '" | tar ' + excl + ' -C "' + cwd + '" -xf -');
+  const unpack = await runSh('zstd -dc ' + shq(snapshotFile) + ' | tar ' + excl + ' -C ' + shq(cwd) + ' -xf -');
   if (!unpack.ok) return unpack;
-  const listing = await runSh('tar -tf "' + snapshotFile + '"');
+  const listing = await runSh('tar -tf ' + shq(snapshotFile));
   if (!listing.ok) return listing;
-  const kept = new Set();
+  const keptFiles = new Set();
+  const keptDirs = new Set();
   for (const line of listing.stdout.split('\n')) {
-    const rel = line.replace(/^\.\//, '').replace(/\/$/, '');
-    if (rel !== '' && !rel.endsWith('/')) kept.add(rel);
+    const rel = line.replace(/^\.\//, '');
+    if (rel === '') continue;
+    if (rel.endsWith('/')) keptDirs.add(rel.slice(0, -1));
+    else keptFiles.add(rel);
   }
-  const files = await runSh('find "' + cwd + '" -type f');
+  const files = await runSh('find ' + shq(cwd) + ' -type f');
   if (!files.ok) return files;
   let removed = 0;
   for (const line of files.stdout.split('\n')) {
     const abs = line.trim();
     if (abs === '') continue;
     const rel = abs.slice(cwd.length).replace(/^\//, '');
-    if (kept.has(rel)) continue;
+    if (keptFiles.has(rel)) continue;
     // 排除项（.git/node_modules 任意层级）不在快照里、也绝不剪枝删除
     if (isExcluded(rel, excludes)) continue;
     try {
@@ -135,16 +144,52 @@ async function restoreWorkspace(cwd, snapshotFile, excludes) {
       removed += 1;
     } catch {}
   }
-  try {
-    await runSh('find "' + cwd + '" -type d -empty -delete');
-  } catch {}
-  return { ok: true, removed };
+  // 剪枝后留下的空目录：只清「快照里没有、也不命中排除项」的空目录。
+  // 快照内本就有（解包已重建）的空目录必须保留——旧实现用
+  // `find -type d -empty -delete`，会把它们连同排除项的空目录（如尚未
+  // 安装任何包的空 node_modules/）一起删掉，违背"恢复绝不动排除项"。
+  // -depth 保证子目录先于父目录被删。
+  let removedDirs = 0;
+  const dirs = await runSh('find ' + shq(cwd) + ' -depth -type d -empty -print');
+  if (dirs.ok) {
+    for (const line of dirs.stdout.split('\n')) {
+      const abs = line.trim();
+      if (abs === '') continue;
+      const rel = abs.slice(cwd.length).replace(/^\//, '');
+      if (rel === '') continue;
+      if (keptDirs.has(rel)) continue;
+      if (isExcluded(rel, excludes)) continue;
+      try {
+        await fs.rmdir(abs);
+        removedDirs += 1;
+      } catch {}
+    }
+  }
+  return { ok: true, removed, removedDirs };
 }
 
-/** Backup the current cwd state before a destructive restore, for manual undo. */
-async function backupWorkspace(cwd, targetFile) {
-  const result = await snapshotWorkspace(cwd, targetFile, []);
+/** Backup the current cwd state before a destructive restore, for manual undo.
+ * Excludes mirror the restore's own protection: unpack + file prune + dir
+ * cleanup all re-apply excludes, so excluded paths (.git/node_modules at any
+ * depth) are never touched by a restore — backing them up would only add
+ * gigabytes to the snapshot dir and slow every rollback down. */
+async function backupWorkspace(cwd, targetFile, excludes = []) {
+  const result = await snapshotWorkspace(cwd, targetFile, excludes);
   return result.ok;
+}
+
+/** Stream one file through SHA-256 without buffering it whole — a multi-GB
+ * single file (model weights, datasets) must not be loaded into memory on
+ * every manifest write / preflight. */
+async function sha256File(file) {
+  const hash = createHash('sha256');
+  await new Promise((resolve, reject) => {
+    const stream = createReadStream(file);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', resolve);
+  });
+  return hash.digest('hex');
 }
 
 /** Per-file SHA-256 manifest of the tracked (non-excluded) files under cwd:
@@ -160,7 +205,7 @@ async function hashWorkspace(cwd, excludes) {
     .filter((p) => !p.includes('/'))
     .map((p) => '-name ' + shq(p.endsWith('/') ? p.slice(0, -1) : p) + ' -prune');
   const pruneExpr = pruneArgs.length > 0 ? pruneArgs.join(' -o ') + ' -o ' : '';
-  const files = await runSh('find "' + cwd + '" ' + pruneExpr + '-type f -print');
+  const files = await runSh('find ' + shq(cwd) + ' ' + pruneExpr + '-type f -print');
   if (!files.ok) return null;
   const map = {};
   for (const line of files.stdout.split('\n')) {
@@ -170,7 +215,7 @@ async function hashWorkspace(cwd, excludes) {
     if (rel === '' || rel.endsWith('/')) continue;
     if (isExcluded(rel, excludes)) continue;
     try {
-      map[rel] = createHash('sha256').update(await fs.readFile(abs)).digest('hex');
+      map[rel] = await sha256File(abs);
     } catch {}
   }
   return map;
@@ -641,7 +686,7 @@ async function handleRollback(req, res, env) {
         const stamp = Date.now();
         const backupFile = join(env.snapRoot, childId, 'recovery-' + stamp + '.tar.zst');
         try {
-          await backupWorkspace(cwd, backupFile);
+          await backupWorkspace(cwd, backupFile, env.excludes);
           const restore = await restoreWorkspace(cwd, snapshotFile, env.excludes);
           if (restore.ok) {
             codeRollback = { restored: true, snapshot: 'turn-' + (turn + 1) + '.tar.zst', backup: 'recovery-' + stamp + '.tar.zst' };
@@ -669,7 +714,10 @@ async function handleRollback(req, res, env) {
     // The source session is superseded: archive it so it leaves the sidebar
     // and cannot be resumed alongside the new branch (its later turns' file
     // changes were already undone by the code rollback). Archiving is durable
-    // and keeps workspace accounting, so unarchive restores its old position.
+    // and keeps workspace accounting. NOTE: the current dsh exposes no
+    // unarchive API and every surface hides archived sessions, so an archived
+    // session stays out of the UI until a future restore path exists — the
+    // rollback itself is the only archiver today.
     // Its turn snapshots are no longer reachable — prune them right away.
     // Exception: a FAILED workspace restore keeps the source live with its
     // snapshots intact, so the user can retry the rollback.

@@ -4,9 +4,7 @@
 // - Shipped preset: composition carries the both presentation row; preset.yml
 //   is valid YAML with name/description/order.
 // - Presentation row: exports + Config defaults to both.
-// - Client bundle: syntax check (node --check, browser code is not executed).
 // Run: node test/smoke.mjs
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -35,7 +33,7 @@ function check(label, cond, detail) {
 console.log('node half:');
 check('exports apply/inject/name', ['apply', 'inject', 'name'].every((k) => typeof apply === 'function' && inject !== void 0 && typeof name === 'string'), 'missing export');
 check('name is tool-both', name === 'tool-both', name);
-check('inject lists webServer + settings', Array.isArray(inject) && inject.includes('webServer') && inject.includes('settings'), String(inject));
+check('inject is empty (no service dependencies since the settings card was removed)', Array.isArray(inject) && inject.length === 0, String(inject));
 check('installer helpers exported', typeof installBothPreset === 'function' && typeof presetInstalled === 'function' && typeof presetTarget === 'function');
 
 // ── preset installer ────────────────────────────────────────────────────────
@@ -110,15 +108,6 @@ check('apply runs without throwing (native path)', (() => {
   }
   return threw === null;
 })());
-
-// ── client bundle syntax ────────────────────────────────────────────────────
-console.log('client bundle:');
-try {
-  execFileSync(process.execPath, ['--check', join(PKG, 'lib', 'client.js')], { stdio: 'pipe' });
-  check('client.js passes node --check', true);
-} catch (error) {
-  check('client.js passes node --check', false, String(error?.stderr ?? error));
-}
 
 console.log(failed === 0 ? '\nALL PASS' : '\n' + failed + ' FAILED');
 process.exit(failed === 0 ? 0 : 1);

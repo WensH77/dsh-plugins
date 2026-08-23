@@ -5,8 +5,8 @@
  *   GET  /plugin-market/state        插件清单 + 补丁层状态 + GitHub 源列表
  *   POST /plugin-market/sources      保存 GitHub 源列表（可编辑、可持久化）
  *   POST /plugin-market/toggle       启用/停用插件（写 cordis.patch.yml，HMR 生效）
- *   POST /plugin-market/check-update 检查更新（git 通道：对比远端 HEAD 与本地 lockfile commit）
- *   POST /plugin-market/update       更新插件（git 通道，跟随仓库默认分支最新提交）
+ *   POST /plugin-market/check-update 检查更新（git 通道：对比远端 HEAD 与本地 lockfile commit；开启审查时附本次改动差异审查）
+ *   POST /plugin-market/update       更新插件（git 通道，以安装来源仓库为准，跟随仓库默认分支最新提交）
  *   POST /plugin-market/uninstall    卸载插件（移除 insert 行 + pnpm remove）
  *
  * 机制：与 dsh plugin CLI 一致——用户补丁层 cordis.patch.yml 是逐键覆盖，
@@ -30,7 +30,7 @@ export const inject = ['webServer', 'loader', 'agents']
 
 const ROUTE_PREFIX = '/plugin-market'
 const SOURCES_FILE = join(homedir(), '.dsh', 'plugin-market-sources.json')
-/** 用户手动指定的插件仓库地址覆盖：{ packageName: repoString }，优先于包内 repository 字段。 */
+/** 插件来源仓库记录：{ packageName: repoString }，安装时自动写入用户填写的仓库（拉取来源），供展示与 git 通道检查/更新。 */
 const REPOS_FILE = join(homedir(), '.dsh', 'plugin-market-repos.json')
 /** 隔离审查目录：先拉取到此处审查，通过后再迁移到 profile。 */
 const STAGING_DIR = join(homedir(), '.dsh', 'plugin-market-staging')
@@ -38,6 +38,13 @@ const STAGING_DIR = join(homedir(), '.dsh', 'plugin-market-staging')
 const REVIEWS_DIR = join(homedir(), '.dsh', 'plugin-market-reviews')
 /** 审查缓存有效期（天）。 */
 const REVIEW_TTL_DAYS = 7
+
+/** dsh 本体的 GitHub 仓库（侧边栏版本状态灯的检测对象，非插件市场自身）。 */
+const DSH_REPO = { owner: 'deepseek-ai', name: 'deepseek-harness' }
+/** dsh 自更新检测/判定结果持久化文件。 */
+const DSH_STATE_FILE = join(homedir(), '.dsh', 'plugin-market-dsh.json')
+/** dsh 版本检测间隔：启动时一次 + 每 1 小时同步。 */
+const DSH_CHECK_INTERVAL_MS = 60 * 60 * 1000
 
 /** 宿主基础设施行：停用会连带破坏 HMR/传输/存储/设置链，禁止开关。 */
 const PROTECTED_MODULE_PATTERNS = [
@@ -135,6 +142,25 @@ function isLocalDependency(profileDir, moduleName) {
     }
   } catch {}
   return false
+}
+
+/** 本地安装（link:/file: 依赖或指向 profile 外的符号链接）的路径/spec 字符串；非本地安装返回 null。 */
+function localDependencyPath(profileDir, moduleName) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+    const spec = manifest.dependencies?.[moduleName] ?? manifest.devDependencies?.[moduleName] ?? null
+    if (typeof spec === 'string' && /^(?:link|file):/u.test(spec)) return spec
+  } catch {}
+  try {
+    const fsMod = require('node:fs')
+    const target = join(profileDir, 'node_modules', ...(moduleName.startsWith('@') ? moduleName.split('/') : [moduleName]))
+    const st = fsMod.lstatSync(target)
+    if (st.isSymbolicLink()) {
+      const real = fsMod.realpathSync(target)
+      if (!real.startsWith(profileDir)) return real
+    }
+  } catch {}
+  return null
 }
 
 /** Cordis Fiber 状态映射（与 dsh-host-plugin-inventory 一致）。 */
@@ -832,16 +858,16 @@ async function writeSources(list) {
 }
 
 
-/** 读取用户手动指定的插件仓库地址覆盖（packageName → repo 字符串）。 */
+/** 读取插件来源仓库记录（packageName → repo 字符串；安装时自动保存，卸载时清除）。 */
 async function readRepoOverrides() {
   try {
     const parsed = JSON.parse(await readFile(REPOS_FILE, 'utf8'))
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const out = {}
       for (const [key, value] of Object.entries(parsed)) {
-        // 兼容两种记录：旧格式字符串（仅手动写入过 → manual: true）与新格式 { repo, manual }
-        if (typeof value === 'string' && value.trim() !== '') out[key] = { repo: value.trim(), manual: true }
-        else if (value !== null && typeof value === 'object' && typeof value.repo === 'string' && value.repo.trim() !== '') out[key] = { repo: value.repo.trim(), manual: value.manual === true }
+        // 兼容旧格式 { repo, manual }：只取 repo 字符串
+        const repo = typeof value === 'string' ? value : value?.repo
+        if (typeof repo === 'string' && repo.trim() !== '') out[key] = repo.trim()
       }
       return out
     }
@@ -851,26 +877,14 @@ async function readRepoOverrides() {
   }
 }
 
-/** 写入单个插件的仓库地址覆盖；repository 为空串表示清除覆盖（回落到包内 repository 字段）。manual=true 表示用户手动修改（卡片显示「手动覆盖」徽标），安装自动保存为 false。 */
-async function writeRepoOverride(packageName, repository, manual = false) {
+/** 写入单个插件的来源仓库；repository 为空串表示清除记录（卸载时调用）。安装时自动保存。 */
+async function writeRepoOverride(packageName, repository) {
   const overrides = await readRepoOverrides()
   const clean = typeof repository === 'string' ? repository.trim() : ''
   if (clean === '') delete overrides[packageName]
-  else overrides[packageName] = { repo: clean, manual: manual === true }
+  else overrides[packageName] = clean
   await writeFile(REPOS_FILE, JSON.stringify(overrides, null, 2) + '\n', 'utf8')
-  return overrides[packageName]?.repo ?? null
-}
-
-/** set-repo 落盘决策：保存的地址与当前生效地址（已有覆盖优先，否则包内 repository）一致时
- * 视为"没变"——不新建覆盖、也不把自动保存（manual:false）升级成手动覆盖（卡片不显示徽标）；
- * 只有真正变更（或清空）才需要写 manual 覆盖。返回 { action: 'keep'|'write'|'clear', repo }。 */
-function decideRepoOverride(overrides, moduleName, clean, metaRepo) {
-  const existing = Object.prototype.hasOwnProperty.call(overrides, moduleName) ? overrides[moduleName] : null
-  const currentEffective = existing !== null ? existing.repo : metaRepo
-  if (clean === (currentEffective ?? '')) {
-    return { action: 'keep', repo: existing !== null ? existing.repo : (metaRepo ?? '') }
-  }
-  return { action: clean === '' ? 'clear' : 'write', repo: clean }
+  return overrides[packageName] ?? null
 }
 
 /** 移除一条「- id: X」+「disabled: true」禁用块（重装 bundle 时清理卸载留下的临时禁用行）。 */
@@ -916,6 +930,49 @@ function createInstallJob(repo, name) {
   }
   installJobs.set(id, job)
   return job
+}
+
+/**
+ * 更新任务：检查更新审查完成后保留隔离目录（登记到本队列），点「确认更新」时直接从该
+ * 隔离环境安装——不再重新拉取/审查；同时保存审查报告为该插件新版本，点击已安装卡片即可查看。
+ */
+const updateJobs = new Map()
+/** 更新任务过期时间（与安装任务一致：30 分钟内未确认视为废弃）。 */
+const UPDATE_JOB_TTL_MS = 30 * 60 * 1000
+
+/** 新建更新任务并清理过期任务；同一插件已有任务时先释放旧的。 */
+function createUpdateJob(moduleName, repoInfo, jobDir, pkgDir, review) {
+  sweepUpdateJobs()
+  for (const [id, job] of updateJobs) {
+    if (job.moduleName === moduleName) {
+      updateJobs.delete(id)
+      rm(job.jobDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+  const id = 'update-' + Date.now() + '-' + Math.random().toString(16).slice(2, 6)
+  updateJobs.set(id, { id, moduleName, repoInfo, jobDir, pkgDir, review, createdAt: Date.now() })
+  return id
+}
+
+/** 清理过期的更新任务（连同隔离目录）。 */
+function sweepUpdateJobs() {
+  const now = Date.now()
+  for (const job of updateJobs.values()) {
+    if (now - job.createdAt > UPDATE_JOB_TTL_MS) {
+      updateJobs.delete(job.id)
+      rm(job.jobDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+}
+
+/** 读取隔离暂存包目录的 package.json version（用于把审查报告按 新版本 保存）。 */
+function readStagedVersion(pkgDir) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
+    return typeof pkg.version === 'string' && pkg.version !== '' ? pkg.version : null
+  } catch {
+    return null
+  }
 }
 
 /** 中断安装任务：abort 进行中的拉取/审查，检查残留并清理，任务即刻从队列消失。 */
@@ -1122,7 +1179,37 @@ async function confirmInstall(jobId) {
 }
 
 /**
- * 更新已安装插件（git 通道）：从包内 repository 字段（或用户覆盖）解析 GitHub 仓库，
+ * 更新差异审查：对新版本与已装代码做文件级 diff，把变更（新增/删除/修改）与新内容一并交给审查通道，
+ * 返回附 diff 的报告（method: update-diff），保证审查报告包含本次改动的描述。
+ * 供「更新」与「检查更新（开启审查）」共用；无变更或扫描为空时返回 null。
+ */
+async function reviewUpdateDiff(ctx, installedDir, stagedPkgDir, moduleName) {
+  const diff = await computePackageDiff(installedDir, stagedPkgDir)
+  // 变更文件的新内容（每文件 ≤ 20KB、总计 ≤ 60KB），供模型完整判断
+  let changedContent = ''
+  let total = 0
+  for (const rel of diff.changed) {
+    const text = await readFile(join(stagedPkgDir, rel), 'utf8').catch(() => null)
+    if (text === null) continue
+    const capped = text.slice(0, 20000)
+    total += capped.length
+    if (total > 60000) break
+    changedContent += '=== ' + rel + ' ===\n' + capped + '\n'
+  }
+  const scan = await scanRiskSurface(stagedPkgDir)
+  if (scan.files.length === 0 || (diff.changed.length + diff.added.length) === 0) return null
+  const label = 'security-update-' + moduleName.split('/').pop()
+  const prompt = buildUpdatePrompt(scan, moduleName, scan.pkgMeta?.version ?? null, diff, changedContent)
+  const report = await runReviewChannel(ctx, label, prompt, undefined)
+  if (report === null || typeof report !== 'object') return null
+  report.diff = diff
+  report.scanned = { files: scan.files.length, sizeKB: scan.sizeKB, signals: scan.signals.length }
+  report.method = 'update-diff'
+  return report
+}
+
+/**
+ * 更新已安装插件（git 通道）：优先使用安装来源仓库（客户端传入，与展示/检查更新同一来源），
  * `pnpm add github:owner/name` 跟随仓库默认分支最新提交。
  */
 /** 已装包的本地目录（支持 scoped 包名）。 */
@@ -1187,19 +1274,46 @@ function buildUpdatePrompt(scan, pkgName, version, diff, changedContent) {
   ].join('\n').slice(0, PROMPT_CAP)
 }
 
-async function updatePlugin(ctx, entryId) {
+async function updatePlugin(ctx, entryId, repository = '', updateJobId = '') {
   const entry = ctx.loader.entries().find((candidate) => candidate.id === entryId)
   if (!entry) throw new Error('没有名为 ' + entryId + ' 的插件条目')
   const moduleName = entry.options.name
   if (isProtectedModule(moduleName)) throw new Error(moduleName + ' 属于宿主基础设施，禁止更新')
   const patchPath = findPatchPath(ctx)
   const profileDir = dirname(patchPath)
-  const meta = entryPkgMeta(moduleName, ctx.baseUrl ?? 'file:///')
-  // 从 repository 字段提取 GitHub 仓库（git 通道）
+
+  // 检查更新审查已保留隔离目录（更新任务）：直接从该隔离环境安装——不再重新拉取/审查；
+  // 并把审查报告保存为该插件新版本，点击已安装插件卡片即可直接查看
+  if (typeof updateJobId === 'string' && updateJobId !== '') {
+    sweepUpdateJobs()
+    const job = updateJobs.get(updateJobId)
+    if (!job || job.moduleName !== moduleName) throw new Error('更新任务不存在或已过期（请重新检查更新）')
+    try {
+      await pnpmInstall(profileDir, gitSpec(job.repoInfo))
+      const newVersion = readStagedVersion(job.pkgDir)
+      if (job.review !== null && job.review !== undefined && newVersion !== null) {
+        await writeReviewCache(reviewKey(moduleName, newVersion), job.review)
+      }
+      // 版本元信息已变化：清掉缓存，避免 /review 用旧版本键查不到刚保存的报告
+      pkgMetaCache.delete(moduleName)
+      return { ok: true, entryId, moduleName, usedChannel: 'git', restart: true, review: job.review }
+    } finally {
+      updateJobs.delete(updateJobId)
+      await rm(job.jobDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  // 无隔离任务（审查关闭/旧流程兼容）：重新拉取 + 差异审查 + 安装
+  // 仓库解析：优先客户端传入的安装来源仓库（与展示/检查更新同一来源），否则回落包内 repository 字段
   let repoInfo = null
-  const rawRepo = meta?.repository ?? null
-  if (typeof rawRepo === 'string') {
-    try { repoInfo = githubRepoInfo(rawRepo) } catch {}
+  if (typeof repository === 'string' && repository.trim() !== '') {
+    try { repoInfo = githubRepoInfo(repository.trim()) } catch {}
+  }
+  if (repoInfo === null) {
+    const rawRepo = entryPkgMeta(moduleName, ctx.baseUrl ?? 'file:///')?.repository ?? null
+    if (typeof rawRepo === 'string') {
+      try { repoInfo = githubRepoInfo(rawRepo) } catch {}
+    }
   }
   if (repoInfo === null) throw new Error('git 通道需要 GitHub 仓库地址（repository 字段缺失）')
 
@@ -1207,31 +1321,7 @@ async function updatePlugin(ctx, entryId) {
   let review = null
   const staged = await stagePackage(gitSpec(repoInfo))
   try {
-    const installedDir = installedPackageDir(profileDir, moduleName)
-    const diff = await computePackageDiff(installedDir, staged.pkgDir)
-    // 变更文件的新内容（每文件 ≤ 20KB、总计 ≤ 60KB），供模型完整判断
-    let changedContent = ''
-    let total = 0
-    for (const rel of diff.changed) {
-      const text = await readFile(join(staged.pkgDir, rel), 'utf8').catch(() => null)
-      if (text === null) continue
-      const capped = text.slice(0, 20000)
-      total += capped.length
-      if (total > 60000) break
-      changedContent += '=== ' + rel + ' ===\n' + capped + '\n'
-    }
-    const scan = await scanRiskSurface(staged.pkgDir)
-    if (scan.files.length > 0 && (diff.changed.length + diff.added.length) > 0) {
-      const label = 'security-update-' + moduleName.split('/').pop()
-      const prompt = buildUpdatePrompt(scan, moduleName, scan.pkgMeta?.version ?? null, diff, changedContent)
-      const report = await runReviewChannel(ctx, label, prompt, undefined)
-      if (report !== null && typeof report === 'object') {
-        report.diff = diff
-        report.scanned = { files: scan.files.length, sizeKB: scan.sizeKB, signals: scan.signals.length }
-        report.method = 'update-diff'
-        review = report
-      }
-    }
+    review = await reviewUpdateDiff(ctx, installedPackageDir(profileDir, moduleName), staged.pkgDir, moduleName)
   } finally {
     await rm(staged.jobDir, { recursive: true, force: true }).catch(() => {})
   }
@@ -1918,6 +2008,345 @@ async function waitForToggleApplied(ctx, entryId, enabled) {
 	return false
 }
 
+// ── dsh 自更新检测（侧边栏状态灯） ───────────────────────────────────────────
+
+/** 读取已安装 dsh 版本：web profile 必装的默认 bundle `@deepseek-ai/dsh-web-app`
+ * 版本与 dsh 本体一致（monorepo 全包同版本），回退 `@deepseek-ai/dsh-base`。 */
+async function readInstalledDshVersion(ctx) {
+  const baseUrl = ctx?.baseUrl ?? 'file:///'
+  for (const candidate of ['@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-base']) {
+    const meta = entryPkgMeta(candidate, baseUrl)
+    if (meta?.version !== null && meta?.version !== undefined && meta.version !== '') return meta.version
+  }
+  return null
+}
+
+/** 轻量 semver 比较：major.minor.patch 数值逐段 + `-rc.N` 预发布号；返回 1/-1/0。 */
+function compareVersions(a, b) {
+  const parse = (v) => {
+    const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(String(v))
+    if (m === null) return null
+    return { maj: Number(m[1]), min: Number(m[2]), pat: Number(m[3]), pre: m[4] ?? null }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  if (pa === null || pb === null) return 0
+  for (const key of ['maj', 'min', 'pat']) {
+    if (pa[key] !== pb[key]) return pa[key] > pb[key] ? 1 : -1
+  }
+  if (pa.pre === null && pb.pre === null) return 0
+  if (pa.pre === null) return 1
+  if (pb.pre === null) return -1
+  const rc = (s) => { const m = /(?:-|^)rc\.(\d+)$/.exec(s); return m !== null ? Number(m[1]) : 0 }
+  return rc(pa.pre) === rc(pb.pre) ? 0 : (rc(pa.pre) > rc(pb.pre) ? 1 : -1)
+}
+
+/** 用 `git ls-remote --tags` 取 deepseek-harness 的最新 `dsh-v*` tag 版本（git 协议无 API 限流）。 */
+async function gitRemoteTags(owner, name) {
+  try {
+    const { stdout } = await execFileAsync('git', ['ls-remote', '--tags', 'https://github.com/' + owner + '/' + name + '.git'], {
+      timeout: 15000,
+      windowsHide: true,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+    })
+    const tags = []
+    for (const line of String(stdout).split('\n')) {
+      const m = /refs\/tags\/(dsh-v[0-9]+\.[0-9]+\.[0-9]+(?:-[^{}\s]+)?)$/.exec(line.trim())
+      if (m !== null) tags.push(m[1].replace(/^dsh-v/u, ''))
+    }
+    tags.sort((x, y) => compareVersions(y, x))
+    return tags[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+/** 读取持久化的 dsh 状态（失败返回 null）。 */
+async function readDshState() {
+  try {
+    const data = JSON.parse(await readFile(DSH_STATE_FILE, 'utf8'))
+    if (data !== null && typeof data === 'object') return data
+  } catch {}
+  return null
+}
+
+/** 写入 dsh 状态（尽力，失败静默）。 */
+async function writeDshState(state) {
+  try {
+    await writeFile(DSH_STATE_FILE, JSON.stringify(state, null, 2) + '\n', 'utf8')
+  } catch {}
+}
+
+/** 内存缓存（仅加速读取；磁盘 `DSH_STATE_FILE` 是唯一持久化真相）。 */
+let dshStateCache = null
+let dshCheckInflight = null
+
+/** 检测 dsh 是否有新版本（git tag 对比已装版本），并发合并、结果写缓存 + 磁盘。 */
+function checkDshUpdate(ctx) {
+  if (dshCheckInflight !== null) return dshCheckInflight
+  const run = (async () => {
+    const installed = await readInstalledDshVersion(ctx)
+    const latest = await gitRemoteTags(DSH_REPO.owner, DSH_REPO.name)
+    const prev = await readDshState()
+    const hasUpdate = installed !== null && latest !== null && compareVersions(latest, installed) > 0
+    // 远端版本变化时重置判定（回到黄灯待分析）
+    const sameTarget = prev !== null && prev.latest === latest
+    const state = {
+      installed,
+      latest,
+      hasUpdate,
+      checked: latest !== null,
+      verdict: sameTarget ? (prev.verdict ?? null) : null,
+      summary: sameTarget ? (prev.summary ?? null) : null,
+      changes: sameTarget ? (prev.changes ?? []) : [],
+      affectedPlugins: sameTarget ? (prev.affectedPlugins ?? []) : [],
+      details: sameTarget ? (prev.details ?? null) : null,
+      sessionId: sameTarget ? (prev.sessionId ?? null) : null,
+      analyzedAt: sameTarget ? (prev.analyzedAt ?? null) : null,
+      checkedAt: Date.now(),
+      status: 'idle',
+    }
+    dshStateCache = state
+    await writeDshState(state)
+    return state
+  })()
+  dshCheckInflight = run
+  run.then(() => {}, () => {}).finally(() => { if (dshCheckInflight === run) dshCheckInflight = null })
+  return run
+}
+
+/** 用 GitHub compare API 拉取 dsh-v<installed>...dsh-v<latest> 的 commit + 文件补丁。 */
+async function fetchDshCompare(installed, latest) {
+  const url = 'https://api.github.com/repos/' + DSH_REPO.owner + '/' + DSH_REPO.name + '/compare/dsh-v' + installed + '...dsh-v' + latest
+  const headers = { 'user-agent': 'dsh-plugin-market' }
+  if (typeof process.env.GITHUB_TOKEN === 'string' && process.env.GITHUB_TOKEN !== '') headers.authorization = 'Bearer ' + process.env.GITHUB_TOKEN
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) })
+  if (!res.ok) throw new Error('compare API HTTP ' + res.status)
+  return res.json()
+}
+
+/** 把 compare 结果摘要化：commit 标题 + 核心源码文件（packages/apps/config，过滤纯文档）+ 节选补丁。 */
+function summarizeCompare(data) {
+  const commits = (data?.commits ?? [])
+    .map((c) => String(c?.commit?.message ?? '').split('\n')[0].trim())
+    .filter((s) => s !== '')
+    .slice(0, 80)
+  const files = []
+  let patchTotal = 0
+  for (const f of data?.files ?? []) {
+    const rel = String(f?.filename ?? '')
+    if (!/^(packages|apps|config)\//u.test(rel)) continue
+    const patch = typeof f?.patch === 'string' ? f.patch : ''
+    const capped = patch.slice(0, 20000)
+    patchTotal += capped.length
+    files.push({ status: f.status, filename: rel, additions: f.additions ?? 0, deletions: f.deletions ?? 0, patch: capped })
+    if (patchTotal > 60000) break
+  }
+  return { commits, files }
+}
+
+/** 当前已安装用户插件的 `name@version` 清单（供模型判断破坏性影响面）。 */
+async function listInstalledPluginsForPrompt(ctx) {
+  const out = []
+  try {
+    const patchPath = findPatchPath(ctx)
+    const profileDir = dirname(patchPath)
+    const patch = await readPatchState(patchPath)
+    let bundles = []
+    try {
+      const manifest = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8'))
+      bundles = manifest.dsh?.profile?.bundles ?? []
+    } catch {}
+    for (const entry of listEntries(ctx)) {
+      const extra = patch.inserts.includes(entry.rowId)
+      if (!isUserInstalled(entry.moduleName, entry.rowId, extra, bundles)) continue
+      const meta = entryPkgMeta(entry.moduleName, ctx.baseUrl ?? 'file:///')
+      out.push(entry.moduleName + (meta?.version ? '@' + meta.version : ''))
+    }
+  } catch {}
+  return out.slice(0, 40)
+}
+
+/** 组装升级分析 prompt：要求模型结构化输出 changes/breakingChanges/affectedPlugins。 */
+function buildDshUpdatePrompt(installed, latest, compare, installedPlugins) {
+  const lines = [
+    '你是 DeepSeek Harness 的升级分析员。检测到 dsh（deepseek-ai/deepseek-harness）有新版本：当前 ' + installed + ' → 最新 ' + latest + '。请分析这次升级更新了什么内容，并判断是否存在对「当前已安装插件」的破坏性更新。',
+  ]
+  if (compare !== null && compare !== undefined) {
+    lines.push('--- 本次升级提交标题 ---')
+    lines.push(compare.commits.length > 0 ? compare.commits.join('\n') : '（无法获取提交）')
+    if (compare.files.length > 0) {
+      lines.push('--- 本次升级核心源码文件变更 ---')
+      lines.push(compare.files.map((f) => f.status + ' ' + f.filename + ' (+' + (f.additions ?? 0) + '/-' + (f.deletions ?? 0) + ')').join('\n'))
+      lines.push('--- 变更补丁（节选） ---')
+      lines.push(compare.files.map((f) => '=== ' + f.filename + ' ===\n' + f.patch).join('\n\n'))
+    }
+  } else {
+    lines.push('--- 注意：未能拉取到精确 commit/diff（GitHub API 限流或网络问题），请基于版本变化与通用知识判断 ---')
+  }
+  lines.push('--- 当前已安装插件 ---')
+  lines.push(installedPlugins.length > 0 ? installedPlugins.join(', ') : '（无用户安装的第三方插件）')
+  lines.push('输出约束：你的输出将直接用于插件市场的升级提示。只输出一个 JSON 对象，前后不要有任何其他文字（不要 markdown 代码块围栏）。字段要求：changes=字符串数组（本次升级要点）；breakingChanges=布尔（是否存在对当前已安装插件的破坏性更新，如服务/接口移除、inject 名、slot 契约、配置 schema、dsh.client 声明、CLI/包结构、依赖版本要求等变化）；affectedPlugins=字符串数组（可能受影响的插件名，无则空数组）；summary=一句话；details=1-3 句兼容性说明。')
+  return lines.join('\n').slice(0, PROMPT_CAP)
+}
+
+/** 解析模型的结构化回复（容忍前后杂质，只取第一个 JSON 对象）。 */
+function parseBreakingReport(text) {
+  const jsonMatch = text.match(/\{[\s\S]*\}/u)
+  if (jsonMatch === null) return null
+  let report = null
+  try { report = JSON.parse(jsonMatch[0]) } catch { return null }
+  if (report === null || typeof report !== 'object') return null
+  return {
+    breakingChanges: report.breakingChanges === true,
+    changes: Array.isArray(report.changes) ? report.changes.map((c) => String(c)) : [],
+    affectedPlugins: Array.isArray(report.affectedPlugins) ? report.affectedPlugins.map((c) => String(c)) : [],
+    summary: String(report.summary ?? ''),
+    details: String(report.details ?? ''),
+  }
+}
+
+/** 尽力把分析会话挂到当前工作区（客户端传当前 sessionId 定位；失败挂最近工作区/跳过）。 */
+async function attachSessionToWorkspace(ctx, sessionId, currentSessionId) {
+  try {
+    const ws = ctx.get('workspaceRegistry')
+    if (ws === null || ws === undefined || typeof ws.list !== 'function') return false
+    const workspaces = ws.list()
+    if (!Array.isArray(workspaces)) return false
+    let target = null
+    if (typeof currentSessionId === 'string' && currentSessionId !== '') {
+      target = workspaces.find((w) => Array.isArray(w?.sessionIds) && w.sessionIds.includes(currentSessionId)) ?? null
+    }
+    if (target === null) target = workspaces[workspaces.length - 1] ?? null
+    if (target !== null && typeof target.attachSession === 'function') {
+      await target.attachSession(sessionId)
+      return true
+    }
+  } catch {}
+  return false
+}
+
+/**
+ * 创建可见的分析会话并自动发题（默认模型）。与 `runReviewSession` 不同：不归档、不 dispose，
+ * 会话保留在侧边栏供用户查看。返回 { sessionId, session, startIdx } 供后台轮询提取回复。
+ */
+async function createVisibleAnalysisSession(ctx, promptText, signal) {
+  let agents = null
+  try { agents = ctx.get('agents') } catch {}
+  if (!agents || typeof agents.create !== 'function') return null
+  const route = reviewLlmRoute(ctx)
+  const sessionId = 'dsh-update-' + randomUUID().slice(0, 8)
+  let handle = null
+  try {
+    handle = await agents.create({
+      sessionId,
+      meta: { cwd: process.cwd() },
+      agentOptions: {
+        ...(route.provider !== undefined ? { provider: route.provider } : {}),
+        ...(route.model !== undefined ? { model: route.model } : {}),
+      },
+      signal,
+    })
+  } catch { return null }
+  if (handle === null || handle === undefined) return null
+  let agent = handle
+  try { agent = agents.get ? (agents.get(sessionId) ?? handle) : handle } catch { agent = handle }
+  if (!agent || typeof agent.followup !== 'function') return null
+  const session = agent.session ?? null
+  const message = Object.freeze({
+    role: 'user',
+    id: randomUUID(),
+    content: Object.freeze([Object.freeze({ type: 'text', text: promptText })]),
+    source: Object.freeze({ kind: 'plugin', plugin: 'dsh-plugin-market' }),
+  })
+  const startIdx = Array.isArray(session?.log) ? session.log.length : 0
+  agent.followup(message)
+  return { sessionId, session, startIdx }
+}
+
+/** 轮询会话日志，提取 startIdx 之后第一条 assistant/message 的文本（防用户后续干扰）。 */
+async function collectSessionReply(session, startIdx, signal) {
+  const deadline = Date.now() + 180000
+  while (Date.now() < deadline) {
+    if (signal?.aborted) return null
+    try {
+      if (session !== null && Array.isArray(session.log)) {
+        for (let i = startIdx; i < session.log.length; i += 1) {
+          const event = session.log[i]
+          if (event.type !== 'assistant/message') continue
+          const content = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
+          const t = content.filter((b) => b !== null && b !== undefined && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('')
+          if (t !== '') return t
+        }
+      }
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  return null
+}
+
+/** 后台收尾：轮询回复 → 解析 breakingChanges → 持久化 verdict。 */
+async function finishDshAnalysis(ctx, created, state) {
+  const text = await collectSessionReply(created.session, created.startIdx, null)
+  let verdict = null
+  let summary = null
+  let changes = []
+  let affectedPlugins = []
+  let details = null
+  if (text !== null && text !== '') {
+    const parsed = parseBreakingReport(text)
+    if (parsed !== null) {
+      verdict = parsed.breakingChanges ? 'breaking' : 'safe'
+      summary = parsed.summary
+      changes = parsed.changes
+      affectedPlugins = parsed.affectedPlugins
+      details = parsed.details
+    }
+  }
+  const next = {
+    ...state,
+    verdict,
+    summary,
+    changes,
+    affectedPlugins,
+    details,
+    sessionId: created.sessionId,
+    analyzedAt: Date.now(),
+    status: 'idle',
+  }
+  dshStateCache = next
+  await writeDshState(next)
+}
+
+/** 点击状态灯：确保有更新 → 拉 compare diff → 建可见会话 → 异步解析判定。 */
+async function analyzeDshUpdate(ctx, currentSessionId) {
+  const state = dshStateCache ?? await checkDshUpdate(ctx)
+  if (state === null || state.hasUpdate !== true || !state.installed || !state.latest) {
+    return { ok: false, skipped: true, error: '当前已是最新版本或未能检测到更新', ...state }
+  }
+  // 已分析且远端版本未变：直接重开已有分析会话，不重复分析
+  if ((state.verdict === 'safe' || state.verdict === 'breaking') && state.sessionId) {
+    return { ok: true, sessionId: state.sessionId, reopened: true, ...state }
+  }
+  let compare = null
+  try {
+    compare = summarizeCompare(await fetchDshCompare(state.installed, state.latest))
+  } catch {}
+  const installedPlugins = await listInstalledPluginsForPrompt(ctx)
+  const promptText = buildDshUpdatePrompt(state.installed, state.latest, compare, installedPlugins)
+  const created = await createVisibleAnalysisSession(ctx, promptText, null)
+  if (created === null || created.sessionId === undefined) {
+    return { ok: false, error: '未能开启分析会话（默认模型通道不可用）', ...state }
+  }
+  await attachSessionToWorkspace(ctx, created.sessionId, currentSessionId)
+  const analyzing = { ...state, status: 'analyzing', sessionId: created.sessionId }
+  dshStateCache = analyzing
+  await writeDshState(analyzing)
+  void finishDshAnalysis(ctx, created, state).catch(() => {})
+  return { ok: true, sessionId: created.sessionId, ...analyzing }
+}
+
 // ── 主路由处理 ──────────────────────────────────────────────────────────────
 
 async function handle(ctx, req, res) {
@@ -1946,9 +2375,8 @@ async function handle(ctx, req, res) {
       const extra = patch.inserts.includes(entry.rowId)
       // 用户安装的 bundle（非默认）：进 dsh.profile.bundles 的第三方 bundle
       const userBundle = bundles.includes(entry.moduleName) && !DEFAULT_BUNDLES.includes(entry.moduleName)
-      // 仓库覆盖（安装自动保存或用户手动修改）优先于包内 repository 字段；仅手动修改显示「手动覆盖」徽标
+      // 仓库覆盖（安装时自动保存的来源仓库）：展示与 git 通道只取它，不回落到包内 repository 字段
       const override = Object.prototype.hasOwnProperty.call(overrides, entry.moduleName) ? overrides[entry.moduleName] : null
-      const manualRepo = override !== null ? override.repo : null
       return {
         ...entry,
         userDisabled: patch.disables.includes(entry.rowId),
@@ -1957,9 +2385,9 @@ async function handle(ctx, req, res) {
         userBundle,
         userInstalled: isUserInstalled(entry.moduleName, entry.rowId, extra, bundles),
         localInstalled: isLocalDependency(profileDir, entry.moduleName),
+        localPath: localDependencyPath(profileDir, entry.moduleName),
         version: meta?.version ?? null,
-        repository: manualRepo ?? meta?.repository ?? null,
-        repoOverridden: override !== null && override.manual === true,
+        repository: override,
       }
     })
     // 已写入 manifest 但尚未加载进运行树（bundle 层只在 dsh web 启动时加载）：
@@ -1973,7 +2401,7 @@ async function handle(ctx, req, res) {
           : 'bundle'
         return { moduleName: b, channel, spec }
       })
-    sendJson(res, 200, { ok: true, entries, sources, patchPath, jobs: listInstallJobs(), pendingRestart, dshBestFit: DSH_BEST_FIT_VERSION })
+    sendJson(res, 200, { ok: true, entries, sources, patchPath, jobs: listInstallJobs(), pendingRestart, dshBestFit: DSH_BEST_FIT_VERSION, dshVersion: dshStateCache ?? null })
     return
   }
 
@@ -1986,38 +2414,6 @@ async function handle(ctx, req, res) {
     }
     const clean = await writeSources(sources)
     sendJson(res, 200, { ok: true, sources: clean })
-    return
-  }
-
-  // 手动设置/清除某个插件的 GitHub 仓库地址（repository 为空串 = 清除覆盖）
-  if (pathname === ROUTE_PREFIX + '/set-repo') {
-    const { entryId, repository } = body
-    if (typeof entryId !== 'string' || !/^[A-Za-z0-9_:.-]{1,80}$/u.test(entryId)) {
-      sendError(res, 400, 'entryId 无效')
-      return
-    }
-    const target = ctx.loader.entries().find((entry) => entry.id === entryId)
-    if (!target || typeof target.options.name !== 'string') {
-      sendError(res, 404, '没有名为 ' + entryId + ' 的插件条目')
-      return
-    }
-    const moduleName = target.options.name
-    const clean = typeof repository === 'string' ? repository.trim() : ''
-    if (clean !== '') {
-      // 校验格式：owner/name、GitHub URL 或 github:owner/name，可带 #path: 子目录
-      try {
-        githubRepoInfo(clean)
-      } catch (err) {
-        sendError(res, 400, err instanceof Error ? err.message : '仓库地址格式无效')
-        return
-      }
-    }
-    // 保存但地址实际没变：不新建、不升级为「手动覆盖」（见 decideRepoOverride）
-    const overrides = await readRepoOverrides()
-    const metaRepo = entryPkgMeta(moduleName, ctx.baseUrl ?? 'file:///')?.repository ?? null
-    const decision = decideRepoOverride(overrides, moduleName, clean, metaRepo)
-    const saved = decision.action === 'keep' ? decision.repo : await writeRepoOverride(moduleName, clean, true)
-    sendJson(res, 200, { ok: true, entryId, moduleName, repository: saved })
     return
   }
 
@@ -2084,20 +2480,27 @@ async function handle(ctx, req, res) {
         unknown: localCommit === null,
       }
     }
-    // 安全审查：开启且检测到更新时，拉取新版本到隔离目录审查整个包
+    // 安全审查：开启且检测到更新时，拉取新版本到隔离目录，与已装代码做文件级 diff，
+    // 审查本次改动并附 diff（method: update-diff），报告包含本次改动的描述；
+    // 审查后保留隔离目录（登记更新任务）——点「确认更新」直接从该环境安装，不再重新拉取/审查
     let review = null
+    let updateJobId = null
     const hasUpdate = git !== null && git.hasUpdate === true
     if (body.review === true && hasUpdate) {
+      let staged = null
       try {
-        const spec = 'github:' + git.owner + '/' + git.name
-        const staged = await stagePackage(spec)
-        review = await reviewPackage(ctx, staged.pkgDir, packageName, null)
-        await rm(staged.jobDir, { recursive: true, force: true }).catch(() => {})
+        staged = await stagePackage(gitSpec(repo))
+        review = await reviewUpdateDiff(ctx, installedPackageDir(dirname(findPatchPath(ctx)), packageName), staged.pkgDir, packageName)
       } catch (error) {
         review = { summary: '审查未能完成', risks: [], severity: 'low', verdict: 'caution', details: error instanceof Error ? error.message : String(error) }
       }
+      if (staged !== null && review !== null) {
+        updateJobId = createUpdateJob(packageName, repo, staged.jobDir, staged.pkgDir, review)
+      } else if (staged !== null) {
+        await rm(staged.jobDir, { recursive: true, force: true }).catch(() => {})
+      }
     }
-    sendJson(res, 200, { ok: true, packageName, git, review })
+    sendJson(res, 200, { ok: true, packageName, git, review, updateJobId })
     return
   }
 
@@ -2151,7 +2554,7 @@ async function handle(ctx, req, res) {
     return
   }
 
-  // 更新已安装插件（git 通道）
+  // 更新已安装插件（git 通道；优先用检查更新保留的隔离目录直接安装，不重新拉取/审查）
   if (pathname === ROUTE_PREFIX + '/update') {
     const entryId = typeof body.entryId === 'string' ? body.entryId.trim() : ''
     if (entryId === '') {
@@ -2159,7 +2562,9 @@ async function handle(ctx, req, res) {
       return
     }
     try {
-      const result = await updatePlugin(ctx, entryId)
+      const result = await updatePlugin(ctx, entryId,
+        typeof body.repository === 'string' ? body.repository.trim() : '',
+        typeof body.updateJobId === 'string' ? body.updateJobId.trim() : '')
       sendJson(res, 200, result)
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : String(error))
@@ -2306,12 +2711,52 @@ async function handle(ctx, req, res) {
     return
   }
 
+  // dsh 自更新状态（侧边栏状态灯）：返回已装/远端版本 + 判定
+  if (method === 'GET' && pathname === ROUTE_PREFIX + '/dsh-version') {
+    try {
+      const state = dshStateCache ?? await checkDshUpdate(ctx)
+      sendJson(res, 200, { ok: true, ...state })
+    } catch (error) {
+      sendError(res, 500, error instanceof Error ? error.message : String(error))
+    }
+    return
+  }
+
+  // 强制重新检测 dsh 更新（点击绿灯/灰灯时手动重检）
+  if (pathname === ROUTE_PREFIX + '/dsh-version/check') {
+    try {
+      const state = await checkDshUpdate(ctx)
+      sendJson(res, 200, { ok: true, ...state })
+    } catch (error) {
+      sendError(res, 500, error instanceof Error ? error.message : String(error))
+    }
+    return
+  }
+
+  // 点击状态灯：开启可见新会话，用默认模型分析升级内容与破坏性更新
+  if (pathname === ROUTE_PREFIX + '/dsh-version/analyze') {
+    const currentSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+    try {
+      const result = await analyzeDshUpdate(ctx, currentSessionId)
+      sendJson(res, 200, result)
+    } catch (error) {
+      sendError(res, 500, error instanceof Error ? error.message : String(error))
+    }
+    return
+  }
+
   sendError(res, 404, '未知接口 ' + pathname)
 }
 
 /** 应用插件：注册 /plugin-market 路由。 */
 export function apply(ctx) {
   void cleanupStagingAndReviews(ctx)
+  // dsh 自更新检测：web 启动时一次 + 每 1 小时同步（随插件 dispose 清理定时器）
+  ctx.effect(() => {
+    void checkDshUpdate(ctx)
+    const timer = setInterval(() => { void checkDshUpdate(ctx) }, DSH_CHECK_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, 'plugin-market: dsh update check')
   ctx.effect(() => {
     const route = {
       kind: 'prefix',

@@ -52,6 +52,7 @@ window.__ModuleLoader__.load({
 			"scene.knowledge": "知识沉淀",
 			"scene.qa": "测试用例",
 			"challenge.stop": "停止挑战",
+			"challenge.loading": "挑战者生成中…",
 			"view.arena": "竞技场",
 			"arena.paneTitle": "竞技场",
 			"arena.pane.empty": "发送消息后，竞技场模型将在此回复",
@@ -75,15 +76,22 @@ window.__ModuleLoader__.load({
 			"arena.error.generic": "竞技场会话启动失败",
 			"arena.error.retry": "重试",
 			"settings.title": "模型竞技场",
+			"settings.background.title": "允许后台推进",
+			"settings.background.desc": "开启后，竞技场模式下非当前会话的对抗流程也会在后台推进（协作/对抗模型完成自动注入主模型、主模型完成自动进入下一轮）；关闭时需切回主会话才推进下一步。",
+			"settings.temperature.title": "温度调节",
+			"settings.temperature.desc": "开启后可为各场景的主模型与协作/对抗模型分别设置温度（0~2、最多两位小数，留空 = 使用 dsh 默认值）；关闭时全部使用 dsh 默认值。",
+			"settings.temperature.main": "主模型",
+			"settings.temperature.challenger": "协作/对抗模型",
+			"settings.temperature.default": "dsh 默认",
 			"settings.scenes": "场景",
 			"settings.flow.review": "审查循环",
 			"settings.flow.challenge": "挑战流程",
-			"settings.scene.business.desc": "业务探索：主模型直接回答，挑战者逐条质疑，主模型修正后挑战者终评。适合需求梳理、方案探讨、影响面分析。",
-			"settings.scene.knowledge.desc": "知识沉淀：主模型产出结构化方案，挑战者作为审查者给出 READY / NEEDS_REVISION 结论；不认可则主模型修正后终审，累计 3 次不认可结束。",
-			"settings.scene.qa.desc": "测试用例：主模型产出测试用例，挑战者以用户视角逐条质疑，主模型修正后终评。",
+			"settings.scene.business.desc": "业务探索：主模型直接回答，协作/对抗模型逐条质疑，主模型修正后协作/对抗模型终评。适合需求梳理、方案探讨、影响面分析。",
+			"settings.scene.knowledge.desc": "知识沉淀：主模型产出结构化方案，协作/对抗模型作为审查者给出 READY / NEEDS_REVISION 结论；不认可则主模型修正后终审，累计 3 次不认可结束。",
+			"settings.scene.qa.desc": "测试用例：主模型产出测试用例，协作/对抗模型以用户视角逐条质疑，主模型修正后终评。",
 			"settings.prompt.roles": "角色种子（system prompt persona 注入）",
 			"settings.prompt.roleMain": "【主模型角色】",
-			"settings.prompt.roleArena": "【挑战者角色】",
+			"settings.prompt.roleArena": "【协作/对抗模型角色】",
 			"settings.prompt.rounds": "回合提示词（以 user 消息注入竞技场会话）",
 			"settings.prompt.kind.challenge": "质疑轮",
 			"settings.prompt.kind.review": "审查轮",
@@ -128,6 +136,7 @@ window.__ModuleLoader__.load({
 			"scene.knowledge": "Knowledge base",
 			"scene.qa": "Test cases",
 			"challenge.stop": "Stop challenge",
+			"challenge.loading": "Challenger generating…",
 			"view.arena": "Arena",
 			"arena.paneTitle": "Arena",
 			"arena.pane.empty": "Send a message to start the arena duel",
@@ -151,15 +160,22 @@ window.__ModuleLoader__.load({
 			"arena.error.generic": "Arena session failed to start",
 			"arena.error.retry": "Retry",
 			"settings.title": "Model Arena",
+			"settings.background.title": "Allow background advance",
+			"settings.background.desc": "When on, an arena duel whose main session is not the current one still advances in the background (a finished collaborator/adversary reply is injected into the main model; a finished main turn prompts the collaborator/adversary). When off, advancing waits until you return to the main session.",
+			"settings.temperature.title": "Temperature",
+			"settings.temperature.desc": "When on, set the sampling temperature per scene and role (0–2, up to 2 decimal places; leave empty to use the dsh default). When off, all calls use the dsh default.",
+			"settings.temperature.main": "Main model",
+			"settings.temperature.challenger": "Collaborator/Adversary",
+			"settings.temperature.default": "dsh default",
 			"settings.scenes": "Scenes",
 			"settings.flow.review": "Review loop",
 			"settings.flow.challenge": "Challenge flow",
-			"settings.scene.business.desc": "Business exploration: the main model answers directly, the challenger challenges point by point, the main model revises, then the challenger gives the final verdict. Good for requirement analysis, design discussion, and impact assessment.",
-			"settings.scene.knowledge.desc": "Knowledge distillation: the main model produces a structured proposal, the challenger reviews with a READY / NEEDS_REVISION verdict; on rejection the main model revises and the challenger re-reviews, ending after 3 rejections.",
-			"settings.scene.qa.desc": "Test cases: the main model produces test cases, the challenger challenges point by point from the user's perspective, the main model revises, then the final verdict.",
+			"settings.scene.business.desc": "Business exploration: the main model answers directly, the collaborator/adversary model challenges point by point, the main model revises, then the collaborator/adversary model gives the final verdict. Good for requirement analysis, design discussion, and impact assessment.",
+			"settings.scene.knowledge.desc": "Knowledge distillation: the main model produces a structured proposal, the collaborator/adversary model reviews with a READY / NEEDS_REVISION verdict; on rejection the main model revises and the collaborator/adversary model re-reviews, ending after 3 rejections.",
+			"settings.scene.qa.desc": "Test cases: the main model produces test cases, the collaborator/adversary model challenges point by point from the user's perspective, the main model revises, then the final verdict.",
 			"settings.prompt.roles": "Role seeds (injected via system-prompt persona)",
 			"settings.prompt.roleMain": "[Main-model role]",
-			"settings.prompt.roleArena": "[Challenger role]",
+			"settings.prompt.roleArena": "[Collaborator/Adversary role]",
 			"settings.prompt.rounds": "Round prompts (injected into the arena session as user messages)",
 			"settings.prompt.kind.challenge": "Challenge round",
 			"settings.prompt.kind.review": "Review round",
@@ -219,6 +235,21 @@ window.__ModuleLoader__.load({
 					...(effort.description === void 0 ? {} : { description: effort.description })
 				}))
 			];
+		}
+
+		/**
+		* Validate one temperature input string for the settings page: empty
+		* (dsh default), or a number in [0, 2] with at most 2 decimal places
+		* (e.g. "0.15" ok, "0.155" rejected). Returns { ok: true, value } with
+		* value undefined for empty input, or { ok: false } when rejected.
+		*/
+		function normalizeTemperatureInput(raw) {
+			if (typeof raw !== "string") return { ok: false };
+			if (raw === "") return { ok: true, value: void 0 };
+			if (!/^\d*\.?\d{0,2}$/.test(raw)) return { ok: false };
+			const num = Number(raw);
+			if (!Number.isFinite(num) || num < 0 || num > 2) return { ok: false };
+			return { ok: true, value: num };
 		}
 
 		/** The arena selection equals the input box's current model? */
@@ -415,6 +446,152 @@ window.__ModuleLoader__.load({
 			if (challenge === null || challenge === void 0) return false;
 			return challenge.active === true && RUNNING_CHALLENGE_PHASES.has(challenge.phase);
 		};
+		// ── challenge persistence (cross-reload / restart survival) ──────────
+		// The in-memory `arenaMount.challenge` (phase/anchors/counters) dies with
+		// the page; the backend sessions do NOT (a refresh only drops the client
+		// subscription — a turn may still be running or already finished
+		// server-side). To survive we persist a compact projection of the
+		// challenge state per main session and, on restore, re-align it against
+		// the LIVE snapshots: running → wait, turn completed → advance, genuinely
+		// idle → main-model phase waits for a user message, challenger phase
+		// re-prompts immediately. These helpers are pure and exported for tests.
+		const MAIN_MODEL_PHASES = new Set(["answer", "revise", "propose"]);
+		const CHALLENGER_PHASES = new Set(["challenge", "final", "review"]);
+		const isMainModelPhase = (phase) => MAIN_MODEL_PHASES.has(phase);
+		const isChallengerPhase = (phase) => CHALLENGER_PHASES.has(phase);
+		// Persisted projection: run-time-only fields are dropped (mainWasRunning /
+		// arenaWasRunning / stallSince / lastMainText / lastArenaText) and the
+		// injected text is truncated — anchors/phase/counters are the durable part.
+		const LAST_INJECTED_MAX = 4000;
+		const toPersistedChallenge = (c) => {
+			if (c === null || c === void 0) return null;
+			return {
+				active: c.active === true,
+				phase: typeof c.phase === "string" ? c.phase : "idle",
+				scene: typeof c.scene === "string" ? c.scene : "business",
+				skill: typeof c.skill === "string" ? c.skill : "",
+				userQuestion: typeof c.userQuestion === "string" ? c.userQuestion : "",
+				mainAnchor: typeof c.mainAnchor === "string" ? c.mainAnchor : "",
+				arenaAnchor: typeof c.arenaAnchor === "string" ? c.arenaAnchor : "",
+				rejectCount: typeof c.rejectCount === "number" ? c.rejectCount : 0,
+				verdict: typeof c.verdict === "string" ? c.verdict : "",
+				round: typeof c.round === "number" ? c.round : 0,
+				pendingAnchor: c.pendingAnchor === true,
+				lastInjectedText: typeof c.lastInjectedText === "string" ? c.lastInjectedText.slice(0, LAST_INJECTED_MAX) : "",
+				lastReviewSeq: typeof c.lastReviewSeq === "number" ? c.lastReviewSeq : -1,
+				proposalPath: typeof c.proposalPath === "string" ? c.proposalPath : "",
+				designPath: typeof c.designPath === "string" ? c.designPath : "",
+				tasksPath: typeof c.tasksPath === "string" ? c.tasksPath : "",
+				reviewPath: typeof c.reviewPath === "string" ? c.reviewPath : "",
+				updatedAt: Date.now()
+			};
+		};
+		// Rebuild a challenge from the persisted projection: run-time fields reset
+		// (watchdogs re-arm from scratch, reply bodies re-extracted on demand).
+		// Terminal phases (done/aborted) are preserved so a concluded/rejected
+		// duel never resurrects; unknown phases normalize to idle.
+		const fromPersistedChallenge = (p) => {
+			if (p === null || p === void 0 || typeof p !== "object") return null;
+			const phase = typeof p.phase === "string" ? p.phase : "idle";
+			return {
+				active: p.active === true,
+				phase: RUNNING_CHALLENGE_PHASES.has(phase) || isTerminalPhase(phase) ? phase : "idle",
+				scene: typeof p.scene === "string" ? p.scene : "business",
+				skill: typeof p.skill === "string" ? p.skill : "",
+				userQuestion: typeof p.userQuestion === "string" ? p.userQuestion : "",
+				mainAnchor: typeof p.mainAnchor === "string" && p.mainAnchor !== "" ? p.mainAnchor : null,
+				arenaAnchor: typeof p.arenaAnchor === "string" && p.arenaAnchor !== "" ? p.arenaAnchor : null,
+				rejectCount: typeof p.rejectCount === "number" ? p.rejectCount : 0,
+				verdict: typeof p.verdict === "string" ? p.verdict : "",
+				round: typeof p.round === "number" ? p.round : 0,
+				pendingAnchor: p.pendingAnchor === true,
+				lastInjectedText: typeof p.lastInjectedText === "string" ? p.lastInjectedText : "",
+				lastReviewSeq: typeof p.lastReviewSeq === "number" ? p.lastReviewSeq : -1,
+				proposalPath: typeof p.proposalPath === "string" ? p.proposalPath : "",
+				designPath: typeof p.designPath === "string" ? p.designPath : "",
+				tasksPath: typeof p.tasksPath === "string" ? p.tasksPath : "",
+				reviewPath: typeof p.reviewPath === "string" ? p.reviewPath : "",
+				// run-time fields reset on restore
+				mainWasRunning: false,
+				arenaWasRunning: false,
+				stallSince: 0,
+				challengerRePrompted: false,
+				// run-time flags: this challenge came from persistence (restored) and
+				// has not been re-aligned yet (alignDone) — alignChallengeAfterRestore
+				// drives exactly one alignment pass for it.
+				restored: true,
+				alignDone: false
+			};
+		};
+		// A persisted challenge is resumable when it was interrupted mid-flight
+		// (active && a running phase). done/aborted/idle are terminal — a fresh
+		// user message starts a new round instead (see shouldReArmChallenge).
+		const isResumableChallenge = (p) => {
+			if (p === null || p === void 0 || typeof p !== "object") return false;
+			return p.active === true && RUNNING_CHALLENGE_PHASES.has(p.phase);
+		};
+		// Terminal persisted states — the Theseus bridge must NOT be re-armed and
+		// the challenger must stay dormant after a reload (fixes the "aborted
+		// review loop resurrects after reload" hole: abortChallenge never set
+		// link.done, and a stale watch.stage="review" is not past-review).
+		const isTerminalPhase = (phase) => phase === "done" || phase === "aborted";
+		// Factory-level copy of the apply-internal turn check (same contract
+		// reads) so the restore re-alignment helpers below stay pure/exportable.
+		// A turn is complete when the session is idle and a NEW assistant node
+		// landed after `sinceKey`; prompt user nodes land before the model starts
+		// and must never count as a completed turn.
+		const turnCompletedSince = (snap, sinceKey) => {
+			if (snap === void 0 || snap === null) return false;
+			if (runningOf(snap)) return false;
+			const order = orderOf(snap);
+			if (order.length === 0 || order[order.length - 1] === sinceKey) return false;
+			for (let i = order.length - 1; i >= 0 && order[i] !== sinceKey; i--) {
+				if (isAssistantNode(nodeOf(snap, order[i]))) return true;
+			}
+			return false;
+		};
+		// Re-alignment decision for the MAIN-model phases after a restore: the
+		// backend session survives a refresh, so a turn may be running or already
+		// finished — only a genuinely idle session (no run, no new node, no
+		// pending interaction) needs the user to send a message to resume.
+		const resolveMainResume = (snap, c) => {
+			if (snap === void 0 || snap === null) return "waiting";
+			if (runningOf(snap)) return "running";
+			if (turnCompletedSince(snap, c.mainAnchor)) return "completed";
+			return "waiting";
+		};
+		// Re-alignment decision for the CHALLENGER phases after a restore:
+		// running → wait, turn completed → catch up (inject the conclusion),
+		// otherwise → re-inject the round prompt so the challenger executes it.
+		const resolveChallengerResume = (snap, c) => {
+			if (snap === void 0 || snap === null) return "stalled";
+			if (runningOf(snap)) return "running";
+			if (turnCompletedSince(snap, c.arenaAnchor)) return "completed";
+			return "stalled";
+		};
+		// Theseus workflow stages that are PAST `review`: once the workflow has
+		// reached any of these, the review loop has concluded and the challenger
+		// must stay dormant. `review` (and explore/propose) are still in-flight.
+		const PAST_REVIEW_STAGES = new Set(["user-readiness-review", "apply", "archive", "done"]);
+		const isPastReviewStage = (stage) => typeof stage === "string" && PAST_REVIEW_STAGES.has(stage);
+		// Whether a fresh user message may re-arm (start) a new challenge round.
+		// The review (knowledge) scene is one-shot: once the loop concludes
+		// (done — READY hands off to Theseus apply/archive, or 3 rejections park
+		// at propose), the challenger must stay dormant and a new message goes to
+		// the main model normally. Re-arming here used to reset the phase to
+		// "propose" and resurrect the header "step" even though no
+		// propose.completed would ever arrive again to prompt the challenger.
+		// The in-memory `phase === "done"` is lost on a page reload, so three
+		// persistent signals cover the reload gap: the link's `done` flag
+		// (markReviewDone), and the node half's `watch.stage` heartbeat once the
+		// Theseus workflow has advanced past review.
+		const shouldReArmChallenge = (challenge, link, watch) => {
+			if (challenge === null || challenge === void 0) return true;
+			const done = challenge.phase === "done"
+				|| (link !== null && link !== void 0 && link.done === true)
+				|| (watch !== null && watch !== void 0 && isPastReviewStage(watch.stage));
+			return !(done && isReviewScene(challenge));
+		};
 		// Parse the challenger's review verdict from its `**Overall Verdict**` line.
 		// Returns "READY" | "NEEDS_REVISION" | "NOT_READY" | "" (unparseable).
 		const parseReviewVerdict = (text) => {
@@ -441,11 +618,24 @@ window.__ModuleLoader__.load({
 		const buildRoundPrompt = (kind, challenge, _t) => {
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
-			const arenaRole = scene.arena;
 			const files = extractFileRefs(challenge?.lastMainText ?? "").join("\n") || "（无）";
 			const trail = formatToolTrail(challenge?.lastMainTools);
 			const toolsPart = trail === "" ? "" : "\n" + fmt("{mainRole} 的工具操作记录：\n{tools}", { mainRole, tools: trail });
 			if (kind === "review") {
+				const proposalPath = challenge?.proposalPath;
+				const designPath = challenge?.designPath;
+				const tasksPath = challenge?.tasksPath;
+				const reviewPath = challenge?.reviewPath;
+				const hasArtifacts = [proposalPath, designPath, tasksPath].some((p) => typeof p === "string" && p !== "");
+				if (hasArtifacts) {
+					return "请读取以下方案产物文件并审查：\n"
+						+ "proposal.md: " + (typeof proposalPath === "string" && proposalPath !== "" ? proposalPath : "（无）") + "\n"
+						+ "design.md: " + (typeof designPath === "string" && designPath !== "" ? designPath : "（无）") + "\n"
+						+ "tasks.md: " + (typeof tasksPath === "string" && tasksPath !== "" ? tasksPath : "（无）") + "\n"
+						+ "review.md 输出路径: " + (typeof reviewPath === "string" && reviewPath !== "" ? reviewPath : "（无）") + "\n"
+						+ "用户问题：「" + (challenge?.userQuestion ?? "") + "」\n\n"
+						+ "请按你 persona 中指定的挑战者技能审查这些文件（需求清晰度、设计合理性、风险、任务拆解、相关规格），先写出 review.md（含 Action Items）到上述输出路径，然后回复一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再附一句话说明。禁止辩论，不要自我称呼角色名。";
+				}
 				return fmt("用户问题：「{question}」\n{mainRole} 的结构化方案：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 					+ "\n\n请作为审查者用中文**逐条审查**上述结构化方案：逐点核对需求清晰度、设计合理性、风险、任务拆解、相关规格，指出每处问题；只输出审查结论：先一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再列出 Action Items（需修正的具体点）。禁止辩论，不要自我称呼角色名。";
 			}
@@ -481,7 +671,8 @@ window.__ModuleLoader__.load({
 		// challenge mode: the raw objection (the revise rule lives in the system prompt).
 		const buildReviseMessage = (arenaText, challenge, _t) => {
 			if (isReviewScene(challenge)) {
-				return "审查结论：不认可，需修正。请按以下审查意见修正你的结构化方案（仅修正，不要重新回答用户问题）：\n\n" + stripMarkdown(arenaText ?? "");
+				const reviewPath = typeof challenge?.reviewPath === "string" && challenge.reviewPath !== "" ? challenge.reviewPath : "（未提供）";
+				return "挑战者审查结论：不认可，需修正。请先 record review.completed NEEDS_REVISION（回到 propose），再读 review.md（" + reviewPath + "）的 Action Items 修改方案文件，最后 record propose.completed 重新送审。";
 			}
 			return stripMarkdown(arenaText ?? "");
 		};
@@ -510,7 +701,7 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			if (scene.review === true) {
-				return fmt("你是{mainRole}。在审查流程中，你作为方案提出者：先产出结构化方案回答用户问题，再根据审查者的审查意见修正方案，直到认可或达到最大修正次数。请用中文回答。禁止辩论。", { mainRole });
+				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你只负责 explore 和 propose 两个阶段。propose 阶段完成（record propose.completed）后本轮必须立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正，也不要主动向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你只能被动等待审查结论；收到结论后按注入指令继续（NEEDS_REVISION → 回 propose 修正重新送审；READY → record review.completed 并按 Theseus 继续后续阶段）。禁止辩论，请用中文回答。", { mainRole });
 			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
@@ -533,6 +724,14 @@ window.__ModuleLoader__.load({
 			heroChip: '[data-phase="hero"] button[aria-label*="工作区"], [data-phase="hero"] button[aria-label*="workspace"]',
 			sidebarRow: ".YDXeBa_sessionRow",
 			sidebarTitle: ".YDXeBa_title",
+			// The currently-selected session row (the workspace browser marks the
+			// current session with this class). The arena MAIN session is always the
+			// current session while the runtime is mounted (the selection guard
+			// bounces any switch into the competitor session back), so the selected
+			// row is where the challenger loading indicator is injected.
+			sidebarSelected: "YDXeBa_selected",
+			// Status slot inside a session row (StateDot seat, before the title).
+			sidebarSlot: ".YDXeBa_slot",
 			headerCluster: ".wSkVaW_titleCluster",
 			headerActions: ".wSkVaW_headerActions",
 			disclosureSeparator: "QWLzlG_separator"
@@ -605,6 +804,16 @@ window.__ModuleLoader__.load({
 			"@media (prefers-reduced-motion:reduce){.ma-challengeStage.active{animation:none}}",
 			".ma-challengeStop{flex:none;width:18px;height:18px;color:var(--dsw-alias-state-error-primary);cursor:pointer;background:0 0;border:1px solid var(--dsw-alias-state-error-primary);border-radius:4px;place-items:center;display:grid;padding:0;font-size:10px;line-height:1;transition:background .18s var(--ds-ease-in-out)}",
 			".ma-challengeStop:hover{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)}",
+			// shared rotation keyframes for the sidebar challenger loading dot
+			// (the header spinner was removed per user feedback — the sidebar row
+			// dot is the only challenger loading indicator now).
+			"@keyframes ma-spin{to{transform:rotate(360deg)}}",
+			// challenger loading dot inside the SIDEBAR session row (the selected
+			// main-session row): a small rotating ring seated where the native
+			// StateDot goes, so the workspace list shows "this session's challenger
+			// is working" just like the main model's own running dot.
+			".ma-sidebarLoading{width:8px;height:8px;border:1.5px solid var(--dsw-alias-border-l3);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;flex:none;animation:ma-spin .8s linear infinite}",
+			"@media (prefers-reduced-motion:reduce){.ma-sidebarLoading{animation:none}}",
 			".ma-conflict{flex:none;color:var(--dsw-alias-state-warn-label);font-size:12px;line-height:18px}",
 			".ma-error{flex:none;color:var(--dsw-alias-state-error-primary);align-items:center;gap:6px;font-size:12px;line-height:18px;display:inline-flex}",
 			".ma-errorRetry{color:inherit;font:inherit;cursor:pointer;background:0 0;border:none;padding:0;font-weight:600}",
@@ -677,6 +886,10 @@ window.__ModuleLoader__.load({
 			".ma-settingsPromptLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px;margin-top:4px}",
 			".ma-settingsPrompt{margin:0;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-markdown-code-block);border-radius:8px;padding:8px 10px;font:400 12px/18px var(--ds-font-family-code);white-space:pre-wrap;word-break:break-word}",
 			".ma-settingsNote{color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}",
+			".ma-settingsTempScene{border-top:1px solid var(--dsw-alias-border-l2);flex-direction:column;gap:6px;padding-top:8px;display:flex}",
+			".ma-settingsTempRow{align-items:center;gap:10px;display:flex}",
+			".ma-settingsTempLabel{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;min-width:130px}",
+			".ma-settingsTempInput{width:96px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);padding:4px 8px;font-size:13px;line-height:20px}",
 			// hero panel: challenger skill picker (workspace-persisted)
 			".ma-skillRow{align-items:center;gap:10px;min-width:0;padding-left:20px;display:flex}",
 			".ma-skillValue{max-width:280px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}",
@@ -1862,6 +2075,16 @@ window.__ModuleLoader__.load({
 						if (typeof requestAnimationFrame === "function") requestAnimationFrame(pinBottom);
 						setTimeout(pinBottom, 120);
 					}
+					// Switching INTO the arena tab (or landing here after a reload
+					// while the tab is active) must immediately re-run the
+					// alignment/catch-up: a challenger phase that was interrupted
+					// re-injects its round prompt right now ("切到竞技场会话时立即
+					// review/终审"), and a turn that finished server-side advances.
+					try {
+						detectChallengeTurn();
+					} catch (_tabCatchUpFailure) {
+						// never break the tab mount
+					}
 				};
 
 				const unmountArenaTab = (root) => {
@@ -1999,7 +2222,110 @@ window.__ModuleLoader__.load({
 				const ArenaSettingsCard = () => {
 					const docs = buildPromptDocs();
 					const sceneKeys = ["business", "knowledge", "qa"];
+					const [bg, setBg] = React.useState(backgroundAdvance);
 					const nodes = [React.createElement("h2", { key: "head", className: "ma-settingsHead" }, t("settings.title"))];
+					// Background-advance switch at the TOP of the arena settings
+					// (user-requested; persisted via settings backgroundAdvance).
+					const toggleBg = () => {
+						const next = !bg;
+						setBg(next);
+						backgroundAdvance = next;
+						try {
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [{ op: "set", path: ["backgroundAdvance"], value: next }]
+							}).catch(() => {});
+						} catch {
+							// best effort
+						}
+					};
+					nodes.push(React.createElement("div", { key: "bg", className: "ma-settingsScene", "data-arena-bg": "" },
+						React.createElement("label", { className: "ma-settingsSceneTitle ma-settingsToggleRow", "data-arena-bg-toggle": "" },
+							React.createElement("input", { type: "checkbox", checked: bg, onChange: toggleBg, "data-arena-bg-checkbox": "" }),
+							React.createElement("span", null, t("settings.background.title"))
+						),
+						React.createElement("div", { className: "ma-settingsSceneDesc" }, t("settings.background.desc"))
+					));
+					// ── temperature tuning (settings-page only: persisted, but the
+					// agent/request injection that applies these values is a
+					// follow-up task and NOT implemented yet) ──
+					const [temp, setTemp] = React.useState(() => ({
+						enabled: temperatureSettings.enabled === true,
+						business: { ...(temperatureSettings.business ?? {}) },
+						knowledge: { ...(temperatureSettings.knowledge ?? {}) },
+						qa: { ...(temperatureSettings.qa ?? {}) }
+					}));
+					// Latest temp snapshot for onChange handlers (avoids stale-closure
+					// loss on rapid keystrokes between renders).
+					const tempRef = React.useRef(temp);
+					tempRef.current = temp;
+					// Raw input strings per scene×role, so typing intermediates like
+					// "0." stay visible while only valid values are persisted.
+					const [tempInputs, setTempInputs] = React.useState(() => ({}));
+					const tempInputValue = (sceneKey, role) => {
+						const key = sceneKey + "/" + role;
+						if (Object.prototype.hasOwnProperty.call(tempInputs, key)) return tempInputs[key];
+						const cell = temp[sceneKey];
+						const v = cell === void 0 ? void 0 : cell[role];
+						return typeof v === "number" ? String(v) : "";
+					};
+					const persistTemperature = (next) => {
+						setTemp(next);
+						try {
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [{ op: "set", path: ["temperature"], value: next }]
+							}).catch(() => {});
+						} catch {
+							// best effort
+						}
+					};
+					const toggleTemp = () => persistTemperature({ ...temp, enabled: !temp.enabled });
+					const onTempChange = (sceneKey, role, raw) => {
+						if (raw !== "") {
+							// Immediate reject: illegal characters / >2 decimal places,
+							// or a value above the 0..2 cap — the controlled input keeps
+							// its previous text ("0.155" and "2.01" can never be typed).
+							if (!/^\d*\.?\d{0,2}$/.test(raw)) return;
+							if (Number(raw) > 2) return;
+						}
+						const key = sceneKey + "/" + role;
+						setTempInputs((prev) => ({ ...prev, [key]: raw }));
+						const result = normalizeTemperatureInput(raw);
+						if (!result.ok) return; // typing intermediate ("0.") — display only
+						const base = tempRef.current;
+						persistTemperature({ ...base, [sceneKey]: { ...(base[sceneKey] ?? {}), [role]: result.value } });
+					};
+					const tempScene = (sceneKey) => {
+						const field = (role) => React.createElement("label", { key: role, className: "ma-settingsTempRow" },
+							React.createElement("span", { className: "ma-settingsTempLabel" }, t(role === "main" ? "settings.temperature.main" : "settings.temperature.challenger")),
+							React.createElement("input", {
+								className: "ma-settingsTempInput",
+								type: "text",
+								inputMode: "decimal",
+								pattern: "\\d*\\.?\\d{0,2}",
+								autoComplete: "off",
+								spellCheck: false,
+								value: tempInputValue(sceneKey, role),
+								placeholder: t("settings.temperature.default"),
+								onChange: (event) => onTempChange(sceneKey, role, event.target.value),
+								"data-arena-temp-input": sceneKey + "-" + role
+							})
+						);
+						return React.createElement("div", { key: sceneKey, className: "ma-settingsTempScene" },
+							React.createElement("div", { className: "ma-settingsSceneTitle" }, t("scene." + sceneKey)),
+							field("main"),
+							field("challenger")
+						);
+					};
+					nodes.push(React.createElement("div", { key: "temp", className: "ma-settingsScene", "data-arena-temp": "" },
+						React.createElement("label", { className: "ma-settingsSceneTitle ma-settingsToggleRow", "data-arena-temp-toggle": "" },
+							React.createElement("input", { type: "checkbox", checked: temp.enabled, onChange: toggleTemp, "data-arena-temp-checkbox": "" }),
+							React.createElement("span", null, t("settings.temperature.title"))
+						),
+						React.createElement("div", { className: "ma-settingsSceneDesc" }, t("settings.temperature.desc")),
+						...(temp.enabled ? sceneKeys.map(tempScene) : [])
+					));
 					nodes.push(React.createElement("div", { key: "scenes-label", className: "ma-settingsSectionTitle" }, t("settings.scenes")));
 					for (const key of sceneKeys) {
 						const scene = SCENES[key];
@@ -2266,9 +2592,17 @@ window.__ModuleLoader__.load({
 								// best effort — hiding is cosmetic; the challenger still works
 							}
 							// Bind the challenger-turn subscription to the new session.
+							// The wrapper also bumps arenaTick on every arena-snapshot
+							// change so the header loading animation tracks the
+							// challenger's running flag (see syncArena restore site),
+							// and re-syncs the sidebar loading dot.
 							try {
 								arenaMount.unsubArenaTurn?.();
-								arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaId)?.session?.subscribe?.(detectChallengeTurn) ?? null;
+								arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaId)?.session?.subscribe?.(() => {
+									arenaTick.bump();
+									syncChallengerLoading();
+									detectChallengeTurn();
+								}) ?? null;
 							} catch {
 								arenaMount.unsubArenaTurn = null;
 							}
@@ -2286,13 +2620,39 @@ window.__ModuleLoader__.load({
 						c.verdict = "";
 						c.round = 0;
 						c.stallSince = 0;
+						c.challengerRePrompted = false;
+						// A fresh round is NOT a restored challenge: restore alignment
+						// must never touch it (see alignChallengeAfterRestore).
+						c.restored = false;
+						c.alignDone = false;
+						c.lastReviewSeq = -1;
+						c.proposalPath = "";
+						c.designPath = "";
+						c.tasksPath = "";
+						c.reviewPath = "";
 						c.mainAnchor = lastKeyOfSnapshot(sessionId);
 						c.arenaAnchor = lastKeyOfSnapshot(arenaMount.arenaSessionId);
+						// Knowledge scene: arm the node half's propose.completed detector
+						// by persisting the main session id + cwd so it can poll the
+						// Theseus workflow state and write back `arena.reviewRequest`.
+						if (isReviewScene(c)) {
+							const arenaCwd = workspacePathOf(sessionId);
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [
+									{ op: "set", path: ["arena", "mainSessionId"], value: sessionId },
+									{ op: "set", path: ["arena", "cwd"], value: typeof arenaCwd === "string" ? arenaCwd : "" }
+								]
+							}).catch(() => {});
+						}
 						updateBlock(sessionId, state);
 						// The challenger session now exists: sync the persona map right away
 						// (main role + challenger role) instead of waiting for the next sync.
 						syncPersona();
 						arenaTick.bump();
+						// Persist the baseline immediately so a reload right after the
+						// first question resumes the duel instead of restarting it.
+						persistChallenge(sessionId);
 					}).catch((error) => {
 						if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
 						arenaMount.error = String(error?.message ?? error);
@@ -2323,8 +2683,14 @@ window.__ModuleLoader__.load({
 					}
 					c.active = false;
 					c.phase = "aborted";
+					// Stop the node half's propose.completed polling for this challenge.
+					if (isReviewScene(c)) stopArenaWatch();
 					updateBlock(arenaMount.sessionId, stateFor(arenaMount.sessionId));
 					arenaTick.bump();
+					// Persist the terminal state so a reload does NOT resurrect the
+					// aborted duel (alignChallengeAfterRestore leaves non-running
+					// phases alone, and the Theseus bridge is not re-armed).
+					persistChallenge(arenaMount.sessionId);
 				};
 
 				// Round driver: watches both sessions' snapshots and advances either the
@@ -2387,6 +2753,7 @@ window.__ModuleLoader__.load({
 								syncPersona();
 								promptSession(arenaId, buildRoundPrompt("final", c, t));
 							}
+							persistChallenge(mainId);
 						}
 					} else if (c.phase === "challenge" || c.phase === "final") {
 						const snap = ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
@@ -2427,6 +2794,7 @@ window.__ModuleLoader__.load({
 								updateBlock(mainId, stateFor(mainId));
 								arenaTick.bump();
 							}
+							persistChallenge(mainId);
 						}
 					}
 				};
@@ -2434,51 +2802,89 @@ window.__ModuleLoader__.load({
 				const advanceReview = (c, mainId, arenaId) => {
 					try {
 						if (c.phase === "propose" || c.phase === "revise") {
-							// Waiting on the MAIN session (model 1 answer / revision).
-							if (c.pendingAnchor) {
-								// An injection just landed (or is about to): re-anchor to
-								// the injected message node (see injectedNodeKey) once it
-								// appears, then wait for model 1's actual revision turn.
-								// Fall through so a revision that completed while the
-								// runtime was unmounted is advanced in this same pass.
-								const cur = injectedNodeKey(mainId, c.lastInjectedText) ?? lastKeyOfSnapshot(mainId);
-								if (cur !== null && cur !== c.mainAnchor) {
-									c.mainAnchor = cur;
-									c.pendingAnchor = false;
-								} else {
-									return; // the injected message has not landed yet
-								}
-							}
-							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
-							// User pressed stop: the main session went idle without producing a
-							// new node — end the whole challenge (and cancel the challenger).
-							// A pending question/approval wait is NOT a stop: the agent is
-							// paused for the user's answer, so never abort on it.
-							const running = snap?.running === true;
-							const stalled = !running && !turnCompleted(snap, c.mainAnchor) && !hasPendingInteraction(snap);
-							if (stalled && (c.mainWasRunning || (c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS))) {
-								abortChallenge();
-								return;
-							}
-							// Stalled-start watchdog (see advanceChallenge): arm the timer
-							// when the awaited session was never seen running and stays idle.
-							if (stalled) {
-								if (c.stallSince === 0) c.stallSince = Date.now();
-							} else {
-								c.stallSince = 0;
-							}
-							c.mainWasRunning = running;
-							if (turnCompleted(snap, c.mainAnchor)) {
-								c.mainAnchor = lastKeyOfSnapshot(mainId);
-								c.lastMainText = extractLastAssistantText(mainId);
-								c.lastMainTools = extractLastAssistantTools(mainId);
-								// Hand the proposal (or latest revision) to the challenger for review.
+							// Knowledge scene: the main model runs Theseus workflow in
+							// its own workspace (explore → propose → record
+							// propose.completed). We do NOT advance on main-session turn
+							// completion — the node half observes the workflow's
+							// `propose.completed` transition and writes
+							// `arena.reviewRequest`, which we consume here to hand the
+							// proposal over to the challenger.
+							const req = latestReviewRequest;
+							if (req !== null && req.seq !== c.lastReviewSeq) {
+								c.lastReviewSeq = req.seq;
+								c.proposalPath = typeof req.proposalPath === "string" ? req.proposalPath : "";
+								c.designPath = typeof req.designPath === "string" ? req.designPath : "";
+								c.tasksPath = typeof req.tasksPath === "string" ? req.tasksPath : "";
+								c.reviewPath = typeof req.reviewPath === "string" ? req.reviewPath : "";
 								c.phase = "review";
 								c.round += 1;
 								promptSession(arenaId, buildRoundPrompt("review", c, t));
 								updateBlock(mainId, stateFor(mainId));
 								syncPersona();
 								arenaTick.bump();
+								persistChallenge(mainId);
+								// Clear the persisted reviewRequest after consuming it:
+								// the value is GLOBAL (settings.arena.reviewRequest), so
+								// a stale one left behind would be re-consumed by a
+								// DIFFERENT session's restored propose phase (skipping
+								// propose straight to review — the "propose 刷新恢复基线"
+								// phase=review bug seen in tests). The node half
+								// re-writes it on the next propose.completed (its seq
+								// tracking is history-length based), so clearing is safe.
+								latestReviewRequest = null;
+								try {
+									apiSettings()?.mutate?.({
+										ns: "model-arena",
+										ops: [{ op: "set", path: ["arena", "reviewRequest"], value: null }]
+									}).catch(() => {});
+								} catch {
+									// best effort
+								}
+								return;
+							}
+							// Stop/stall watchdog — Theseus-driven, so the "stop" and
+							// "stall" signals both have to be read against the workflow
+							// heartbeat, not the chat turn alone:
+							//   • user stop = running→idle with no new chat node AND the
+							//     Theseus stage is still pre-review (propose did NOT just
+							//     complete) → abort now (cancel the challenger).
+							//   • Theseus at `review` = propose.completed, reviewRequest is
+							//     on its way → never treat as a stop.
+							//   • stall = idle with no progress (no heartbeat, or a
+							//     pre-review stage that stopped advancing) for STALL_MS.
+							const snap = ctx.sessions.binding(mainId)?.session?.getSnapshot?.();
+							const running = snap?.running === true;
+							const hasNewNode = turnCompleted(snap, c.mainAnchor);
+							const idle = !running && !hasPendingInteraction(snap);
+							if (idle) {
+								if (c.stallSince === 0) c.stallSince = Date.now();
+							} else {
+								c.stallSince = 0;
+							}
+							const proposeDone = latestWatch !== null && latestWatch.stage === "review";
+							if (idle && !hasNewNode && c.mainWasRunning && !proposeDone) {
+								abortChallenge();
+								return;
+							}
+							// "Genuinely stuck" = the MAIN SESSION has been idle for
+							// STALL_MS while Theseus is still pre-review. Deliberately
+							// keyed on the session's own idle duration (stallSince), not
+							// on watch.at: a single Theseus step can take a long time
+							// (the model "thinks through two branches"), so the last
+							// progress timestamp can be old while the model is merely
+							// busy — only a sustained idle means it actually stopped.
+							const theseusStalled = idle && !proposeDone && c.stallSince !== 0 && Date.now() - c.stallSince > STALL_MS;
+							if (theseusStalled) {
+								abortChallenge();
+								return;
+							}
+							c.mainWasRunning = running;
+							// A completed main turn only re-anchors the stop detector; it
+							// does NOT advance the flow (advancement is reviewRequest-driven).
+							if (hasNewNode) {
+								c.mainAnchor = lastKeyOfSnapshot(mainId);
+								c.lastMainText = extractLastAssistantText(mainId);
+								c.lastMainTools = extractLastAssistantTools(mainId);
 							}
 						} else if (c.phase === "review") {
 							// Waiting on the ARENA session (challenger review verdict).
@@ -2507,35 +2913,45 @@ window.__ModuleLoader__.load({
 								const verdict = parseReviewVerdict(c.lastArenaText);
 								c.verdict = verdict === "" ? "NEEDS_REVISION" : verdict;
 								if (verdict === "READY") {
-									// 认可 → 结束审查循环并解锁（后续环节由宿主流程接管，本插件不改动）。
+									// 认可 → 结束审查循环；主模型自己 record review.completed
+									// READY 并按 Theseus workflow 继续后续阶段，本插件放手。
 									c.phase = "done";
 									c.active = false;
-									promptSession(mainId, stripMarkdown(c.lastArenaText));
-									c.lastInjectedText = stripMarkdown(c.lastArenaText);
+									const readyNote = "挑战者审查结论：READY（认可）。请 record review.completed READY 并按 Theseus workflow 继续后续阶段（user-readiness-review → apply → archive）。";
+									promptSession(mainId, readyNote);
+									c.lastInjectedText = readyNote;
+									stopArenaWatch();
+									markReviewDone(mainId);
 									updateBlock(mainId, stateFor(mainId));
 									arenaTick.bump();
+									persistChallenge(mainId);
 								} else {
 									// 不认可 → 主模型修正；累计 3 次不认可后结束审查循环。
 									c.rejectCount += 1;
 									if (c.rejectCount >= MAX_REJECTS) {
 										c.phase = "done";
 										c.active = false;
-										const note = "审查未通过：累计 " + c.rejectCount + " 次不认可，审查循环结束。";
-										promptSession(mainId, note);
-										c.lastInjectedText = note;
+										latestReviewRequest = null;
+										markReviewDone(mainId);
+										// Ask the node half to write the Theseus state machine back
+										// to `propose` (review.completed NEEDS_REVISION) WITHOUT
+										// messaging the main model — messaging it would start a
+										// fresh turn and defeat "park for the human".
+										apiSettings()?.mutate?.({
+											ns: "model-arena",
+											ops: [{ op: "set", path: ["arena", "returnToPropose"], value: { seq: Date.now() } }]
+										}).catch(() => {});
 										updateBlock(mainId, stateFor(mainId));
 										arenaTick.bump();
+										persistChallenge(mainId);
 									} else {
 										c.phase = "revise";
 										const injected = buildReviseMessage(c.lastArenaText, c, t);
 										promptSession(mainId, injected);
 										c.lastInjectedText = injected;
-										// The injected user message itself is NOT a completed main
-										// turn: re-anchor once it lands, then wait for model 1's
-										// revision. pendingAnchor defers the turn check for one beat.
-										c.pendingAnchor = true;
 										updateBlock(mainId, stateFor(mainId));
 										arenaTick.bump();
+										persistChallenge(mainId);
 									}
 								}
 							}
@@ -2565,6 +2981,16 @@ window.__ModuleLoader__.load({
 				// arrive after the round started so they never re-trigger.
 				const detectUserMessages = (sessionId, state) => {
 					if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
+					// Re-seed from a late-arriving snapshot: when the mount scanned an
+					// empty snapshot (lastSeenSeq === 0) but this session was already
+					// linked to an arena session (a previous round ran), the historical
+					// user nodes that arrive after mount must be consumed as pre-existing.
+					// Otherwise re-entering a finished round (esp. the repeatable
+					// business scene) resurrects the header at the first step just
+					// because the conversation history finished loading asynchronously.
+					if (arenaMount.challenge.active !== true && arenaMount.lastSeenSeq === 0 && linksCache[sessionId] !== void 0) {
+						arenaMount.lastSeenSeq = scanUserAnchorSeq(sessionId);
+					}
 					let snap;
 					try {
 						snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
@@ -2585,7 +3011,11 @@ window.__ModuleLoader__.load({
 							if (arenaMount.challenge.active !== true) {
 								// First question of a round starts it; the injected challenger
 								// messages are user nodes too but arrive after the round began.
-								startChallenge(sessionId, state, text);
+								// The review scene is one-shot: once done, do NOT re-arm (the
+								// challenger stays dormant — see shouldReArmChallenge).
+								if (shouldReArmChallenge(arenaMount.challenge, linksCache[sessionId], latestWatch)) {
+									startChallenge(sessionId, state, text);
+								}
 							}
 						}
 					}
@@ -2632,11 +3062,56 @@ window.__ModuleLoader__.load({
 
 				// ── arena linkage persistence (settings "model-arena" namespace) ──
 				let linksCache = {};
+				// Persisted challenge orchestration state per main session
+				// (phase/anchors/counters projection written by persistChallenge).
+				// Restored on reload to resume an interrupted duel from its last
+				// point instead of restarting a fresh round.
+				let challengesCache = {};
+				// Background-advance switch (persisted in settings, default OFF).
+				// When ON, an arena duel whose MAIN session is not the currently
+				// selected one still advances in the background (challenger reply →
+				// injected into the main session; finished main turn → challenger
+				// prompted), driven by the persisted challenge baseline + live
+				// session snapshots. When OFF, background duels only advance on
+				// return to the main session (v7 catch-up).
+				let backgroundAdvance = false;
+				// Temperature settings snapshot (persisted in the same namespace):
+				// { enabled, business: {main, challenger}, knowledge: {...}, qa: {...} }.
+				// Absent per-scene×role values mean "use dsh default". UI-only for now —
+				// the agent/request injection consuming these values is a follow-up task.
+				let temperatureSettings = { enabled: false, business: {}, knowledge: {}, qa: {} };
+				// The session the node half is currently polling for
+				// propose.completed (settings.arena.mainSessionId). The
+				// reviewRequest it writes belongs to THAT session only — the
+				// background advance must not consume it for another session.
+				let arenaWatchMainSessionId = "";
 				// Per-workspace × per-scene challenger skill
 				// (workspace path -> scene -> skill path). Persisted in the same
 				// namespace; a new session in the same workspace defaults to its
 				// scene's entry (empty = no skill).
 				let workspaceSkillsCache = {};
+				// True once `loadLinks` has completed its first read: the seed must
+				// wait for the persisted skills to arrive, otherwise the first
+				// synchronous `sync()` seeds `state.skill` from an empty cache and
+				// the persisted skill is never shown.
+				let skillsLoaded = false;
+				// True while a local skill write (save/clear) is in flight. The
+				// write already updated `workspaceSkillsCache` synchronously, so a
+				// `document-updated` round-trip that reads a still-stale descriptor
+				// must not clobber it.
+				let skillWriteInFlight = false;
+				// Latest `arena.reviewRequest` written by the node half when it
+				// observes the main model's `propose.completed`. Consumed by
+				// advanceReview to hand the proposal to the challenger.
+				let latestReviewRequest = null;
+				// Latest `arena.watch` progress heartbeat from the node half
+				// (seq/stage/at). Used by advanceReview's watchdog to distinguish
+				// "Theseus still advancing" from "genuinely stuck".
+				let latestWatch = null;
+				// Timestamp of the last catch-up re-read of the arena bridge, so a
+				// network drop that missed the `document-updated` push can recover
+				// without hammering the settings describe endpoint every sync tick.
+				let lastLinksRefresh = 0;
 				const workspacePathOf = (sessionId) => {
 					try {
 						const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
@@ -2655,15 +3130,24 @@ window.__ModuleLoader__.load({
 					const sceneKey = typeof scene === "string" && scene !== "" ? scene : "business";
 					const cleaned = typeof skill === "string" ? skill : "";
 					if (ws !== void 0) {
-						const entry = workspaceSkillsCache[ws] !== null && typeof workspaceSkillsCache[ws] === "object" && !Array.isArray(workspaceSkillsCache[ws]) ? workspaceSkillsCache[ws] : {};
-						entry[sceneKey] = cleaned;
+						// Build a fresh entry (never mutate the frozen/cached object the
+						// snapshot may have handed out) and keep the in-memory cache
+						// authoritative while the persist round-trip is in flight.
+						const prev = workspaceSkillsCache[ws];
+						const entry = { ...(prev !== null && typeof prev === "object" && !Array.isArray(prev) ? prev : {}), [sceneKey]: cleaned };
 						workspaceSkillsCache[ws] = entry;
+						skillWriteInFlight = true;
 						try {
 							apiSettings()?.mutate?.({
 								ns: "model-arena",
 								ops: [{ op: "set", path: ["workspaceSkills", ws], value: entry }]
-							}).catch(() => {});
+							}).then(() => {
+								skillWriteInFlight = false;
+							}).catch(() => {
+								skillWriteInFlight = false;
+							});
 						} catch {
+							skillWriteInFlight = false;
 							// persistence failed — the in-memory cache still applies
 						}
 					}
@@ -2682,23 +3166,56 @@ window.__ModuleLoader__.load({
 						const namespaces = response?.result?.value?.namespaces ?? [];
 						const view = namespaces.find((n) => n !== null && n !== void 0 && n.ns === "model-arena");
 						linksCache = view?.value?.links ?? {};
-						const rawSkills = view?.value?.workspaceSkills ?? {};
-						workspaceSkillsCache = {};
-						if (rawSkills !== null && typeof rawSkills === "object") {
-							for (const ws of Object.keys(rawSkills)) {
-								const v = rawSkills[ws];
-								if (typeof v === "string") {
-									// legacy workspace-level entry (pre-scene) → default scene
-									workspaceSkillsCache[ws] = { business: v };
-								} else if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-									workspaceSkillsCache[ws] = { ...v };
+						challengesCache = view?.value?.challenges ?? {};
+						// A local skill write already updated `workspaceSkillsCache`
+						// synchronously; skip the rebuild so a still-stale descriptor
+						// cannot clobber it (the write's own settle re-reads later if
+						// needed — the in-memory value is authoritative for now).
+						if (!skillWriteInFlight) {
+							const rawSkills = view?.value?.workspaceSkills ?? {};
+							workspaceSkillsCache = {};
+							if (rawSkills !== null && typeof rawSkills === "object") {
+								for (const ws of Object.keys(rawSkills)) {
+									const v = rawSkills[ws];
+									if (typeof v === "string") {
+										// legacy workspace-level entry (pre-scene) → default scene
+										workspaceSkillsCache[ws] = { business: v };
+									} else if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+										workspaceSkillsCache[ws] = { ...v };
+									}
 								}
 							}
 						}
+						const rawArena = view?.value?.arena;
+						arenaWatchMainSessionId = typeof rawArena?.mainSessionId === "string" ? rawArena.mainSessionId : "";
+						const req = rawArena?.reviewRequest;
+						latestReviewRequest = (req !== null && typeof req === "object" && typeof req.seq === "number")
+							? req
+							: null;
+						const w = rawArena?.watch;
+						latestWatch = (w !== null && typeof w === "object" && typeof w.seq === "number" && typeof w.at === "number")
+							? w
+							: null;
+						backgroundAdvance = view?.value?.backgroundAdvance === true;
+						const rawTemperature = view?.value?.temperature;
+						if (rawTemperature !== null && rawTemperature !== void 0 && typeof rawTemperature === "object") {
+							temperatureSettings = {
+								enabled: rawTemperature.enabled === true,
+								business: rawTemperature.business ?? {},
+								knowledge: rawTemperature.knowledge ?? {},
+								qa: rawTemperature.qa ?? {}
+							};
+						} else {
+							temperatureSettings = { enabled: false, business: {}, knowledge: {}, qa: {} };
+						}
 					} catch {
 						linksCache = {};
-						workspaceSkillsCache = {};
+						challengesCache = {};
+						if (!skillWriteInFlight) workspaceSkillsCache = {};
 					}
+					// The persisted skills (if any) are now available: re-run the
+					// seed for any session whose skill has not been seeded yet.
+					skillsLoaded = true;
 				};
 				const saveLink = async (mainId, link) => {
 					linksCache[mainId] = link;
@@ -2710,6 +3227,361 @@ window.__ModuleLoader__.load({
 					} catch {
 						// persistence failed — the in-memory cache still links this session
 					}
+				};
+				// Persist the challenge orchestration state (phase/anchors/counters)
+				// for a main session so an interrupted duel survives a reload/restart.
+				// Written IMMEDIATELY (no debounce): a page reload right after the
+				// first question — while the main model is already generating — used
+				// to lose the baseline (the debounce timer died with the page, the
+				// reload fell back to an idle challenge and the whole flow went
+				// silent: reviewRequest arriving later is never consumed because
+				// detectChallengeTurn only runs for active challenges). Callers are
+				// round-granular (start + each phase transition), so the extra
+				// round-trip is negligible; concurrent writes are last-write-wins
+				// (each writes the current snapshot via a path-scoped settings set).
+				// The in-memory `challengesCache` stays authoritative while the
+				// round-trip is in flight; on failure the next transition (or the
+				// loadLinks 2s catch-up re-read) re-syncs.
+				const persistChallenge = (mainId, force) => {
+					// Guard: normally only the CURRENT session's runtime may persist
+					// its challenge. `force` lifts that for the background advance,
+					// which persists OTHER sessions' duels from their snapshot-derived
+					// challenge objects (there is no arenaMount for them).
+					if (!force && (arenaMount === null || arenaMount.sessionId !== mainId)) return;
+					const projected = toPersistedChallenge(force ? challengesCache[mainId] : arenaMount.challenge);
+					if (projected === null) return;
+					challengesCache[mainId] = projected;
+					try {
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [{ op: "set", path: ["challenges", mainId], value: projected }]
+						}).catch(() => {
+							// best effort — the cache still holds the state; the next
+							// persist or the loadLinks catch-up re-read re-syncs
+						});
+					} catch {
+						// best effort
+					}
+				};
+				// ── background advance (opt-in via settings.backgroundAdvance) ──
+				// An arena duel whose MAIN session is NOT the current one has no
+				// runtime (syncArena tears down on switch-away), so it normally only
+				// advances on return (v7 catch-up). When the user enables background
+				// advance, this walks every linked main session except the current
+				// one and advances the duel from the PERSISTED challenge baseline +
+				// live session snapshots: a finished main turn prompts the
+				// challenger, a finished challenger reply is injected into the main
+				// session, and a knowledge reviewRequest is consumed only when it
+				// belongs to this session (settings.arena.mainSessionId). Watchdogs
+				// and UI side effects are intentionally skipped — a stuck background
+				// duel is handled by the normal catch-up/watchdog on return.
+				const advanceBackgroundDuels = () => {
+					if (!backgroundAdvance) return;
+					const current = currentSessionId();
+					for (const sessionId of Object.keys(linksCache)) {
+						if (sessionId === current) continue;
+						try {
+							const persisted = challengesCache[sessionId];
+							if (persisted === null || persisted === void 0 || typeof persisted !== "object") continue;
+							if (!isResumableChallenge(persisted)) continue;
+							const link = linksCache[sessionId];
+							const arenaId = typeof link?.sessionId === "string" ? link.sessionId : "";
+							if (arenaId === "") continue;
+							const c = fromPersistedChallenge(persisted);
+							const mainSnap = (() => {
+								try {
+									return ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
+								} catch {
+									return void 0;
+								}
+							})();
+							const arenaSnap = (() => {
+								try {
+									return ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
+								} catch {
+									return void 0;
+								}
+							})();
+							let advanced = false;
+							if (isMainModelPhase(c.phase)) {
+								if (isReviewScene(c)) {
+									// knowledge: propose/revise advance on the node
+									// half's reviewRequest (only for the session it
+									// polls); consume + prompt the challenger review.
+									const req = latestReviewRequest;
+									if (req !== null && typeof req.seq === "number" && req.seq !== c.lastReviewSeq && arenaWatchMainSessionId === sessionId) {
+										c.lastReviewSeq = req.seq;
+										c.proposalPath = typeof req.proposalPath === "string" ? req.proposalPath : "";
+										c.designPath = typeof req.designPath === "string" ? req.designPath : "";
+										c.tasksPath = typeof req.tasksPath === "string" ? req.tasksPath : "";
+										c.reviewPath = typeof req.reviewPath === "string" ? req.reviewPath : "";
+										c.phase = "review";
+										c.round += 1;
+										promptSession(arenaId, buildRoundPrompt("review", c, t));
+										latestReviewRequest = null;
+										try {
+											apiSettings()?.mutate?.({
+												ns: "model-arena",
+												ops: [{ op: "set", path: ["arena", "reviewRequest"], value: null }]
+											}).catch(() => {});
+										} catch {
+											// best effort
+										}
+										advanced = true;
+									}
+								} else if (turnCompletedSince(mainSnap, c.mainAnchor)) {
+									// business/qa: a finished main turn prompts the
+									// challenger (answer→challenge, revise→final).
+									c.mainAnchor = lastKeyOfSnapshot(sessionId);
+									c.lastMainText = extractLastAssistantText(sessionId);
+									c.lastMainTools = extractLastAssistantTools(sessionId);
+									if (c.phase === "answer") {
+										c.phase = "challenge";
+										c.round += 1;
+										promptSession(arenaId, buildRoundPrompt("challenge", c, t));
+									} else {
+										c.phase = "final";
+										c.round += 1;
+										promptSession(arenaId, buildRoundPrompt("final", c, t));
+									}
+									advanced = true;
+								}
+							} else if (isChallengerPhase(c.phase) && turnCompletedSince(arenaSnap, c.arenaAnchor)) {
+								// a finished challenger reply is injected into the
+								// main session and the round advances.
+								c.arenaAnchor = lastKeyOfSnapshot(arenaId);
+								c.lastArenaText = extractLastAssistantText(arenaId);
+								if (isReviewScene(c)) {
+									const verdict = parseReviewVerdict(c.lastArenaText);
+									c.verdict = verdict === "" ? "NEEDS_REVISION" : verdict;
+									if (verdict === "READY") {
+										c.phase = "done";
+										c.active = false;
+										const readyNote = "挑战者审查结论：READY（认可）。请 record review.completed READY 并按 Theseus workflow 继续后续阶段（user-readiness-review → apply → archive）。";
+										promptSession(sessionId, readyNote);
+										c.lastInjectedText = readyNote;
+										markReviewDone(sessionId);
+									} else {
+										c.rejectCount += 1;
+										if (c.rejectCount >= MAX_REJECTS) {
+											c.phase = "done";
+											c.active = false;
+											markReviewDone(sessionId);
+											apiSettings()?.mutate?.({
+												ns: "model-arena",
+												ops: [{ op: "set", path: ["arena", "returnToPropose"], value: { seq: Date.now() } }]
+											}).catch(() => {});
+										} else {
+											c.phase = "revise";
+											const injected = buildReviseMessage(c.lastArenaText, c, t);
+											promptSession(sessionId, injected);
+											c.lastInjectedText = injected;
+										}
+									}
+								} else if (c.phase === "challenge") {
+									c.phase = "revise";
+									const injected = buildReviseMessage(c.lastArenaText, c, t);
+									promptSession(sessionId, injected);
+									c.lastInjectedText = injected;
+									c.pendingAnchor = true;
+								} else {
+									// final → done
+									c.phase = "done";
+									c.active = false;
+									const fin = stripMarkdown(c.lastArenaText);
+									promptSession(sessionId, fin);
+									c.lastInjectedText = fin;
+								}
+								advanced = true;
+							}
+							if (advanced) {
+								challengesCache[sessionId] = toPersistedChallenge(c);
+								persistChallenge(sessionId, true);
+							}
+						} catch (_backgroundAdvanceFailure) {
+							// per-session best effort — retry on the next tick
+						}
+					}
+				};
+				// Resume an interrupted challenge from its persisted state: reuses the
+				// restored arena session (never recreates it), re-locks the composer,
+				// re-arms the Theseus bridge for the knowledge scene, keeps the
+				// original question/round/anchors/counters (the incoming `text` is
+				// only the user's wake-up signal — the main model gets it through the
+				// platform's normal message channel, not from this plugin), then
+				// catch-up once so a turn that finished server-side advances now.
+				// Runs ONLY for challenges restored from persistence (c.restored ===
+				// true) and only until the first re-alignment completes (c.alignDone):
+				// fresh rounds are driven by advanceChallenge/advanceReview alone, so
+				// this never double-injects a round prompt into a running flow.
+				const alignChallengeAfterRestore = (sessionId, state) => {
+					if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
+					const c = arenaMount.challenge;
+					if (c.restored !== true || c.alignDone === true) return;
+					const arenaId = arenaMount.arenaSessionId;
+					if (!RUNNING_CHALLENGE_PHASES.has(c.phase)) {
+						c.alignDone = true;
+						return;
+					}
+					if (isMainModelPhase(c.phase)) {
+						// Main-model phase: running or already-completed turns proceed
+						// automatically (the lock applies and detectChallengeTurn
+						// advances); a genuinely idle session waits for the user's
+						// "continue" message — updateBlock lifts the lock for it. A
+						// not-yet-loaded snapshot (async history after reload) is left
+						// alone: the next sync re-runs this until the snapshot lands.
+						const mainSnap = (() => {
+							try {
+								return ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
+							} catch {
+								return void 0;
+							}
+						})();
+						if (mainSnap === void 0 || mainSnap === null) return;
+						const action = resolveMainResume(mainSnap, c);
+						if (action === "running" || action === "completed") {
+							c.active = true;
+							updateBlock(sessionId, state);
+							detectChallengeTurn();
+						}
+						c.alignDone = true;
+						return;
+					}
+					if (isChallengerPhase(c.phase)) {
+						c.active = true;
+						const arenaSnap = (() => {
+							try {
+								return arenaId === void 0 ? void 0 : ctx.sessions.binding(arenaId)?.session?.getSnapshot?.();
+							} catch {
+								return void 0;
+							}
+						})();
+						if (arenaSnap === void 0 || arenaSnap === null) return;
+						const action = resolveChallengerResume(arenaSnap, c);
+						if (action === "running" || action === "completed") {
+							updateBlock(sessionId, state);
+							detectChallengeTurn();
+							c.alignDone = true;
+							return;
+						}
+						// Genuinely stalled: re-inject the round prompt so the
+						// challenger executes it now ("切到竞技场会话时立即
+						// review/终审"). Injected once per restore (challengerRePrompted
+						// is a run-time flag, reset by fromPersistedChallenge) so a
+						// failed prompt is retried without infinitely duplicating the
+						// round instruction on every sync tick.
+						updateBlock(sessionId, state);
+						if (!c.challengerRePrompted) {
+							c.challengerRePrompted = true;
+							const kind = c.phase === "final" ? "final" : c.phase === "review" ? "review" : "challenge";
+							promptSession(arenaId, buildRoundPrompt(kind, c, t));
+						}
+						detectChallengeTurn();
+						c.alignDone = true;
+					}
+				};
+				// Persist the review loop's terminal state onto the link so a page
+				// reload (which drops the in-memory `phase === "done"`) still blocks
+				// re-arming the challenger for this session. `done` only ever means
+				// "the knowledge review loop concluded", so it is never set for the
+				// business/qa challenge flow.
+				const markReviewDone = (mainId) => {
+					const link = linksCache[mainId];
+					if (link !== null && typeof link === "object" && !Array.isArray(link)) {
+						saveLink(mainId, { ...link, done: true });
+					}
+				};
+				// Stop the node half's propose.completed polling by clearing the
+				// watched main session id (and the stale review request). Called when
+				// the review loop ends (READY, 3 rejections) or the challenge aborts.
+				const stopArenaWatch = () => {
+					latestReviewRequest = null;
+					latestWatch = null;
+					try {
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [
+								{ op: "set", path: ["arena", "mainSessionId"], value: "" },
+								{ op: "set", path: ["arena", "reviewRequest"], value: null }
+							]
+						}).catch(() => {});
+					} catch {
+						// best effort
+					}
+				};
+
+				// Infer a mid-flight challenge baseline from the LIVE snapshots when
+				// the persisted baseline is missing. A reload right after the first
+				// question can lose the write (the old debounced timer died with the
+				// page; a session created milliseconds before the reload never
+				// persisted at all), and pre-v20 runs never persisted challenges.
+				// Without this the reload falls back to an idle challenge and the
+				// whole flow goes silent: reviewRequest arrives later but is never
+				// consumed because detectChallengeTurn only runs for active
+				// challenges. Only sessions that HAVE an arena link AND a first user
+				// question are inferred, and only when no done signal blocks
+				// re-arming (v18/v19 semantics: concluded loops stay dormant).
+				const inferRestoredChallenge = (sessionId, state) => {
+					const link = linksCache[sessionId];
+					if (link === void 0 || typeof link.sessionId !== "string" || link.sessionId === "") return null;
+					// done signals block inference
+					if (link.done === true) return null;
+					if (latestWatch !== null && isPastReviewStage(latestWatch.stage)) return null;
+					const snap = (() => {
+						try {
+							return ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
+						} catch {
+							return void 0;
+						}
+					})();
+					if (snap === void 0 || snap === null) return null; // snapshot not ready — retry next sync
+					// a first user question must exist (the duel actually started)
+					let question = "";
+					for (const key of orderOf(snap)) {
+						const node = nodeOf(snap, key);
+						if (node === void 0) continue;
+						if (isUserNode(node)) {
+							const text = textOfContent(contentOf(node));
+							if (text !== "") {
+								question = text;
+								break;
+							}
+						}
+					}
+					if (question === "") return null; // no first question → not started
+					const scene = state?.scene ?? link.scene ?? "business";
+					return {
+						active: true,
+						phase: (SCENES[scene] ?? SCENES.business).review === true ? "propose" : "answer",
+						scene,
+						skill: typeof state?.skill === "string" ? state.skill : "",
+						userQuestion: question,
+						mainAnchor: lastKeyOfSnapshot(sessionId),
+						arenaAnchor: (() => {
+							try {
+								return lastKeyOfSnapshot(link.sessionId);
+							} catch {
+								return null;
+							}
+						})(),
+						rejectCount: 0,
+						verdict: "",
+						round: 0,
+						pendingAnchor: false,
+						lastInjectedText: "",
+						lastReviewSeq: -1,
+						proposalPath: "",
+						designPath: "",
+						tasksPath: "",
+						reviewPath: "",
+						// run-time fields
+						mainWasRunning: false,
+						arenaWasRunning: false,
+						stallSince: 0,
+						challengerRePrompted: false,
+						restored: true,
+						alignDone: false
+					};
 				};
 
 				const syncArena = (sessionId) => {
@@ -2732,12 +3604,31 @@ window.__ModuleLoader__.load({
 						};
 						state.arena = { sessionId: link.sessionId };
 						if (link.scene !== void 0) state.scene = link.scene;
+						// Re-arm the node half's Theseus poll for a review-scene session
+						// whose loop already concluded in an earlier run: the previous
+						// `stopArenaWatch` cleared `mainSessionId`, leaving `watch.stage`
+						// stale. Re-arming lets the node half re-read the workflow state
+						// and report "past review" (apply/archive), which blocks
+						// re-arming the challenger once the loop has already ended.
+						// A persisted terminal challenge (done/aborted) must NOT re-arm
+						// — otherwise an aborted review loop resurrects after reload.
+						if (state.scene === "knowledge" && link.done !== true
+							&& !isTerminalPhase(challengesCache[sessionId]?.phase)
+							&& typeof link.sessionId === "string" && link.sessionId !== "") {
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [
+									{ op: "set", path: ["arena", "mainSessionId"], value: sessionId },
+									{ op: "set", path: ["arena", "cwd"], value: workspacePathOf(sessionId) ?? "" }
+								]
+							}).catch(() => {});
+						}
 					}
 					// Seed the per-session challenger skill from the WORKSPACE × SCENE
 					// historical entry once (undefined -> the workspace+scene default,
 					// which may be "" = no skill). The user's own pick/clear afterwards
 					// overrides it for this session AND updates that scene's default.
-					if (state !== void 0 && state.skill === void 0) {
+					if (state !== void 0 && skillsLoaded && state.skill === void 0) {
 						const wsEntry = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""];
 						const seedScene = state.scene ?? "business";
 						state.skill = (wsEntry !== null && typeof wsEntry === "object" && !Array.isArray(wsEntry) ? wsEntry[seedScene] : void 0) ?? "";
@@ -2747,7 +3638,27 @@ window.__ModuleLoader__.load({
 						teardownArena();
 						return;
 					}
-					if (arenaMount !== null && arenaMount.sessionId === sessionId) return;
+					if (arenaMount !== null && arenaMount.sessionId === sessionId) {
+						// Already mounted. A first sync that ran BEFORE the async
+						// settings load (or before the session snapshot landed) may
+						// have fallen back to an idle challenge — upgrade it to the
+						// persisted baseline, or a baseline inferred from the live
+						// snapshots, as soon as either becomes available, then
+						// re-align. This closes the "reload right after the first
+						// question" gap where the idle fallback would otherwise stay
+						// forever and the flow would silently stall (challenge never
+						// advances, reviewRequest never consumed).
+						if (arenaMount.challenge.phase === "idle" && !arenaMount.challenge.restored) {
+							const upgraded = fromPersistedChallenge(challengesCache[sessionId]) ?? inferRestoredChallenge(sessionId, state);
+							if (upgraded !== null) {
+								arenaMount.challenge = upgraded;
+								updateBlock(sessionId, state);
+								persistChallenge(sessionId);
+								alignChallengeAfterRestore(sessionId, state);
+							}
+						}
+						return;
+					}
 					teardownArena();
 					let unsubMain = null;
 					try {
@@ -2776,9 +3687,16 @@ window.__ModuleLoader__.load({
 						lastSeenSeq: 0,
 						error: null,
 						questionDraft: null,
-						// Restore an in-flight challenge state when returning to this
-						// session (persisted on teardown); otherwise start fresh.
-						challenge: state.challenge ?? {
+						// Restore the challenge orchestration state: the in-memory copy
+						// first (session switch within this page), then the PERSISTED
+						// projection (page reload / dsh restart — the baseline that
+						// lets an interrupted duel resume from its last phase/anchors
+						// instead of restarting a fresh round), then a baseline
+						// INFERRED from the live snapshots (the persisted write can
+						// be lost when the reload happens right after the first
+						// question), then a fresh idle challenge. Re-alignment
+						// against the live snapshots happens right below.
+						challenge: state.challenge ?? fromPersistedChallenge(challengesCache[sessionId]) ?? inferRestoredChallenge(sessionId, state) ?? {
 							active: false,
 							phase: "idle",
 							scene: state.scene ?? "business",
@@ -2795,9 +3713,24 @@ window.__ModuleLoader__.load({
 							lastInjectedText: "",
 							mainWasRunning: false,
 							arenaWasRunning: false,
+							// Theseus review-loop bridge: the node half writes
+							// arena.reviewRequest once the main model records
+							// `propose.completed`; we consume its monotonic seq and
+							// hand the artifact paths to the challenger.
+							lastReviewSeq: -1,
+							proposalPath: "",
+							designPath: "",
+							tasksPath: "",
+							reviewPath: "",
 							// ms timestamp when the awaited session first went idle
 							// without progress; 0 = not stalled (see STALL_MS).
-							stallSince: 0
+							stallSince: 0,
+							// run-time flag: the restore alignment re-injected the
+							// challenger round prompt once (see alignChallengeAfterRestore).
+							challengerRePrompted: false,
+							// run-time flags: this is NOT a restored challenge.
+							restored: false,
+							alignDone: false
 						}
 					};
 					// Seed from the current snapshot so pre-existing messages are not re-mirrored.
@@ -2807,12 +3740,30 @@ window.__ModuleLoader__.load({
 						// Returning mid-challenge: re-apply the composer lock immediately.
 						updateBlock(sessionId, state);
 						// Restored linkage: listen for challenger turns on the arena session.
+						// The wrapper also bumps arenaTick on EVERY arena-snapshot change
+						// (including the running flag flipping idle→running), so the
+						// ChallengeStatus header re-renders and can show the challenger
+						// loading animation while the arena model is generating; the
+						// sidebar loading dot is re-synced here too (the arena session's
+						// snapshot change is the only prompt for its running flag).
 						try {
-							arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaMount.arenaSessionId)?.session?.subscribe?.(detectChallengeTurn) ?? null;
+							arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaMount.arenaSessionId)?.session?.subscribe?.(() => {
+								arenaTick.bump();
+								syncChallengerLoading();
+								detectChallengeTurn();
+							}) ?? null;
 						} catch {
 							arenaMount.unsubArenaTurn = null;
 						}
 					}
+					// Restore alignment: a persisted/restored in-flight challenge is
+					// re-aligned against the LIVE snapshots — main-model phases wait
+					// for the user's "continue" when genuinely idle (lock lifted in
+					// updateBlock), challenger phases re-inject the round prompt so
+					// the review/verdict executes immediately. Idempotent; also run
+					// on every sync tick (see sync()) so a late-arriving snapshot
+					// (async history load after mount) re-aligns correctly.
+					alignChallengeAfterRestore(sessionId, state);
 				};
 
 				// ── menu rendering (two-level, mirroring the input box seat) ────
@@ -3046,7 +3997,23 @@ window.__ModuleLoader__.load({
 						}
 						conversation.blocks.set(sessionId, { reason: t("block.reason") });
 					} else if (arenaMount !== null && arenaMount.sessionId === sessionId && shouldShowChallengeHeader(arenaMount.challenge)) {
-						conversation.blocks.set(sessionId, { reason: challengePhaseReason(arenaMount.challenge.phase) });
+						// A restored main-model phase whose session is genuinely idle
+						// (a turn that was interrupted server-side — e.g. dsh restart)
+						// must NOT lock the composer: the user sends "continue" to
+						// wake the main model up (the backend session survives a
+						// refresh, so running/finished turns proceed on their own and
+						// stay locked). The header still shows the stage + hint.
+						// Only RESTORED challenges get this treatment — a fresh round
+						// always locks while the main model works.
+						const c = arenaMount.challenge;
+						if (c.restored === true && isMainModelPhase(c.phase) && resolveMainResume(
+							(() => { try { return ctx.sessions.binding(sessionId)?.session?.getSnapshot?.(); } catch { return void 0; } })(),
+							c
+						) === "waiting") {
+							conversation.blocks.set(sessionId, void 0);
+						} else {
+							conversation.blocks.set(sessionId, { reason: challengePhaseReason(c.phase) });
+						}
 					} else {
 						conversation.blocks.set(sessionId, void 0);
 					}
@@ -3338,6 +4305,66 @@ window.__ModuleLoader__.load({
 						// sidebar structure changed — retry next schedule tick
 					}
 				};
+				// Challenger loading indicator in the SIDEBAR: the main session's own
+				// row shows the platform's running dot while the main model generates,
+				// but nothing while the CHALLENGER (arena model) is working — the main
+				// session is idle then. Inject a small rotating dot into the selected
+				// (main) session row's status slot while a challenger round is active
+				// AND the arena session is running, and remove it otherwise. The
+				// selected row is the main session's row because the selection guard
+				// bounces any switch into the competitor session back (and the arena
+				// runtime only mounts for the current session). Idempotent + marked so
+				// repaint never re-touches the row (MutationObserver feedback guard).
+				const syncChallengerLoading = () => {
+					try {
+						const arenaRunning = (() => {
+							try {
+								const arenaId = arenaMount === null ? void 0 : arenaMount.arenaSessionId;
+								return arenaId !== void 0 && ctx.sessions.binding(arenaId)?.session?.getSnapshot?.()?.running === true;
+							} catch {
+								return false;
+							}
+						})();
+						const show = arenaMount !== null
+							&& arenaMount.challenge.active === true
+							&& isChallengerPhase(arenaMount.challenge.phase)
+							&& arenaRunning;
+						for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
+							if (!(el instanceof HTMLElement)) continue;
+							// className split match (not classList) keeps this working
+							// against both the real DOM and the smoke-test element stub.
+							const isSelected = typeof el.className === "string" && el.className.split(/\s+/).includes(ANCHORS.sidebarSelected);
+							const dot = el.querySelector(".ma-sidebarLoading");
+							if (isSelected) {
+								if (show) {
+									if (dot === null) {
+										const slot = el.querySelector(ANCHORS.sidebarSlot) ?? el;
+										const spinner = document.createElement("span");
+										spinner.className = "ma-sidebarLoading";
+										spinner.dataset.arenaSidebarLoading = "";
+										spinner.setAttribute("role", "status");
+										spinner.setAttribute("aria-label", t("challenge.loading"));
+										slot.appendChild(spinner);
+										el.dataset.arenaLoading = "";
+									}
+								} else if (dot !== null) {
+									dot.remove();
+									delete el.dataset.arenaLoading;
+								}
+							} else if (dot !== null) {
+								// A dot left on a NON-selected row is stale: it marks
+								// the CURRENT session's challenger, so once the row
+								// loses selection (switched away) it must go — even
+								// when the challenger's turn later completes via the
+								// background advance while the user is away.
+								dot.remove();
+								delete el.dataset.arenaLoading;
+							}
+						}
+					} catch (_loadingSyncFailure) {
+						// sidebar structure changed — retry next schedule tick
+					}
+				};
 				// Prevent switching INTO an arena session: if the current selection
 				// is a competitor session, bounce the selection back to its linked
 				// main session. Guarded so we never fight a legitimate selection
@@ -3448,6 +4475,12 @@ window.__ModuleLoader__.load({
 				syncArena(sessionId);
 				syncViewEntry();
 				syncPersona();
+				// Restore alignment runs on EVERY sync tick (not just the mount in
+				// syncArena): the async history load may deliver the snapshot AFTER
+				// mount, so a main-model phase first read as "waiting" must re-align
+				// to "running"/"completed" once the snapshot lands, and a challenger
+				// phase must re-inject its round prompt as soon as it is visible.
+				if (sessionId !== void 0) alignChallengeAfterRestore(sessionId, stateFor(sessionId));
 				// Poll-based catch-up: session live events can be missed while
 				// the arena runtime is unmounted (session switch) or when an
 				// archived arena session drops events — advance the challenge
@@ -3456,7 +4489,24 @@ window.__ModuleLoader__.load({
 				// conclusion is never silently lost.
 				if (arenaMount !== null && arenaMount.challenge.active === true) {
 					detectChallengeTurn();
+					// Recovery re-read: the node half writes `arena.reviewRequest`
+					// (and the watch heartbeat) via settings; if the network dropped
+					// right at the propose→challenger handoff (or during the
+					// challenger's review), the `document-updated` push may have been
+					// missed. Re-read the persisted bridge on a throttle, then advance
+					// once more so a fresh reviewRequest/watch is consumed immediately.
+					if (Date.now() - lastLinksRefresh > 2000) {
+						lastLinksRefresh = Date.now();
+						loadLinks().then(() => {
+							if (arenaMount !== null && arenaMount.challenge.active === true) detectChallengeTurn();
+						}).catch(() => {});
+					}
 				}
+				// Re-sync the sidebar challenger dot AFTER the arena mount has been
+				// torn down/restored and the turn advanced, so it reads the current
+				// session's phase + running flag (never a stale mount) and cleans up
+				// any dot orphaned on a deselected row.
+				syncChallengerLoading();
 				} catch (_syncFailure) {
 					// one bad tick must never kill the schedule chain
 				}
@@ -3563,6 +4613,21 @@ window.__ModuleLoader__.load({
 				sync();
 				schedule();
 
+				// Background-advance poll: while the feature is enabled, advance
+				// every linked duel whose MAIN session is not the current one from
+				// its persisted baseline (challenger reply → injected into the main
+				// session; finished main turn → challenger prompted; knowledge
+				// reviewRequest consumed when it belongs to that session). No-op
+				// when the switch is off; the interval is cheap (walks linksCache).
+				const backgroundTimer = setInterval(() => {
+					try {
+						advanceBackgroundDuels();
+					} catch (_backgroundTimerFailure) {
+						// never break the plugin lifecycle
+					}
+				}, 2000);
+				if (typeof backgroundTimer.unref === "function") backgroundTimer.unref();
+
 				// Restore persisted arena linkages (async; re-syncs when loaded)
 				// and keep them fresh on settings changes.
 				loadLinks().then(() => sync());
@@ -3581,10 +4646,20 @@ window.__ModuleLoader__.load({
 					renderArenaPane,
 					arenaTick,
 					getArenaMount: () => arenaMount,
-					syncViewEntry
+					syncViewEntry,
+					advanceBackgroundDuels,
+					clearReviewDone: (sessionId) => {
+						const link = linksCache[sessionId];
+						if (link !== null && typeof link === "object" && !Array.isArray(link)) {
+							const next = { ...link };
+							delete next.done;
+							saveLink(sessionId, next);
+						}
+					}
 				};
 								return () => {
 					clearTimeout(schedule.timer);
+					clearInterval(backgroundTimer);
 					observer.disconnect();
 					unsubscribeSessions?.();
 					unsubscribeLocale?.();
@@ -3600,6 +4675,7 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.buildModelOptions = buildModelOptions;
 		exports.buildEffortChoices = buildEffortChoices;
+		exports.normalizeTemperatureInput = normalizeTemperatureInput;
 		exports.conflictsWithInput = conflictsWithInput;
 		exports.findArenaModel = findArenaModel;
 		exports.totalModelsOf = totalModelsOf;
@@ -3621,6 +4697,16 @@ window.__ModuleLoader__.load({
 		exports.stripMarkdown = stripMarkdown;
 		exports.buildRoleSeed = buildRoleSeed;
 		exports.shouldShowChallengeHeader = shouldShowChallengeHeader;
+		exports.shouldReArmChallenge = shouldReArmChallenge;
+		exports.isPastReviewStage = isPastReviewStage;
+		exports.isMainModelPhase = isMainModelPhase;
+		exports.isChallengerPhase = isChallengerPhase;
+		exports.isTerminalPhase = isTerminalPhase;
+		exports.isResumableChallenge = isResumableChallenge;
+		exports.toPersistedChallenge = toPersistedChallenge;
+		exports.fromPersistedChallenge = fromPersistedChallenge;
+		exports.resolveMainResume = resolveMainResume;
+		exports.resolveChallengerResume = resolveChallengerResume;
 		exports.STALL_MS = STALL_MS;
 		return module.exports;
 	}

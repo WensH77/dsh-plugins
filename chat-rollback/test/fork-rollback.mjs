@@ -614,5 +614,179 @@ test('H3: A has NO end manifest (its turn never ended) — rollback B then A rep
   }
 });
 
+// I: restore's empty-dir cleanup must not delete excluded empty dirs (empty
+// node_modules/) nor empty dirs that exist in the snapshot (keep/) — the old
+// `find -type d -empty -delete` deleted both. NOTE: node_modules is excluded
+// from snapshots, so it can only be PRESERVED (never recreated) by the
+// restore; keep/ is tracked and must be recreated from the snapshot.
+test('I: restore keeps excluded empty dirs and snapshot empty dirs', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-dir-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-dir-snap-'));
+  try {
+    await mkdir(join(workspace, 'node_modules'), { recursive: true }); // excluded, EMPTY
+    await mkdir(join(workspace, 'keep'), { recursive: true }); // tracked, EMPTY, inside the snapshot
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-dir';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+    // turn-2 work: delete the tracked empty dir, LEAVE the excluded empty dir
+    // in place, change f.txt — after the restore both dirs must still exist
+    await rm(join(workspace, 'keep'), { recursive: true, force: true });
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    // rollback to the turn-1 assistant message (seq 3) -> restore turn-2 snapshot
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.codeRollback.restored, true, 'code restored from turn-2');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'f.txt reverted');
+    assert.ok((await stat(join(workspace, 'keep')).catch(() => null)) !== null, 'snapshot empty dir keep/ preserved');
+    assert.ok((await stat(join(workspace, 'node_modules')).catch(() => null)) !== null, 'excluded empty dir node_modules/ preserved');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
 
+// J: the recovery backup must NOT contain excluded paths (.git/node_modules) —
+// restore never touches them (unpack + file prune + dir cleanup all re-apply
+// excludes), so backing them up only wastes disk and time.
+test('J: recovery backup excludes .git/node_modules', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-bak-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-bak-snap-'));
+  try {
+    await mkdir(join(workspace, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(workspace, 'node_modules', 'pkg', 'x.js'), 'dep\n');
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-bak';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.codeRollback.restored, true, 'restored');
+    const childDir = join(snapRoot, body.sessionId);
+    const entries = await readdir(childDir);
+    const backup = entries.find((e) => e.startsWith('recovery-'));
+    assert.ok(backup !== undefined, 'recovery backup exists: ' + entries.join(','));
+    const listing = (await run('tar -tf ' + join(childDir, backup))).stdout;
+    assert.ok(!listing.includes('node_modules'), 'backup excludes node_modules');
+    assert.ok(!listing.includes('.git'), 'backup excludes .git');
+    assert.ok(listing.includes('f.txt'), 'backup still covers tracked files');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
 
+// K: a workspace path containing a literal $ segment must survive snapshot and
+// restore — shell double quotes would expand "$HOME" and tar the wrong tree.
+test('K: workspace path containing $ survives snapshot + restore', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'crb-dollar-'));
+  const workspace = join(parent, '$HOME'); // literal $HOME segment (legal on macOS/Linux)
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-dollar-snap-'));
+  try {
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-dollar';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    // the snapshot must contain the workspace file, not the real $HOME tree
+    const listing1 = (await run('tar -tf ' + join(snapRoot, SRC, 'turn-1.tar.zst'))).stdout;
+    assert.ok(listing1.includes('f.txt'), 'snapshot captured the workspace: ' + JSON.stringify(listing1.split('\n').slice(0, 3)));
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.codeRollback.restored, true, 'code restored from turn-2');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'f.txt reverted');
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// L: snapshotEnabled:false degrades to conversation-only rollback — no snapshot
+// dir is created, no workspace change, the session still rolls back.
+test('L: snapshotEnabled:false — conversation-only rollback', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-off-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-off-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([{ turn: 1, user: 'do X', assistant: 'done X' }]);
+    const SRC = 'session-off';
+    const { ctx, handlers, routes, created } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, snapshotEnabled: false });
+    for (const h of handlers.get('session/event') ?? []) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    await sleep(150);
+    assert.ok((await stat(join(snapRoot, SRC)).catch(() => null)) === null, 'no snapshot dir when disabled');
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=2' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.ok, true, 'rollback ok');
+    assert.strictEqual(body.codeRollback.restored, false, 'no code restore');
+    assert.strictEqual(body.codeRollback.reason, 'no-snapshot', 'reason no-snapshot');
+    assert.ok(created.length >= 1, 'session still created');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'workspace untouched');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// M: a failed workspace restore keeps the source session live with its
+// snapshots intact so the rollback can be retried (archive deferred).
+test('M: restore failure — source kept unarchived for retry', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-rf-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-rf-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-rf';
+    const { ctx, handlers, routes, archived } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    // corrupt the turn-2 snapshot -> the restore must fail deterministically
+    await writeFile(join(snapRoot, SRC, 'turn-2.tar.zst'), 'not a zstd archive');
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.ok, true, 'rollback ok (conversation still rolls back)');
+    assert.strictEqual(body.codeRollback.restored, false, 'restore failed');
+    assert.strictEqual(body.codeRollback.reason, 'restore-failed', 'reason restore-failed');
+    assert.strictEqual(body.archivedSource, false, 'source NOT archived');
+    assert.ok(!archived.includes(SRC), 'archiveSession not called');
+    assert.ok((await stat(join(snapRoot, SRC)).catch(() => null)) !== null, 'source snapshots kept for retry');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
