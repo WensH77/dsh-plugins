@@ -639,6 +639,7 @@ async function readPatchState(patchPath) {
   const disables = []
   const forced = []
   const inserts = []
+  const insertNames = {}
   const lines = text.split(/\r?\n/u)
   let inInsert = false
   for (let index = 0; index < lines.length; index += 1) {
@@ -650,7 +651,14 @@ async function readPatchState(patchPath) {
     if (/^- /u.test(line)) inInsert = false
     if (inInsert) {
       const insertRow = line.match(/^ {4}- id: ([A-Za-z0-9_.-]+)/u)
-      if (insertRow) inserts.push(insertRow[1])
+      if (insertRow) {
+        const id = insertRow[1]
+        inserts.push(id)
+        // name 紧跟 id 行之后（6 空格缩进），支持单/双引号与裸值
+        const nameLine = lines[index + 1] ?? ''
+        const nameRow = nameLine.match(/^ {6}name:\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))\s*$/u)
+        if (nameRow) insertNames[id] = nameRow[1] ?? nameRow[2] ?? nameRow[3]
+      }
       continue
     }
     const disableRow = line.match(/^- id: ([A-Za-z0-9_.-]+)\s*$/u)
@@ -659,7 +667,35 @@ async function readPatchState(patchPath) {
     if (/^ {2}disabled: true\s*$/u.test(next)) disables.push(disableRow[1])
     else if (/^ {2}disabled: false\s*$/u.test(next)) forced.push(disableRow[1])
   }
-  return { disables, forced, inserts, text }
+  return { disables, forced, inserts, insertNames, text }
+}
+
+/**
+ * 归一化「空 patch 层」：dsh 初始化 profile 时把空层写成注释 + `[]`（`[]` 是
+ * YAML 空数组，语义为「该层无任何 patch 条目」）。追加 insert/disable 块时若直接
+ * 拼在 `[]` 之后会得到 `[]\n- insert:...` 的非法 YAML（`[]` 已是完整根节点，
+ * 后面不能再跟第二个根节点）。此函数在文件「除注释/空白外仅剩一个 `[]`」时
+ * 原位剔除该 `[]` 行（保留注释），使追加内容成为合法的顶层数组项；
+ * 文件已有真实条目、或本就是空文本/纯注释时，原样返回（不改变既有行为）。
+ */
+function stripEmptyArrayMarker(text) {
+  const lines = text.split(/\r?\n/u)
+  let marker = -1
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim()
+    if (trimmed === '' || trimmed.startsWith('#')) continue
+    // 首个非注释/非空白内容必须是 `[]`（可带行尾注释），且只能出现一次
+    if (marker === -1 && /^\[\s*\]\s*(?:#.*)?$/u.test(trimmed)) {
+      marker = i
+      continue
+    }
+    // 出现其它真实内容 → 不是空态，原样返回
+    return text
+  }
+  if (marker === -1) return text
+  const kept = [...lines.slice(0, marker), ...lines.slice(marker + 1)]
+  const result = kept.join('\n')
+  return result.trim() === '' ? '' : result
 }
 
 function disableBlock(id) {
@@ -670,7 +706,8 @@ async function disableEntry(patchPath, id) {
   return queuedWrite(async () => {
     const { disables, text } = await readPatchState(patchPath)
     if (disables.includes(id)) return { changed: false }
-    const next = text.length === 0 || text.endsWith('\n') ? text : text + '\n'
+    const base = stripEmptyArrayMarker(text)
+    const next = base.length === 0 || base.endsWith('\n') ? base : base + '\n'
     await writeFile(patchPath, next + disableBlock(id), 'utf8')
     return { changed: true }
   })
@@ -685,7 +722,8 @@ async function enableEntry(patchPath, id) {
       return { changed: true }
     }
     if (forced.includes(id)) return { changed: false }
-    const next = text.length === 0 || text.endsWith('\n') ? text : text + '\n'
+    const base = stripEmptyArrayMarker(text)
+    const next = base.length === 0 || base.endsWith('\n') ? base : base + '\n'
     await writeFile(patchPath, next + '- id: ' + id + '\n  disabled: false\n', 'utf8')
     return { changed: true }
   })
@@ -696,7 +734,8 @@ async function appendInsert(patchPath, entryId, packageName) {
   return queuedWrite(async () => {
     const { inserts, text } = await readPatchState(patchPath)
     if (inserts.includes(entryId)) return { changed: false }
-    const next = text.length === 0 || text.endsWith('\n') ? text : text + '\n'
+    const base = stripEmptyArrayMarker(text)
+    const next = base.length === 0 || base.endsWith('\n') ? base : base + '\n'
     const block = '- insert:\n    - id: ' + entryId + '\n      name: \'' + packageName + '\'\n'
     await writeFile(patchPath, next + block, 'utf8')
     return { changed: true }
@@ -1049,6 +1088,7 @@ async function installPlugin(ctx, options) {
   job.profileDir = profileDir
   job.patchPath = patchPath
   job.taken = taken
+  job.ctx = ctx
   try {
     job.staged = await stagePackage(gitSpec(repoInfo), job)
     if (job.abort.signal.aborted) throw new Error('安装已中断')
@@ -1088,7 +1128,7 @@ async function installPlugin(ctx, options) {
   if (review !== true) {
     job.status = 'installing'
     try {
-      const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job })
+      const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job, ctx })
       job.status = 'done'
       installJobs.delete(job.id)
       return { ...result, review: null }
@@ -1124,7 +1164,7 @@ async function installPlugin(ctx, options) {
 }
 
 /** 执行真正安装（迁移到 profile）：pnpm add + 清理隔离目录 + bundle/insert 激活。 */
-async function performInstall({ repoInfo, name, profileDir, patchPath, taken, staged, job = null }) {
+async function performInstall({ repoInfo, name, profileDir, patchPath, taken, staged, job = null, ctx = null }) {
   // 安装进度（迁移到 profile 的 pnpm add，同样流式回传）
   if (job !== null && job !== undefined) job.progress = null
   const onProgress = job !== null && job !== undefined
@@ -1143,17 +1183,21 @@ async function performInstall({ repoInfo, name, profileDir, patchPath, taken, st
   await writeRepoOverride(name, savedRepo)
   let entryId = null
   let bundle = false
+  let restart = false
   if (await detectBundleOnly(profileDir, name)) {
     await addBundleToManifest(profileDir, name)
     // 清理上次卸载写入的临时禁用行（避免重装后被旧禁用行关掉）
     await removeDisableBlock(patchPath, name)
     await removeDisableBlock(patchPath, deriveEntryId(name, taken))
     bundle = true
+    restart = true
   } else {
     entryId = deriveEntryId(name, taken)
     await appendInsert(patchPath, entryId, name)
+    // insert 层本应 HMR 即时生效；热重载关闭/失败导致未进运行树 → 需重启 dsh web
+    restart = ctx == null || !(await waitForInsertApplied(ctx, entryId))
   }
-  return { ok: true, packageName: name, usedChannel: 'git', entryId, bundle, restart: bundle }
+  return { ok: true, packageName: name, usedChannel: 'git', entryId, bundle, restart }
 }
 
 /** 阶段 2 确认：把挂起的任务真正安装进 profile（成功/失败任务都从队列消失）。 */
@@ -1168,7 +1212,7 @@ async function confirmInstall(jobId) {
   installJobs.delete(jobId)
   job.status = 'installing'
   try {
-    const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job })
+    const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job, ctx: job.ctx ?? null })
     job.status = 'done'
     return result
   } catch (error) {
@@ -2008,6 +2052,20 @@ async function waitForToggleApplied(ctx, entryId, enabled) {
 	return false
 }
 
+/** 轮询 loader 树，验证新 insert 行是否被热更新加载进运行树（按 rowId 匹配，最长 3 秒）。
+ * 用于判断 insert 层插件是否需要重启：热重载关闭/失败时新条目不会出现，返回 false。 */
+async function waitForInsertApplied(ctx, entryId) {
+	const deadline = Date.now() + 3000
+	while (Date.now() < deadline) {
+		try {
+			const found = [...ctx.loader.entries()].some((candidate) => rowIdOf(ctx, candidate.id) === entryId && !candidate.disabled)
+			if (found) return true
+		} catch {}
+		await new Promise((resolve) => setTimeout(resolve, 250))
+	}
+	return false
+}
+
 // ── dsh 自更新检测（侧边栏状态灯） ───────────────────────────────────────────
 
 /** 读取已安装 dsh 版本：web profile 必装的默认 bundle `@deepseek-ai/dsh-web-app`
@@ -2390,17 +2448,26 @@ async function handle(ctx, req, res) {
         repository: override,
       }
     })
+    // 依赖 spec → 展示通道（git/link/file/npm）
+    const channelOf = (spec) => typeof spec === 'string'
+      ? (spec.startsWith('github:') ? 'git' : spec.startsWith('link:') ? 'link' : spec.startsWith('file:') ? 'file' : 'npm')
+      : null
     // 已写入 manifest 但尚未加载进运行树（bundle 层只在 dsh web 启动时加载）：
     // 说明安装已成功落盘，重启后生效
-    const pendingRestart = bundles
+    const pendingBundles = bundles
       .filter((b) => !DEFAULT_BUNDLES.includes(b) && !entries.some((e) => e.moduleName === b))
-      .map((b) => {
-        const spec = deps[b] ?? null
-        const channel = typeof spec === 'string'
-          ? (spec.startsWith('github:') ? 'git' : spec.startsWith('link:') ? 'link' : spec.startsWith('file:') ? 'file' : 'npm')
-          : 'bundle'
-        return { moduleName: b, channel, spec }
+      .map((b) => ({ moduleName: b, channel: channelOf(deps[b] ?? null) ?? 'bundle', spec: deps[b] ?? null }))
+    // insert 层插件：patch 里已 insert、但未加载进运行树（热重载关闭/失败或需重启）
+    // → 同样列入待重启，避免「已安装」「待重启」都看不到它
+    const pendingInserts = patch.inserts
+      .filter((id) => !entries.some((e) => e.rowId === id))
+      .map((id) => {
+        const moduleName = patch.insertNames[id]
+        if (typeof moduleName !== 'string' || moduleName === '') return null
+        return { moduleName, channel: channelOf(deps[moduleName] ?? null) ?? 'insert', spec: deps[moduleName] ?? null }
       })
+      .filter(Boolean)
+    const pendingRestart = [...pendingBundles, ...pendingInserts]
     sendJson(res, 200, { ok: true, entries, sources, patchPath, jobs: listInstallJobs(), pendingRestart, dshBestFit: DSH_BEST_FIT_VERSION, dshVersion: dshStateCache ?? null })
     return
   }
