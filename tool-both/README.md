@@ -8,10 +8,11 @@
 
 | 部分 | 层 | 作用 |
 |---|---|---|
-| `lib/index.js` | host 层 | 激活时自动把 **「BOTH模式」预设** 安装到 `~/.dsh/.agent-presets/both`（幂等、不覆盖已有文件）；提供 `GET /tool-both/status` 与 `POST /tool-both/install` 两个端点 |
-| `lib/client.js` | 浏览器层 | 设置 →「工具呈现模式」卡片：显示当前默认预设、both 预设安装状态，一键补装缺失文件 |
+| `lib/index.js` | host 层 | 激活时自动把 **「BOTH模式」预设** 安装到 `~/.dsh/.agent-presets/both`（幂等、不覆盖已有文件） |
 | `lib/presentation.js` | agent 层 | 呈现行组件（`./presentation`）：可挂进**任意 agent preset**，默认 `mode: both`（可配 native/code），适用于已有自定义预设的场景 |
 | `preset/both/` | agent 层 | 现成的 both 预设：标准模式全部组成 + `@deepseek-ai/dsh-agent-tool-presentation`（`mode: both`）一行 |
+
+> 设置页的「工具呈现模式」卡片（状态展示 + 一键补装）已按用户反馈移除——**选项（预设选择器里的「BOTH模式」）与预设（自动安装）就是全部界面**，不再有设置页展示。
 
 `both` 模式需要 host 的 code runtime（`@deepseek-ai/dsh-code-runtime-worker-thread`）——dsh web 的 bundle 自带，直接可用。
 
@@ -27,7 +28,7 @@ dsh plugin --profile web add /Users/wens.huang/Documents/dsh-plugins/tool-both
 dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:tool-both'
 ```
 
-启用（补丁层追加；`tool-both` 是 host 层插件，行为是安装预设 + 提供设置卡片）：
+启用（补丁层追加；`tool-both` 是 host 层插件，行为是安装预设）：
 
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
@@ -47,7 +48,7 @@ dsh web   # 重启
 - **按会话**：新会话的预设选择器里选「BOTH模式」（PTC 模式 = code、标准模式 = native 均保持原样）。
 - **设为默认**：`~/.dsh/settings.yaml` 里 `agent-presets.default: both`（之后新建的会话默认 both，旧会话保持原预设）。
 
-验证：设置页 →「工具呈现模式」卡片显示「both 预设：已安装」与当前默认预设。
+> 插件不再提供设置页卡片（已按用户反馈移除）；确认安装是否成功：`~/.dsh/.agent-presets/both/` 下应有 `agent.cordis.yml` 与 `preset.yml`，或直接看预设选择器里是否出现「BOTH模式」。
 
 ## 给已有自定义预设加 both（不换预设）
 
@@ -74,20 +75,19 @@ rm -rf ~/.dsh/.agent-presets/both                      # 手动删除安装的�
 ```
 tool-both/
 ├── lib/
-│   ├── index.js          # host 层：激活时安装预设 + status/install 端点
-│   ├── client.js         # 浏览器层：设置页「工具呈现模式」卡片
+│   ├── index.js          # host 层：激活时安装预设
 │   └── presentation.js   # agent 层：呈现行组件（./presentation，默认 both）
 ├── preset/both/          # 分发的 both 预设（标准组成 + presentation both）
 │   ├── agent.cordis.yml
 │   └── preset.yml
-├── test/smoke.mjs        # 导出 / 预设安装 / 幂等 / loader 方言校验 / 客户端语法
+├── test/smoke.mjs        # 导出 / 预设安装 / 幂等 / loader 方言校验
 └── package.json
 ```
 
 ## 测试
 
 ```bash
-node tool-both/test/smoke.mjs    # 25 项：安装/幂等/不覆盖手改/overwrite/loader 方言加载/客户端语法
+node tool-both/test/smoke.mjs    # 导出 / 预设安装 / 幂等 / 不覆盖手改 / overwrite / loader 方言加载
 ```
 
 ## 已知限制
