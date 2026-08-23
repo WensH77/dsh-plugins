@@ -234,14 +234,23 @@ window.__ModuleLoader__.load({
 					await sessions.refresh();
 					const next = data.nextInput;
 					if (typeof next === 'string' && next !== '') {
-						// Prefill the new session's composer with the rolled-back
+						// Prefill the NEW session's composer with the rolled-back
 						// message's text. The composer shell is created during
 						// session materialization (its slash listeners are already
 						// wired), and a fresh machine starts at draftRev 0 — so an
 						// untouched draft accepts {start:0,end:0,draftRev:0}. If the
 						// user already typed, the rev check fails silently.
+						//
+						// The dispatch MUST carry the session ctx as `thisArg`:
+						// cordis' dispatch only context-filters listeners when a
+						// subject is given (thisArg[Context.filter]); a bare
+						// `ctx.emit(event, ...)` runs every listener on the hooks
+						// table — which, with the shared session-ctx architecture,
+						// prefilled EVERY mounted composer with the rolled-back
+						// text. The dsh input-trigger uses the same shaped call
+						// (actx.bail(actx, "slash/input-insert-text", ...)).
 						const binding = sessions.binding(data.sessionId);
-						binding?.ctx.emit('slash/input-insert-text', {
+						binding?.ctx.emit(binding.ctx, 'slash/input-insert-text', {
 							text: next,
 							span: { start: 0, end: 0, draftRev: 0 }
 						});
