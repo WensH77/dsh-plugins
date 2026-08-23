@@ -28,11 +28,74 @@ const Link = z.object({
 // The union accepts the legacy workspace-level string value so pre-v14 settings
 // do not fail registration — the browser half migrates a string entry to the
 // default `business` scene on read.
+// Challenge orchestration state, persisted per main session so an interrupted
+// duel (page reload / dsh restart / network drop) resumes from its last
+// phase/anchors instead of restarting a fresh round. Written by the browser
+// half on every phase transition (debounced); the browser half restores the
+// baseline on reload and re-aligns it against the LIVE session snapshots
+// (running / turn completed / genuinely stalled) — the backend sessions do not
+// die on a browser refresh, so a turn may well have finished server-side.
+// Run-time-only fields (mainWasRunning/arenaWasRunning/stallSince, and the
+// lastMainText/lastArenaText bodies) are NOT persisted — they are rebuilt or
+// re-extracted from the snapshots on restore.
+const PersistedChallenge = z.object({
+  active: z.boolean(),
+  phase: z.string(),
+  scene: z.string(),
+  skill: z.string(),
+  userQuestion: z.string(),
+  // chat node keys; "" = none (the older schemastery build has no null type)
+  mainAnchor: z.string(),
+  arenaAnchor: z.string(),
+  rejectCount: z.number(),
+  verdict: z.string(),
+  round: z.number(),
+  pendingAnchor: z.boolean(),
+  lastInjectedText: z.string(),
+  lastReviewSeq: z.number(),
+  proposalPath: z.string(),
+  designPath: z.string(),
+  tasksPath: z.string(),
+  reviewPath: z.string(),
+  updatedAt: z.number()
+});
+
 const Config = z.object({
   links: z.dict(Link).default({}),
   enabled: z.boolean(),
   persona: z.dict(z.string()).default({}),
   workspaceSkills: z.dict(z.union([z.string(), z.dict(z.string())])).default({}),
+  challenges: z.dict(PersistedChallenge).default({}),
+  // Background-advance switch (default OFF): when enabled, an arena duel whose
+  // MAIN session is not the currently selected one still advances in the
+  // background — the challenger's finished reply is injected into the main
+  // session and a finished main turn prompts the challenger — driven by the
+  // persisted challenge baseline (challenges) + live session snapshots. When
+  // OFF (default), background duels only advance on return to the main session
+  // (the v7 catch-up path).
+  backgroundAdvance: z.boolean().default(false),
+  // Per-scene × per-role sampling temperature for the arena-enabled sessions.
+  // UI-only for now (settings page): the agent/request injection that actually
+  // applies these values is a follow-up task and NOT implemented yet. When
+  // enabled is false (default) nothing is injected and dsh/provider defaults
+  // apply. Each scene (business/knowledge/qa) holds an optional main
+  // (main-model sessions) and challenger (arena sessions) value in 0..2;
+  // an absent value means "use dsh default" for that scene × role.
+  temperature: z.object({
+    enabled: z.boolean().default(false),
+    business: z.object({
+      main: z.number().min(0).max(2),
+      challenger: z.number().min(0).max(2)
+    }),
+    knowledge: z.object({
+      main: z.number().min(0).max(2),
+      challenger: z.number().min(0).max(2)
+    }),
+    qa: z.object({
+      main: z.number().min(0).max(2),
+      challenger: z.number().min(0).max(2)
+    })
+  }).default({}),
   // arena: review-loop bridge. The browser half writes mainSessionId + cwd when
   // a knowledge-scene challenge starts; the node half polls the session's
   // Theseus workflow state and writes back `reviewRequest` once it observes a
@@ -277,5 +340,5 @@ function apply(ctx) {
   });
 }
 
-export { Config, apply, inject, name };
+export { Config, PersistedChallenge, apply, inject, name };
 export default { Config, apply, inject, name };

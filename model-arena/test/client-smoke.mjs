@@ -72,6 +72,10 @@ class FakeElement {
   }
   querySelector(sel) {
     if (sel === ".YDXeBa_title") return this.children.find((c) => c.className === "YDXeBa_title") ?? null;
+    // the plugin injects the sidebar loading dot as a direct child of the row
+    // (the status-slot query falls back to the row in the sandbox), so a
+    // querySelector on it must resolve like the real DOM does.
+    if (sel === ".ma-sidebarLoading") return this.children.find((c) => c.className === "ma-sidebarLoading") ?? null;
     return null;
   }
   addEventListener(type, fn) {
@@ -204,6 +208,8 @@ const sandbox = {
   console,
   setTimeout,
   clearTimeout,
+  setInterval,
+  clearInterval,
   URLSearchParams,
   encodeURIComponent,
   AbortController
@@ -300,6 +306,17 @@ check("conflict true", loaded.conflictsWithInput({ provider: "p1", model: "m1" }
 check("conflict false", loaded.conflictsWithInput({ provider: "p1", model: "m2" }, directory) === false);
 check("findArenaModel resolves", loaded.findArenaModel(directory, { provider: "p1", model: "m2" })?.name === "M2");
 check("findArenaModel missing", loaded.findArenaModel(directory, { provider: "p9", model: "x" }) === void 0);
+
+// ── temperature input validation (0..2, at most 2 decimal places) ──────────
+const nt = loaded.normalizeTemperatureInput;
+check("temp: empty = dsh default", nt("")?.ok === true && nt("").value === void 0);
+check("temp: 0.15 accepted", nt("0.15")?.ok === true && nt("0.15").value === 0.15);
+check("temp: 0.155 rejected (3 decimals)", nt("0.155")?.ok === false);
+check("temp: 2 accepted", nt("2")?.ok === true && nt("2").value === 2);
+check("temp: 2.01 rejected (above cap)", nt("2.01")?.ok === false);
+check("temp: -1 rejected", nt("-1")?.ok === false);
+check("temp: non-numeric rejected", nt("abc")?.ok === false && nt("1e2")?.ok === false);
+check("temp: trailing dot intermediate accepted as 0", nt("0.")?.ok === true && nt("0.").value === 0);
 
 // ── two-model auto arena model (pure helpers) ───────────────────────────────
 const twoModelDir = {
@@ -575,6 +592,17 @@ check("MAX_REJECTS exported = 3", loaded.MAX_REJECTS === 3);
 check("header predicate + STALL_MS exported", typeof loaded.shouldShowChallengeHeader === "function" && typeof loaded.STALL_MS === "number");
 check("header hidden for null / fresh / terminal states", loaded.shouldShowChallengeHeader(null) === false && loaded.shouldShowChallengeHeader({ active: false, phase: "idle" }) === false && loaded.shouldShowChallengeHeader({ active: true, phase: "done" }) === false && loaded.shouldShowChallengeHeader({ active: true, phase: "aborted" }) === false && loaded.shouldShowChallengeHeader({ active: false, phase: "answer" }) === false);
 check("header shown only for in-flight phases", ["answer", "challenge", "revise", "final", "propose", "review"].every((p) => loaded.shouldShowChallengeHeader({ active: true, phase: p }) === true));
+check("re-arm predicate exported", typeof loaded.shouldReArmChallenge === "function" && typeof loaded.isPastReviewStage === "function");
+check("re-arm: fresh / aborted / null re-arm", loaded.shouldReArmChallenge(null) === true && loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }) === true && loaded.shouldReArmChallenge({ phase: "aborted", scene: "knowledge" }) === true);
+check("re-arm: done review scene is one-shot (blocked)", loaded.shouldReArmChallenge({ phase: "done", scene: "knowledge" }) === false);
+check("re-arm: done business/qa still re-arm", loaded.shouldReArmChallenge({ phase: "done", scene: "business" }) === true && loaded.shouldReArmChallenge({ phase: "done", scene: "qa" }) === true);
+check("re-arm: persisted link.done blocks after reload (phase reset to idle)", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, { done: true }) === false);
+check("re-arm: link without done still re-arms", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, {}) === true);
+check("re-arm: link.done ignored for non-review scene", loaded.shouldReArmChallenge({ phase: "idle", scene: "business" }, { done: true }) === true);
+check("isPastReviewStage recognizes apply/archive/done", loaded.isPastReviewStage("apply") === true && loaded.isPastReviewStage("archive") === true && loaded.isPastReviewStage("done") === true && loaded.isPastReviewStage("user-readiness-review") === true);
+check("isPastReviewStage rejects pre-review stages", loaded.isPastReviewStage("review") === false && loaded.isPastReviewStage("propose") === false && loaded.isPastReviewStage("explore") === false && loaded.isPastReviewStage("") === false);
+check("re-arm: watch.stage past review blocks (reload of a completed loop)", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, null, { stage: "apply" }) === false);
+check("re-arm: watch.stage pre-review still re-arms", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, null, { stage: "review" }) === true);
 const realT = (k) => (dicts?.zh?.[k]) ?? k;
 const chCtx = { scene: "knowledge", userQuestion: "Q1", lastMainText: "answer with `docs/plan.md`", lastArenaText: "objection" };
 const reviewPrompt = loaded.buildRoundPrompt("review", chCtx, realT);
@@ -1105,14 +1133,15 @@ mainStore._set({
 });
 await sleep(20);
 check("late main reply never prompts the challenger again", promptCalls.length === promptsBeforeLateReply);
-// ── user stop: stopping the main session cancels the challenger ─────────────
-// start a fresh round
+// ── review scene is one-shot: after done, a new user message must NOT ───────
+// re-arm the challenge — the header stays hidden and the challenger stays
+// dormant (no propose.completed will ever arrive again after apply).
 mainStore._set({
   chat: {
     order: ["u1", "a1", "inj1", "r1", "v1", "u2"],
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
-      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer" }] } }],
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "proposal" }] } }],
       ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
       ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised" }] } }],
       ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "Overall Verdict: READY" }] } }],
@@ -1122,7 +1151,47 @@ mainStore._set({
   running: true
 });
 await sleep(20);
-check("new round started on second question", internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "propose");
+check("done review challenge not re-armed by a new message", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+check("done review challenge header stays hidden", loaded.shouldShowChallengeHeader(internals.getArenaMount().challenge) === false);
+
+// Reset the in-memory challenge to a fresh idle state (simulating a brand-new
+// session) so the stop watchdog test below can re-arm a new review round. Also
+// clear the persisted link.done flag — a real brand-new session has no terminal
+// marker, and the stop/reject tests need the re-arm to go through.
+const resetChallengeForTest = (lastSeenSeq) => {
+  const m = internals.getArenaMount();
+  if (m === null) return;
+  Object.assign(m.challenge, {
+    active: false, phase: "idle", rejectCount: 0, verdict: "", round: 0,
+    stallSince: 0, lastReviewSeq: -1, mainAnchor: null, arenaAnchor: null,
+    pendingAnchor: false, lastInjectedText: "", mainWasRunning: false, arenaWasRunning: false
+  });
+  m.lastSeenSeq = lastSeenSeq;
+  try {
+    internals.clearReviewDone?.("s1");
+  } catch {}
+};
+resetChallengeForTest(6); // "u2" (anchorSeq 6) already consumed above
+
+// ── user stop: stopping the main session cancels the challenger ─────────────
+// start a fresh round
+mainStore._set({
+  chat: {
+    order: ["u1", "a1", "inj1", "r1", "v1", "u2", "u3"],
+    nodes: new Map([
+      ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
+      ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer" }] } }],
+      ["inj1", { key: "inj1", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "review feedback placeholder" }] } }],
+      ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised" }] } }],
+      ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "Overall Verdict: READY" }] } }],
+      ["u2", { key: "u2", kind: "user", anchorSeq: 6, data: { content: [{ type: "text", text: "second question" }] } }],
+      ["u3", { key: "u3", kind: "user", anchorSeq: 7, data: { content: [{ type: "text", text: "third question" }] } }]
+    ])
+  },
+  running: true
+});
+await sleep(20);
+check("new round started after reset", internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "propose");
 
 // model 1 is generating (running true) ...
 mainStore._set({
@@ -1142,12 +1211,13 @@ check("stop cancels BOTH sessions (main like native stop + challenger)", cancelC
 check("composer unlocked after stop", blockCalls[blockCalls.length - 1].block === void 0);
 
 // ── 3 rejections end the loop without messaging the main model ──────────────
-// start a third round, reject three times; on the 3rd the browser asks the node
-// half (arena.returnToPropose) to write Theseus back to propose, and must NOT
-// promptSession the main model (which would start a fresh turn).
+// start a fresh round (after the abort above, a new message re-arms), reject
+// three times; on the 3rd the browser asks the node half (arena.returnToPropose)
+// to write Theseus back to propose, and must NOT promptSession the main model
+// (which would start a fresh turn).
 mainStore._set({
   chat: {
-    order: ["u1", "a1", "inj1", "r1", "v1", "u2", "u3"],
+    order: ["u1", "a1", "inj1", "r1", "v1", "u2", "u3", "u4"],
     nodes: new Map([
       ["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "hello arena" }] } }],
       ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", blocks: [{ kind: "text", text: "answer" }] } }],
@@ -1155,7 +1225,8 @@ mainStore._set({
       ["r1", { key: "r1", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", blocks: [{ kind: "text", text: "revised" }] } }],
       ["v1", { key: "v1", kind: "user", anchorSeq: 5, data: { content: [{ type: "text", text: "Overall Verdict: READY" }] } }],
       ["u2", { key: "u2", kind: "user", anchorSeq: 6, data: { content: [{ type: "text", text: "second question" }] } }],
-      ["u3", { key: "u3", kind: "user", anchorSeq: 7, data: { content: [{ type: "text", text: "third question" }] } }]
+      ["u3", { key: "u3", kind: "user", anchorSeq: 7, data: { content: [{ type: "text", text: "third question" }] } }],
+      ["u4", { key: "u4", kind: "user", anchorSeq: 8, data: { content: [{ type: "text", text: "fourth question" }] } }]
     ])
   },
   running: true
@@ -1390,6 +1461,370 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   check("stalled round hides the challenge header", loaded.shouldShowChallengeHeader(internals.getArenaMount()?.challenge) === false);
 } else {
   check("stalled arena round aborted by the watchdog", false, "no in-flight arena-waiting challenge to stall");
+}
+
+// ── reload race: a full page reload drops the in-memory challenge state and
+// the mount may scan an EMPTY snapshot (lastSeenSeq = 0) before the history
+// loads. For a session that already has an arena link (a previous round ran),
+// the late-arriving history must be consumed as pre-existing — never re-arm
+// the finished round at the first step just because history finished loading.
+{
+  const m = internals.getArenaMount();
+  const promptsBeforeReload = promptCalls.length;
+  m.lastSeenSeq = 0;              // fresh mount scanned an empty snapshot
+  m.challenge.active = false;     // the in-memory "done"/"aborted" was lost on reload
+  m.challenge.phase = "idle";
+  mainStore._set({
+    chat: {
+      order: ["h1", "h2"],
+      nodes: new Map([
+        ["h1", { key: "h1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "old question" }] } }],
+        ["h2", { key: "h2", kind: "user", anchorSeq: 2, data: { content: [{ type: "text", text: "old followup" }] } }]
+      ])
+    },
+    running: false
+  });
+  await sleep(20);
+  check("reload race: late history not re-armed", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "idle");
+  check("reload race: history never prompts the challenger", promptCalls.length === promptsBeforeReload);
+  check("reload race: header stays hidden", loaded.shouldShowChallengeHeader(internals.getArenaMount().challenge) === false);
+}
+
+// ── cross-reload / restart survival: challenge persistence + restore ───────
+// Pure projections first.
+{
+  const c = {
+    active: true, phase: "challenge", scene: "business", skill: "/ws/s",
+    userQuestion: "Q?", mainAnchor: "k1", arenaAnchor: "k2", rejectCount: 0,
+    verdict: "", round: 2, pendingAnchor: true, lastInjectedText: "x".repeat(5000),
+    lastReviewSeq: -1, proposalPath: "/p.md", designPath: "/d.md", tasksPath: "/t.md",
+    reviewPath: "/r.md", mainWasRunning: true, arenaWasRunning: true,
+    stallSince: 12345, lastMainText: "LONG BODY", lastArenaText: "LONG BODY"
+  };
+  const p = loaded.toPersistedChallenge(c);
+  check("toPersistedChallenge keeps the durable baseline fields", p.active === true && p.phase === "challenge" && p.scene === "business" && p.userQuestion === "Q?" && p.mainAnchor === "k1" && p.arenaAnchor === "k2" && p.round === 2 && p.pendingAnchor === true && p.lastReviewSeq === -1 && p.proposalPath === "/p.md");
+  check("toPersistedChallenge truncates the injected text", p.lastInjectedText.length === 4000);
+  check("toPersistedChallenge drops run-time bodies", !("lastMainText" in p) && !("lastArenaText" in p) && !("mainWasRunning" in p) && !("stallSince" in p));
+  const back = loaded.fromPersistedChallenge(p);
+  check("fromPersistedChallenge round-trips the baseline", back.phase === "challenge" && back.scene === "business" && back.mainAnchor === "k1" && back.arenaAnchor === "k2" && back.round === 2 && back.pendingAnchor === true && back.lastReviewSeq === -1 && back.proposalPath === "/p.md");
+  check("fromPersistedChallenge resets run-time fields + marks restored", back.mainWasRunning === false && back.arenaWasRunning === false && back.stallSince === 0 && back.restored === true && back.alignDone === false && back.challengerRePrompted === false);
+  check("fromPersistedChallenge preserves terminal phases", loaded.fromPersistedChallenge({ active: false, phase: "aborted" }).phase === "aborted" && loaded.fromPersistedChallenge({ active: false, phase: "done" }).phase === "done");
+  check("fromPersistedChallenge normalizes unknown phases", loaded.fromPersistedChallenge({ phase: "bogus" }).phase === "idle");
+  check("isResumableChallenge: active in-flight only", loaded.isResumableChallenge({ active: true, phase: "review" }) === true && loaded.isResumableChallenge({ active: false, phase: "review" }) === false && loaded.isResumableChallenge({ active: true, phase: "done" }) === false && loaded.isResumableChallenge(null) === false);
+  check("phase classifiers", loaded.isMainModelPhase("answer") === true && loaded.isMainModelPhase("revise") === true && loaded.isMainModelPhase("propose") === true && loaded.isMainModelPhase("challenge") === false && loaded.isChallengerPhase("challenge") === true && loaded.isChallengerPhase("final") === true && loaded.isChallengerPhase("review") === true && loaded.isTerminalPhase("done") === true && loaded.isTerminalPhase("aborted") === true);
+  const idleSnap = { running: false, chat: { order: ["u1"], nodes: new Map([["u1", { kind: "user", data: {} }]]) } };
+  const doneSnap = { running: false, chat: { order: ["u1", "a1"], nodes: new Map([["u1", { kind: "user", data: {} }], ["a1", { kind: "assistant", data: { blocks: [{ kind: "text", text: "x" }] } }]]) } };
+  const runSnap = { running: true, chat: { order: ["u1"], nodes: new Map([["u1", { kind: "user", data: {} }]]) } };
+  check("resolveMainResume three states", loaded.resolveMainResume(runSnap, { mainAnchor: null }) === "running" && loaded.resolveMainResume(doneSnap, { mainAnchor: null }) === "completed" && loaded.resolveMainResume(idleSnap, { mainAnchor: null }) === "waiting" && loaded.resolveMainResume(null, { mainAnchor: null }) === "waiting");
+  check("resolveChallengerResume three states", loaded.resolveChallengerResume(runSnap, { arenaAnchor: null }) === "running" && loaded.resolveChallengerResume(doneSnap, { arenaAnchor: null }) === "completed" && loaded.resolveChallengerResume(idleSnap, { arenaAnchor: null }) === "stalled" && loaded.resolveChallengerResume(void 0, { arenaAnchor: null }) === "stalled");
+}
+
+// ── integration: a persisted mid-flight challenge restores and continues ──
+// Simulates a page reload: the in-memory state is GONE (new session s3), the
+// settings namespace holds the persisted challenge + link, and the arena
+// runtime remounts from them.
+{
+  const ns = settingsNamespaces.find((n) => n.ns === "model-arena");
+  const persistFor = (sessionId, challenge) => {
+    ns.value = { ...(ns.value ?? {}), challenges: { ...(ns.value?.challenges ?? {}), [sessionId]: challenge } };
+    settingsUpdatedHandler?.("model-arena");
+  };
+  const linkFor = (sessionId, scene, arenaId) => {
+    ns.value = { ...(ns.value ?? {}), links: { ...(ns.value?.links ?? {}), [sessionId]: { sessionId: arenaId, provider: "p1", model: "m2", scene } } };
+    settingsUpdatedHandler?.("model-arena");
+  };
+  const baseChallenge = (over) => ({
+    active: true, phase: "answer", scene: "business", skill: "",
+    userQuestion: "original question", mainAnchor: "", arenaAnchor: "",
+    rejectCount: 0, verdict: "", round: 0, pendingAnchor: false,
+    lastInjectedText: "", lastReviewSeq: -1,
+    proposalPath: "", designPath: "", tasksPath: "", reviewPath: "",
+    updatedAt: Date.now(), ...over
+  });
+
+  // 1) main-model phase restored while genuinely idle: composer UNLOCKED
+  //    (the user must send "continue" to wake the main model up).
+  linkFor("s3", "business", "arena-2");
+  persistFor("s3", baseChallenge({ phase: "answer" }));
+  currentSession = "s3";
+  listSub();
+  await sleep(120);
+  const s3Mount = internals.getArenaMount();
+  check("restored main-model phase keeps the baseline", s3Mount !== null && s3Mount.sessionId === "s3" && s3Mount.challenge.phase === "answer" && s3Mount.challenge.userQuestion === "original question" && s3Mount.challenge.restored === true && s3Mount.challenge.active === true);
+  check("restored idle main-model phase does NOT lock the composer", blockCalls[blockCalls.length - 1].block === void 0);
+  check("restored in-flight phase still shows the header", loaded.shouldShowChallengeHeader(s3Mount.challenge) === true);
+  // user sends "continue" → the main model answers (platform) → the flow
+  // advances to the challenger round; the original question is NOT replaced.
+  const s3Store = sessionStores.get("s3");
+  s3Store._set({ chat: { order: ["cu1"], nodes: new Map([["cu1", { key: "cu1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "继续" }] } }]]) } });
+  await sleep(30);
+  check("'continue' does not restart a fresh round", internals.getArenaMount().challenge.userQuestion === "original question" && internals.getArenaMount().challenge.round === 0);
+  s3Store._set({ chat: { order: ["cu1", "ca1"], nodes: new Map([...s3Store.snapshot.chat.nodes, ["ca1", { key: "ca1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "resumed answer" }] } }]]) }, running: false });
+  await sleep(20);
+  const s3Dbg = internals.getArenaMount();
+  check("resumed flow advances to the challenger after 'continue'", s3Dbg !== null && s3Dbg.challenge.phase === "challenge" && promptCalls.some((c) => c.sessionId === "arena-2" && c.content[0].text.includes("逐条质疑")), "phase=" + s3Dbg?.challenge?.phase + " prompts(arena-2)=" + promptCalls.filter((c) => c.sessionId === "arena-2").length);
+  check("restored challenge persisted the advanced phase", ns.value?.challenges?.s3?.phase === "challenge", "persisted=" + ns.value?.challenges?.s3?.phase);
+
+  // 2) challenger phase restored with the reply ALREADY landed: catch-up
+  //    injects it — no duplicate round prompt. (arenaAnchor points at a node
+  //    before the arena's existing assistant reply; arena-1 holds that history.)
+  linkFor("s4", "business", "arena-1");
+  persistFor("s4", baseChallenge({ phase: "challenge", scene: "business", arenaAnchor: "au1", round: 1, lastInjectedText: "" }));
+  currentSession = "s4";
+  listSub();
+  await sleep(120);
+  const s4Mount = internals.getArenaMount();
+  const promptsBeforeS4 = promptCalls.filter((c) => c.sessionId === "arena-1").length;
+  check("restored challenger phase with a landed reply catches up", s4Mount !== null && s4Mount.challenge.phase === "revise");
+  check("no duplicate challenger prompt when the reply already landed", promptCalls.filter((c) => c.sessionId === "arena-1").length === promptsBeforeS4);
+  check("caught-up challenge injects the revision instruction", promptCalls.some((c) => c.sessionId === "s4" && c.content[0].text.trim() !== ""));
+
+  // 3) challenger phase restored with NO reply: the round prompt is
+  //    re-injected immediately ("切到竞技场会话时立即 review/终审") — but
+  //    only ONCE per restore (a fresh arena session stays empty, so every
+  //    sync tick must not keep appending the instruction).
+  linkFor("s5", "knowledge", "arena-3");
+  persistFor("s5", baseChallenge({ phase: "review", scene: "knowledge", arenaAnchor: "", lastReviewSeq: -1 }));
+  currentSession = "s5";
+  listSub();
+  await sleep(120);
+  const s5Mount = internals.getArenaMount();
+  const s5Prompts = promptCalls.filter((c) => c.sessionId === "arena-3" && c.content[0].text.includes("审查"));
+  check("restored challenger phase re-injects the review prompt once", s5Mount !== null && s5Mount.challenge.active === true && s5Prompts.length === 1);
+  listSub();
+  await sleep(120);
+  check("challenger prompt is NOT duplicated across sync ticks", promptCalls.filter((c) => c.sessionId === "arena-3" && c.content[0].text.includes("审查")).length === 1);
+
+  // 4) terminal persisted challenge (aborted): no resurrection, and the
+  //    Theseus bridge is NOT re-armed for it.
+  const mutatesBeforeS6 = settingsMutateCalls.length;
+  linkFor("s6", "knowledge", "arena-2");
+  persistFor("s6", baseChallenge({ active: false, phase: "aborted", scene: "knowledge" }));
+  currentSession = "s6";
+  listSub();
+  await sleep(120);
+  const s6Mount = internals.getArenaMount();
+  check("aborted persisted challenge stays terminal after reload", s6Mount !== null && s6Mount.challenge.active === false && s6Mount.challenge.phase === "aborted" && loaded.shouldShowChallengeHeader(s6Mount.challenge) === false);
+  check("aborted challenge does NOT re-arm the Theseus bridge", !settingsMutateCalls.slice(mutatesBeforeS6).some((m) => m.ops?.some((o) => o.path?.[0] === "arena" && o.path?.[1] === "mainSessionId" && o.value === "s6")));
+
+  // 5) REPRODUCTION: knowledge propose 阶段刷新——主模型生成中刷新页面，
+  //    刷新后主模型继续生成（propose.completed），node 半段写 reviewRequest，
+  //    浏览器端必须消费并推进到 review（挑战者审查）。这是用户报告的
+  //    「刷新后继续生成，但不走 review 了」场景。
+  linkFor("s7", "knowledge", "arena-4");
+  persistFor("s7", baseChallenge({ phase: "propose", scene: "knowledge", lastReviewSeq: -1, mainAnchor: "", arenaAnchor: "" }));
+  // 隔离：propose 阶段刷新时 settings 里不应有旧 reviewRequest（node 半段
+  // 还没检测到 propose.completed）——清掉前面测试残留的全局 latestReviewRequest。
+  ns.value = { ...(ns.value ?? {}), arena: { ...(ns.value?.arena ?? {}), reviewRequest: null } };
+  settingsUpdatedHandler?.("model-arena");
+  currentSession = "s7";
+  listSub();
+  await sleep(120);
+  const s7Mount = internals.getArenaMount();
+  check("propose 刷新恢复基线", s7Mount !== null && s7Mount.challenge.phase === "propose" && s7Mount.challenge.active === true && s7Mount.challenge.scene === "knowledge", "phase=" + s7Mount?.challenge?.phase + " active=" + s7Mount?.challenge?.active + " scene=" + s7Mount?.challenge?.scene);
+  // 主模型在服务端继续生成：快照显示 running（回合在跑）
+  const s7Store = sessionStores.get("s7");
+  s7Store._set({ chat: { order: ["kq1"], nodes: new Map([["kq1", { key: "kq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "问题" }] } }]]) }, running: true });
+  await sleep(30);
+  // node 半段观察到 propose.completed 后写 reviewRequest
+  fireReviewRequest({ workflowId: "wf7", seq: 1, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
+  await sleep(50);
+  const s7After = internals.getArenaMount();
+  check("propose 刷新后 reviewRequest 到达 → 推进 review", s7After !== null && s7After.challenge.phase === "review", "phase=" + s7After?.challenge?.phase + " active=" + s7After?.challenge?.active);
+  check("review 推进后挑战者被 prompt 审查", promptCalls.some((c) => c.sessionId === "arena-4" && c.content[0].text.includes("审查") && c.content[0].text.includes("proposal.md")));
+
+  // 6) REPRODUCTION: business answer 阶段刷新——主模型回答中刷新页面，
+  //    后端会话不断、回合继续跑完；刷新后必须自动推进到挑战者质疑轮
+  //    （"不走 review" 的业务探索对应版）。
+  linkFor("s8", "business", "arena-5");
+  persistFor("s8", baseChallenge({ phase: "answer", scene: "business", mainAnchor: "", arenaAnchor: "" }));
+  currentSession = "s8";
+  listSub();
+  await sleep(120);
+  const s8Mount = internals.getArenaMount();
+  check("business answer 刷新恢复基线", s8Mount !== null && s8Mount.challenge.phase === "answer" && s8Mount.challenge.active === true, "phase=" + s8Mount?.challenge?.phase + " active=" + s8Mount?.challenge?.active);
+  // 后端继续生成并完成回答（刷新时快照为空 → 恢复为 waiting；回答节点落地后
+  // 订阅回调/对齐必须把流程推进到 challenge 轮）
+  const s8Store = sessionStores.get("s8");
+  s8Store._set({ chat: { order: ["bu1", "ba1"], nodes: new Map([
+    ["bu1", { key: "bu1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "问题" }] } }],
+    ["ba1", { key: "ba1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "回答" }] } }]
+  ]) }, running: false });
+  await sleep(50);
+  const s8After = internals.getArenaMount();
+  check("business answer 刷新后回答完成 → 推进质疑轮", s8After !== null && s8After.challenge.phase === "challenge", "phase=" + s8After?.challenge?.phase);
+  check("推进后挑战者被 prompt 质疑", promptCalls.some((c) => c.sessionId === "arena-5" && c.content[0].text.includes("逐条质疑")));
+
+  // 7) HYPOTHESIS CHECK → F2: persistChallenge 写失败/未触发（settings 无
+  //    challenges 记录）但主会话已有首问 → 刷新后必须从快照推断恢复
+  //    （propose/answer + active），否则流程静默（idle 兜底不消费
+  //    reviewRequest → "不走 review"）。
+  linkFor("s9", "knowledge", "arena-6");
+  currentSession = "s9";
+  listSub();
+  await sleep(120);
+  const s9Mount0 = internals.getArenaMount();
+  check("无持久化且无首问 → 维持 idle 兜底", s9Mount0 !== null && s9Mount0.challenge.phase === "idle" && s9Mount0.challenge.active === false, "phase=" + s9Mount0?.challenge?.phase);
+  // 主会话快照出现首问（历史异步加载完成 / 用户已发过话）
+  const s9Store = sessionStores.get("s9");
+  s9Store._set({ chat: { order: ["kq9"], nodes: new Map([["kq9", { key: "kq9", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "原始问题" }] } }]]) } });
+  listSub();
+  await sleep(60);
+  const s9Mount1 = internals.getArenaMount();
+  check("无持久化但有首问 → 推断恢复 propose（active）", s9Mount1 !== null && s9Mount1.challenge.phase === "propose" && s9Mount1.challenge.active === true && s9Mount1.challenge.userQuestion === "原始问题", "phase=" + s9Mount1?.challenge?.phase + " active=" + s9Mount1?.challenge?.active + " q=" + s9Mount1?.challenge?.userQuestion);
+  // 主模型继续生成（后端 Theseus 继续）→ propose.completed → node 半段写 reviewRequest
+  fireReviewRequest({ workflowId: "wf9", seq: 1, proposalPath: "/ws1/openspec/changes/x/proposal.md", designPath: "/ws1/openspec/changes/x/design.md", tasksPath: "/ws1/openspec/changes/x/tasks.md", reviewPath: "/ws1/openspec/changes/x/review.md" });
+  await sleep(50);
+  const s9After = internals.getArenaMount();
+  check("推断恢复后 reviewRequest 到达 → 推进 review", s9After !== null && s9After.challenge.phase === "review", "phase=" + s9After?.challenge?.phase);
+  check("推断恢复后挑战者被 prompt 审查", promptCalls.some((c) => c.sessionId === "arena-6" && c.content[0].text.includes("审查") && c.content[0].text.includes("proposal.md")));
+  // F3: 消费 reviewRequest 后 settings 残留被清（防跨会话误消费）
+  check("F3: 消费后 settings.arena.reviewRequest 被清", ns.value?.arena?.reviewRequest === null);
+
+  // 8) COMPOSER STOP vs HEADER STOP: 主模型轮（answer）生成中，用户点击
+  //    主会话 composer 的停止按钮（平台 cancel 只停主会话）→ 看门狗必须
+  //    abortChallenge（同时 cancel 挑战者 + 结束流程），与 header 停止一致。
+  linkFor("s10", "business", "arena-7");
+  persistFor("s10", baseChallenge({ phase: "answer", scene: "business", mainAnchor: "", arenaAnchor: "" }));
+  currentSession = "s10";
+  listSub();
+  await sleep(120);
+  const s10Store = sessionStores.get("s10");
+  // 主模型生成中（running）
+  s10Store._set({ chat: { order: ["st1"], nodes: new Map([["st1", { key: "st1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "问题" }] } }]]) }, running: true });
+  await sleep(30);
+  const cancelBefore = cancelCalls.length;
+  // 用户点击 composer 停止：主会话 cancel → 快照 running→idle 且无新节点
+  s10Store._set({ chat: s10Store.snapshot.chat, running: false });
+  await sleep(30);
+  const afterStop = internals.getArenaMount();
+  check("composer 停止主模型 → 看门狗触发 abortChallenge（停两者）", afterStop !== null && afterStop.challenge.active === false && afterStop.challenge.phase === "aborted", "phase=" + afterStop?.challenge?.phase + " active=" + afterStop?.challenge?.active);
+  check("composer 停止后挑战者会话被 cancel", cancelCalls.includes("arena-7"), "cancelled=" + cancelCalls.slice(cancelBefore).join(","));
+
+  // 9) the challenge-status header component stays registered (stage strip +
+  //    stop button); the header challenger spinner was REMOVED per user feedback
+  //    (the sidebar row dot is the only challenger loading indicator now).
+  const headerEntry = slotRegisterCalls.find((c) => c.name === "conversation.session.header.actions" && c.id === "challenge-status");
+  check("challenge-status header component registered", headerEntry !== void 0 && typeof headerEntry.component === "function");
+  const findInVNode = (node, pred) => {
+    if (node === null || node === void 0 || typeof node !== "object") return null;
+    if (pred(node)) return node;
+    const kids = Array.isArray(node.props?.children) ? node.props.children : (node.props?.children === void 0 ? [] : [node.props.children]);
+    for (const kid of kids) {
+      const hit = findInVNode(kid, pred);
+      if (hit !== null) return hit;
+    }
+    return null;
+  };
+  // switch back to the restored review-phase session (s5: active, phase=review)
+  currentSession = "s5";
+  listSub();
+  await sleep(120);
+  const s5Now = internals.getArenaMount();
+  check("header fixture: review-phase session active", s5Now !== null && s5Now.challenge.active === true && s5Now.challenge.phase === "review", "phase=" + s5Now?.challenge?.phase + " active=" + s5Now?.challenge?.active);
+  const arena3Store = sessionStores.get("arena-3");
+  // the header NEVER renders a challenger spinner now, whatever the arena state
+  arena3Store._set({ chat: arena3Store.snapshot.chat, running: true });
+  check("header has no challenger spinner (removed)", findInVNode(headerEntry.component({ sessionId: "s5" }), (n) => n.props?.["data-challenge-spinner"] !== void 0) === null);
+  arena3Store._set({ chat: arena3Store.snapshot.chat, running: false });
+
+  // 10) challenger loading dot in the SIDEBAR session row: the selected (main)
+  //     session row shows the loading dot while a challenger round is active AND
+  //     the arena session is running — like the main model's own running dot.
+  //     Mark the normal row as the selected/current row (the real workspace
+  //     browser marks the current session with YDXeBa_selected). Use a FRESH
+  //     review-phase session (s5 above ended aborted by the watchdog's
+  //     running→idle-without-reply stop detection).
+  normalRow.className = "YDXeBa_sessionRow YDXeBa_selected";
+  linkFor("s11", "knowledge", "arena-8");
+  persistFor("s11", baseChallenge({ phase: "review", scene: "knowledge", arenaAnchor: "", lastReviewSeq: 1 }));
+  currentSession = "s11";
+  listSub();
+  await sleep(120);
+  const s11Mount = internals.getArenaMount();
+  check("sidebar fixture: review-phase session active", s11Mount !== null && s11Mount.challenge.active === true && s11Mount.challenge.phase === "review", "phase=" + s11Mount?.challenge?.phase + " active=" + s11Mount?.challenge?.active);
+  const arena8Store = sessionStores.get("arena-8");
+  const sidebarDotIn = (node) => findInTree(node, byClass("ma-sidebarLoading")) !== null;
+  // challenger idle → no sidebar loading dot
+  arena8Store._set({ chat: arena8Store.snapshot.chat, running: false });
+  listSub();
+  await sleep(60);
+  check("sidebar: challenger idle → no loading dot", !sidebarDotIn(normalRow));
+  // challenger running → sidebar loading dot appears on the selected row
+  // (keep running — dropping it without a reply would abort the round)
+  arena8Store._set({ chat: arena8Store.snapshot.chat, running: true });
+  await sleep(60);
+  check("sidebar: challenger running → loading dot on the main row", sidebarDotIn(normalRow));
+  // switch-away orphan cleanup: the dot only marks the CURRENT session's
+  // challenger, so once the row loses selection it must be removed — it must
+  // not linger on the row while the background advance later moves the duel to
+  // the main model's turn.
+  normalRow.className = "YDXeBa_sessionRow";
+  listSub();
+  await sleep(60);
+  check("sidebar: dot removed from the deselected row (orphan cleanup)", !sidebarDotIn(normalRow));
+  // re-select the row while the challenger is still running → the dot returns
+  normalRow.className = "YDXeBa_sessionRow YDXeBa_selected";
+  listSub();
+  await sleep(60);
+  check("sidebar: dot restored when the row is reselected", sidebarDotIn(normalRow));
+  // challenger replies (NEEDS_REVISION) → the round advances to revise and the
+  // dot is removed (main-model phase — the platform's own dot covers it)
+  arena8Store._set({
+    chat: {
+      order: ["rv-a"],
+      nodes: new Map([["rv-a", { key: "rv-a", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "**Overall Verdict**: NEEDS_REVISION\nAction Items: fix" }] } }]])
+    },
+    running: false
+  });
+  await sleep(60);
+  check("sidebar: challenger replied → dot removed (revise phase)", !sidebarDotIn(normalRow) && internals.getArenaMount().challenge.phase === "revise", "phase=" + internals.getArenaMount()?.challenge?.phase);
+  normalRow.className = "YDXeBa_sessionRow";
+
+  // 11) background advance (opt-in via settings.backgroundAdvance, default OFF):
+  //     a duel whose MAIN session is not the current one advances from its
+  //     persisted baseline — finished main turn prompts the challenger, finished
+  //     challenger reply is injected into the main session. OFF → no-op.
+  // switch OFF → advanceBackgroundDuels is a no-op
+  const bgPromptsBefore = promptCalls.length;
+  internals.advanceBackgroundDuels();
+  check("background advance: switch off → no-op", promptCalls.length === bgPromptsBefore);
+  // enable the switch via settings
+  ns.value = { ...(ns.value ?? {}), backgroundAdvance: true };
+  settingsUpdatedHandler?.("model-arena");
+  await sleep(40);
+  // fixture: s12 (business answer, active) linked to arena-9, NOT the current session
+  linkFor("s12", "business", "arena-9");
+  persistFor("s12", baseChallenge({ phase: "answer", scene: "business", mainAnchor: "", arenaAnchor: "" }));
+  await sleep(40);
+  const s12Store = sessionStores.get("s12") ?? makeSessionStore("s12", { chat: { order: [], nodes: new Map() } });
+  s12Store._set({ chat: { order: ["bgq1", "bga1"], nodes: new Map([
+    ["bgq1", { key: "bgq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "问题" }] } }],
+    ["bga1", { key: "bga1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "回答" }] } }]
+  ]) }, running: false });
+  internals.advanceBackgroundDuels();
+  check("background: main finished → challenger prompted", promptCalls.some((c) => c.sessionId === "arena-9" && c.content[0].text.includes("逐条质疑")));
+  check("background: persisted phase advanced to challenge", ns.value?.challenges?.s12?.phase === "challenge", "phase=" + ns.value?.challenges?.s12?.phase);
+  // challenger replies → background injects into the main session
+  const arena9Store = sessionStores.get("arena-9");
+  arena9Store._set({ chat: { order: ["bgr1"], nodes: new Map([["bgr1", { key: "bgr1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "质疑：这里有问题" }] } }]]) }, running: false });
+  internals.advanceBackgroundDuels();
+  check("background: challenger reply → injected into main + revise", promptCalls.some((c) => c.sessionId === "s12" && c.content[0].text.includes("质疑")) && ns.value?.challenges?.s12?.phase === "revise", "phase=" + ns.value?.challenges?.s12?.phase);
+  // current session is skipped (the runtime handles it)
+  linkFor("s13", "business", "arena-10");
+  persistFor("s13", baseChallenge({ phase: "answer", scene: "business" }));
+  currentSession = "s13";
+  listSub();
+  await sleep(120);
+  const s13Store = sessionStores.get("s13");
+  s13Store._set({ chat: { order: ["cur1"], nodes: new Map([["cur1", { key: "cur1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "q" }] } }]]) }, running: false });
+  const promptsBeforeCur = promptCalls.filter((c) => c.sessionId === "arena-10").length;
+  internals.advanceBackgroundDuels();
+  check("background: current session is skipped", promptCalls.filter((c) => c.sessionId === "arena-10").length === promptsBeforeCur);
+  // cleanup: disable the switch
+  ns.value = { ...(ns.value ?? {}), backgroundAdvance: false };
+  settingsUpdatedHandler?.("model-arena");
+  await sleep(40);
 }
 
 console.log(failed === 0 ? "CLIENT SMOKE PASS" : failed + " CLIENT SMOKE FAILURES");
