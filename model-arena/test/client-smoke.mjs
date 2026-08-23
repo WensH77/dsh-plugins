@@ -1496,17 +1496,21 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   const c = {
     active: true, phase: "challenge", scene: "business", skill: "/ws/s",
     userQuestion: "Q?", mainAnchor: "k1", arenaAnchor: "k2", rejectCount: 0,
-    verdict: "", round: 2, pendingAnchor: true, lastInjectedText: "x".repeat(5000),
+    verdict: "", round: 2, pendingAnchor: true, lastPromptSent: "final",
+    lastInjectedText: "x".repeat(5000),
     lastReviewSeq: -1, proposalPath: "/p.md", designPath: "/d.md", tasksPath: "/t.md",
     reviewPath: "/r.md", mainWasRunning: true, arenaWasRunning: true,
     stallSince: 12345, lastMainText: "LONG BODY", lastArenaText: "LONG BODY"
   };
   const p = loaded.toPersistedChallenge(c);
   check("toPersistedChallenge keeps the durable baseline fields", p.active === true && p.phase === "challenge" && p.scene === "business" && p.userQuestion === "Q?" && p.mainAnchor === "k1" && p.arenaAnchor === "k2" && p.round === 2 && p.pendingAnchor === true && p.lastReviewSeq === -1 && p.proposalPath === "/p.md");
+  check("toPersistedChallenge persists the last-sent round prompt", p.lastPromptSent === "final");
   check("toPersistedChallenge truncates the injected text", p.lastInjectedText.length === 4000);
   check("toPersistedChallenge drops run-time bodies", !("lastMainText" in p) && !("lastArenaText" in p) && !("mainWasRunning" in p) && !("stallSince" in p));
   const back = loaded.fromPersistedChallenge(p);
   check("fromPersistedChallenge round-trips the baseline", back.phase === "challenge" && back.scene === "business" && back.mainAnchor === "k1" && back.arenaAnchor === "k2" && back.round === 2 && back.pendingAnchor === true && back.lastReviewSeq === -1 && back.proposalPath === "/p.md");
+  check("fromPersistedChallenge round-trips the last-sent round prompt", back.lastPromptSent === "final");
+  check("fromPersistedChallenge defaults lastPromptSent to empty", loaded.fromPersistedChallenge({ active: true, phase: "review", lastPromptSent: void 0 }).lastPromptSent === "");
   check("fromPersistedChallenge resets run-time fields + marks restored", back.mainWasRunning === false && back.arenaWasRunning === false && back.stallSince === 0 && back.restored === true && back.alignDone === false && back.challengerRePrompted === false);
   check("fromPersistedChallenge preserves terminal phases", loaded.fromPersistedChallenge({ active: false, phase: "aborted" }).phase === "aborted" && loaded.fromPersistedChallenge({ active: false, phase: "done" }).phase === "done");
   check("fromPersistedChallenge normalizes unknown phases", loaded.fromPersistedChallenge({ phase: "bogus" }).phase === "idle");
@@ -1594,6 +1598,20 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   listSub();
   await sleep(120);
   check("challenger prompt is NOT duplicated across sync ticks", promptCalls.filter((c) => c.sessionId === "arena-3" && c.content[0].text.includes("审查")).length === 1);
+
+  // 3b) REGRESSION (duplicate-final / revise-final-revise-final): a FINAL
+  //     round whose verdict prompt was ALREADY sent (persisted
+  //     lastPromptSent="final") must NOT re-inject the verdict on reload —
+  //     the arena session holds the prompt server-side, so a reload must wait
+  //     for the challenger, not hand it a duplicate终评 instruction.
+  linkFor("s14", "business", "arena-11");
+  persistFor("s14", baseChallenge({ phase: "final", scene: "business", arenaAnchor: "", lastPromptSent: "final" }));
+  currentSession = "s14";
+  listSub();
+  await sleep(120);
+  const s14Mount = internals.getArenaMount();
+  check("final round with prompt already sent: phase stays final on reload", s14Mount !== null && s14Mount.challenge.active === true && s14Mount.challenge.phase === "final", "phase=" + s14Mount?.challenge?.phase + " active=" + s14Mount?.challenge?.active);
+  check("final round with prompt already sent: verdict NOT re-injected on reload", !promptCalls.some((c) => c.sessionId === "arena-11" && c.content[0].text.includes("最终评审结论")));
 
   // 4) terminal persisted challenge (aborted): no resurrection, and the
   //    Theseus bridge is NOT re-armed for it.
@@ -1821,6 +1839,38 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   const promptsBeforeCur = promptCalls.filter((c) => c.sessionId === "arena-10").length;
   internals.advanceBackgroundDuels();
   check("background: current session is skipped", promptCalls.filter((c) => c.sessionId === "arena-10").length === promptsBeforeCur);
+
+  // 11b) REGRESSION (dual-write / duplicate-final): a duel that was MOUNTED
+  //      (teardown stashed an in-memory answer-phase challenge), then advanced
+  //      in the background (answer→challenge), must NOT re-advance on return.
+  //      The background advance must sync the stashed in-memory challenge;
+  //      otherwise returning re-mounts the stale phase and advanceChallenge
+  //      re-prompts the challenger — the duplicate-final mechanism.
+  linkFor("s15", "business", "arena-12");
+  persistFor("s15", baseChallenge({ phase: "answer", scene: "business", mainAnchor: "", arenaAnchor: "" }));
+  currentSession = "s15";
+  listSub();
+  await sleep(120); // mount: in-memory state.challenge = answer (empty snapshot → waiting)
+  const s15Store = sessionStores.get("s15");
+  // switch away WITHOUT the main turn finishing: teardown stashes the answer
+  // phase; the main turn then completes while s15 is NOT the current session.
+  currentSession = "s13";
+  listSub();
+  await sleep(120);
+  s15Store._set({ chat: { order: ["d1", "d2"], nodes: new Map([
+    ["d1", { key: "d1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "问题" }] } }],
+    ["d2", { key: "d2", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "回答" }] } }]
+  ]) }, running: false });
+  internals.advanceBackgroundDuels();
+  check("background advance syncs the stashed in-memory challenge", ns.value?.challenges?.s15?.phase === "challenge", "phase=" + ns.value?.challenges?.s15?.phase);
+  // return: must resume the ADVANCED phase, not re-advance answer→challenge
+  const bgPromptsArena12After = promptCalls.filter((c) => c.sessionId === "arena-12" && c.content[0].text.includes("逐条质疑")).length;
+  currentSession = "s15";
+  listSub();
+  await sleep(150);
+  const s15Mount = internals.getArenaMount();
+  check("return after background advance resumes the advanced phase", s15Mount !== null && s15Mount.challenge.phase === "challenge", "phase=" + s15Mount?.challenge?.phase + " active=" + s15Mount?.challenge?.active);
+  check("return after background advance does NOT re-prompt the challenger", promptCalls.filter((c) => c.sessionId === "arena-12" && c.content[0].text.includes("逐条质疑")).length === bgPromptsArena12After, "arena-12 prompts=" + promptCalls.filter((c) => c.sessionId === "arena-12" && c.content[0].text.includes("逐条质疑")).length);
   // cleanup: disable the switch
   ns.value = { ...(ns.value ?? {}), backgroundAdvance: false };
   settingsUpdatedHandler?.("model-arena");

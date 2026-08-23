@@ -477,6 +477,11 @@ window.__ModuleLoader__.load({
 				verdict: typeof c.verdict === "string" ? c.verdict : "",
 				round: typeof c.round === "number" ? c.round : 0,
 				pendingAnchor: c.pendingAnchor === true,
+				// Which challenger round prompt (challenge/final/review) was last
+				// SENT to the arena session. Persisted so a reload/restore does not
+				// re-inject a round prompt that is already queued server-side — the
+				// duplicate-final defect (revise→final→revise→final). "" = none yet.
+				lastPromptSent: typeof c.lastPromptSent === "string" ? c.lastPromptSent : "",
 				lastInjectedText: typeof c.lastInjectedText === "string" ? c.lastInjectedText.slice(0, LAST_INJECTED_MAX) : "",
 				lastReviewSeq: typeof c.lastReviewSeq === "number" ? c.lastReviewSeq : -1,
 				proposalPath: typeof c.proposalPath === "string" ? c.proposalPath : "",
@@ -505,6 +510,7 @@ window.__ModuleLoader__.load({
 				verdict: typeof p.verdict === "string" ? p.verdict : "",
 				round: typeof p.round === "number" ? p.round : 0,
 				pendingAnchor: p.pendingAnchor === true,
+				lastPromptSent: typeof p.lastPromptSent === "string" ? p.lastPromptSent : "",
 				lastInjectedText: typeof p.lastInjectedText === "string" ? p.lastInjectedText : "",
 				lastReviewSeq: typeof p.lastReviewSeq === "number" ? p.lastReviewSeq : -1,
 				proposalPath: typeof p.proposalPath === "string" ? p.proposalPath : "",
@@ -2621,6 +2627,8 @@ window.__ModuleLoader__.load({
 						c.round = 0;
 						c.stallSince = 0;
 						c.challengerRePrompted = false;
+						// A fresh round has never prompted the challenger yet.
+						c.lastPromptSent = "";
 						// A fresh round is NOT a restored challenge: restore alignment
 						// must never touch it (see alignChallengeAfterRestore).
 						c.restored = false;
@@ -2742,12 +2750,14 @@ window.__ModuleLoader__.load({
 							if (c.phase === "answer") {
 								c.phase = "challenge";
 								c.round += 1;
+								c.lastPromptSent = "challenge";
 								promptSession(arenaId, buildRoundPrompt("challenge", c, t));
 								updateBlock(mainId, stateFor(mainId));
 								syncPersona();
 							} else {
 								c.phase = "final";
 								c.round += 1;
+								c.lastPromptSent = "final";
 								updateBlock(mainId, stateFor(mainId));
 								arenaTick.bump();
 								syncPersona();
@@ -2818,6 +2828,7 @@ window.__ModuleLoader__.load({
 								c.reviewPath = typeof req.reviewPath === "string" ? req.reviewPath : "";
 								c.phase = "review";
 								c.round += 1;
+								c.lastPromptSent = "review";
 								promptSession(arenaId, buildRoundPrompt("review", c, t));
 								updateBlock(mainId, stateFor(mainId));
 								syncPersona();
@@ -3317,6 +3328,7 @@ window.__ModuleLoader__.load({
 										c.reviewPath = typeof req.reviewPath === "string" ? req.reviewPath : "";
 										c.phase = "review";
 										c.round += 1;
+										c.lastPromptSent = "review";
 										promptSession(arenaId, buildRoundPrompt("review", c, t));
 										latestReviewRequest = null;
 										try {
@@ -3338,10 +3350,12 @@ window.__ModuleLoader__.load({
 									if (c.phase === "answer") {
 										c.phase = "challenge";
 										c.round += 1;
+										c.lastPromptSent = "challenge";
 										promptSession(arenaId, buildRoundPrompt("challenge", c, t));
 									} else {
 										c.phase = "final";
 										c.round += 1;
+										c.lastPromptSent = "final";
 										promptSession(arenaId, buildRoundPrompt("final", c, t));
 									}
 									advanced = true;
@@ -3397,6 +3411,18 @@ window.__ModuleLoader__.load({
 							if (advanced) {
 								challengesCache[sessionId] = toPersistedChallenge(c);
 								persistChallenge(sessionId, true);
+								// Keep the in-memory per-session challenge in sync: the
+								// background advance mutated the PERSISTED projection, but
+								// `stateBySession[sessionId].challenge` (stashed by
+								// teardownArena on switch-away) still holds the pre-switch
+								// phase. Without this, returning to the session re-mounts the
+								// stale phase (e.g. revise) and advanceChallenge re-advances
+								// revise→final, sending the challenger a SECOND final-verdict
+								// prompt — the duplicate-final (revise-final-revise-final)
+								// defect. Replace the stashed challenge with the advanced one
+								// so a return resumes from the advanced phase.
+								const st = stateBySession.get(sessionId);
+								if (st !== void 0) st.challenge = c;
 							}
 						} catch (_backgroundAdvanceFailure) {
 							// per-session best effort — retry on the next tick
@@ -3469,12 +3495,25 @@ window.__ModuleLoader__.load({
 						// review/终审"). Injected once per restore (challengerRePrompted
 						// is a run-time flag, reset by fromPersistedChallenge) so a
 						// failed prompt is retried without infinitely duplicating the
-						// round instruction on every sync tick.
+						// round instruction on every sync tick. BUT: when the SAME
+						// round prompt was already sent in a previous run (persisted
+						// lastPromptSent === this round's kind), the arena session has
+						// it queued server-side — re-injecting hands the challenger a
+						// duplicate instruction and produces a SECOND verdict
+						// (the revise-final-revise-final / duplicate-final defect).
+						// Skip the re-inject; a genuinely stuck challenger is still
+						// caught by the STALL_MS watchdog.
 						updateBlock(sessionId, state);
 						if (!c.challengerRePrompted) {
 							c.challengerRePrompted = true;
 							const kind = c.phase === "final" ? "final" : c.phase === "review" ? "review" : "challenge";
-							promptSession(arenaId, buildRoundPrompt(kind, c, t));
+							if (c.lastPromptSent !== kind) {
+								promptSession(arenaId, buildRoundPrompt(kind, c, t));
+								c.lastPromptSent = kind;
+								// Persist the re-send so a SECOND reload does not
+								// re-inject the same round prompt again.
+								persistChallenge(sessionId);
+							}
 						}
 						detectChallengeTurn();
 						c.alignDone = true;
@@ -3568,6 +3607,7 @@ window.__ModuleLoader__.load({
 						verdict: "",
 						round: 0,
 						pendingAnchor: false,
+						lastPromptSent: "",
 						lastInjectedText: "",
 						lastReviewSeq: -1,
 						proposalPath: "",
@@ -3710,6 +3750,7 @@ window.__ModuleLoader__.load({
 							verdict: "",
 							round: 0,
 							pendingAnchor: false,
+							lastPromptSent: "",
 							lastInjectedText: "",
 							mainWasRunning: false,
 							arenaWasRunning: false,
