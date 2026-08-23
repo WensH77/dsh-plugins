@@ -38,6 +38,7 @@ window.__ModuleLoader__.load({
 			".pm-tag.protected{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}",
 			".pm-meta{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px;gap:10px;display:flex;align-items:center;flex-wrap:wrap;font-family:var(--dsw-font-mono)}",
 			".pm-meta .pm-repo{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-mono)}",
+			".pm-meta .pm-repoPath{white-space:normal;word-break:break-all;overflow-wrap:anywhere;min-width:0}",
 			".pm-meta .pm-override{color:var(--dsw-alias-state-warn-primary);font-weight:600}",
 			".pm-btns{gap:6px;display:flex;align-items:center;flex-wrap:wrap;margin-top:2px}",
 
@@ -75,7 +76,8 @@ window.__ModuleLoader__.load({
 			// 加载态与动画
 			".pm-spinner{width:16px;height:16px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;animation:pmspin .8s linear infinite;flex:none;display:inline-block;margin:4px 0}",
 			".pm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(2px)}",
-			".pm-modal{width:100%;max-width:420px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;box-shadow:var(--dsw-shadow-lv3);padding:18px 20px;flex-direction:column;gap:12px;display:flex}",
+			".pm-modal{width:100%;max-width:420px;max-height:calc(100vh - 48px);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;box-shadow:var(--dsw-shadow-lv3);padding:18px 20px;flex-direction:column;gap:12px;display:flex;overflow:hidden}",
+			".pm-modalBody{overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:12px}",
 			".pm-modalTitle{margin:0;font-size:14px;font-weight:600;line-height:22px;color:var(--dsw-alias-label-primary)}",
 			".pm-modalTitle.danger{color:var(--dsw-alias-state-error-primary)}",
 			".pm-modalText{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;margin:0}",
@@ -91,6 +93,20 @@ window.__ModuleLoader__.load({
 			"@keyframes pmspin{to{transform:rotate(360deg)}}",
 			"@keyframes pmPulse{0%,100%{opacity:1}50%{opacity:.35}}",
 			"@media (max-width:640px){.pm-list{grid-template-columns:1fr}}",
+
+			// 侧边栏 dsh 版本状态灯（品牌名下方）：圆点 + 版本号。
+			// 侧边栏根为 flex 列、默认 cross-axis stretch，故本行为全宽；左 padding 对齐 logoRow 的品牌 mark。
+			".pm-dshself{display:flex;align-items:center;gap:6px;padding:1px 0 1px 12px;margin:-10px 0 10px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-caption);cursor:pointer;font-family:var(--dsw-font-mono);user-select:none;transition:color .15s ease}",
+			".pm-dshself:hover{color:var(--dsw-alias-label-secondary)}",
+			".pm-dshselfDot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dsw-alias-label-caption);transition:background .2s ease,box-shadow .2s ease}",
+			".pm-dshself[data-state=ok] .pm-dshselfDot{background:var(--dsw-alias-state-success-primary)}",
+			".pm-dshself[data-state=update] .pm-dshselfDot{background:var(--dsw-alias-state-warn-primary);box-shadow:0 0 0 3px var(--dsw-alias-state-warn-tertiary)}",
+			".pm-dshself[data-state=breaking] .pm-dshselfDot{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 3px var(--dsw-alias-state-warn-tertiary)}",
+			".pm-dshself[data-state=analyzing] .pm-dshselfDot{background:var(--dsw-alias-state-warn-primary);animation:pmPulse 1s ease-in-out infinite}",
+			".pm-dshself[data-state=update],.pm-dshself[data-state=breaking]{color:var(--dsw-alias-label-secondary)}",
+			".pm-dshselfVersion{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+			".pm-dshself[data-collapsed=true]{justify-content:center;padding:2px 0}",
+			".pm-dshself[data-collapsed=true] .pm-dshselfVersion{display:none}",
 		];
 
 		const tagId = "dsh-plugin-market/settings.css";
@@ -143,7 +159,6 @@ window.__ModuleLoader__.load({
 			uninstallConfirm: "确定卸载 {name}？该操作会移除插件包与配置，无法撤销。",
 			cancel: "取消",
 			save: "保存",
-			repoTitle: "修改仓库地址",
 			reviewLabel: "安全审查（分层审查：全量文件特征扫描 + 风险信号定向深挖，deepseek-v4-flash x high；报告本地缓存 7 天）",
 			reviewOffProgress: "已开启 · 再点 {left} 次可关闭",
 			reviewSeverity: "风险级别",
@@ -180,15 +195,21 @@ window.__ModuleLoader__.load({
 			noSources: "还没有 GitHub 源，添加一个仓库地址开始。",
 			version: "版本",
 			repo: "仓库",
-			editRepo: "地址",
-			repoSaved: "仓库地址已更新",
-			repoUnchanged: "地址未变化",
-			overrideMark: "↻ 手动覆盖",
-			localInstalled: "本地安装",
+			localPath: "本地路径",
+			updateTitle: "更新插件",
+			updateProgress: "正在安装更新…（使用检查更新时已审查的新版本，从隔离环境直接安装，可能需要一两分钟，请勿关闭页面）",
+			gitNoRepo: "无远端仓库来源，无法检查更新（仅展示安装时的来源仓库或本地路径）",
 			phase: "状态",
 			removed: "已卸载：{name}",
 			removedRestart: "（需重启 dsh web 生效）",
 			repoInvalid: "仓库地址格式无效",
+			dshUpToDate: "已是最新版本 v{version}",
+			dshHasUpdate: "有新版本 v{version}",
+			dshBreaking: "有新版本 v{version}，存在破坏性更新",
+			dshUnknown: "无法检查更新",
+			dshAnalyzing: "正在分析新版本…",
+			dshAnalyzeFailed: "分析失败：{error}",
+			dshChecking: "检查更新中…",
 		};
 		const en = {
 			tab: "Plugin Market",
@@ -228,7 +249,6 @@ window.__ModuleLoader__.load({
 			uninstallConfirm: "Uninstall {name}? This removes the package and its config. This cannot be undone.",
 			cancel: "Cancel",
 			save: "Save",
-			repoTitle: "Edit repo address",
 			reviewLabel: "Security review (layered: full-file risk scan + targeted deep-dive on signals, deepseek-v4-flash x high; reports cached locally for 7 days)",
 			reviewOffProgress: "On · {left} more clicks to disable",
 			reviewSeverity: "Severity",
@@ -267,15 +287,21 @@ window.__ModuleLoader__.load({
 			noSources: "No GitHub sources yet. Add a repo to start.",
 			version: "Version",
 			repo: "Repo",
-			editRepo: "Repo",
-			repoSaved: "Repo updated",
-			repoUnchanged: "Address unchanged",
-			overrideMark: "↻ overridden",
-			localInstalled: "local install",
+			localPath: "Local path",
+			updateTitle: "Updating plugin",
+			updateProgress: "Installing update… (installing the already-reviewed new version from the staged environment; may take a minute or two, keep this page open)",
+			gitNoRepo: "No remote repo source; update check unavailable (only the install-source repo or local path is shown)",
 			phase: "State",
 			removed: "Removed: {name}",
 			removedRestart: " (restart dsh web to apply)",
 			repoInvalid: "Invalid repo address",
+			dshUpToDate: "Up to date: v{version}",
+			dshHasUpdate: "New version available: v{version}",
+			dshBreaking: "New version v{version} — breaking changes detected",
+			dshUnknown: "Unable to check for updates",
+			dshAnalyzing: "Analyzing the new version…",
+			dshAnalyzeFailed: "Analysis failed: {error}",
+			dshChecking: "Checking for updates…",
 		};
 
 		// ── helpers ──────────────────────────────────────────────────────────
@@ -366,7 +392,8 @@ window.__ModuleLoader__.load({
 				call("/plugin-market/check-update", { packageName: entry.moduleName, repository: entry.repository ?? "", review })
 					.then((data) => {
 						setUpdateChecks((prev) => ({ ...prev, [entry.entryId]: data }));
-						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: "更新审查报告", entry });
+						// 审查通过后服务端保留隔离目录（updateJobId）：确认更新时直接从该环境安装
+						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: "更新审查报告", entry, updateJobId: data.updateJobId ?? "" });
 					})
 					.catch((error) => flash(error.message, false))
 					.finally(() => setBusy(null));
@@ -406,29 +433,6 @@ window.__ModuleLoader__.load({
 				setBusy("uninstall:" + entry.entryId);
 				call("/plugin-market/uninstall", { entryId: entry.entryId })
 					.then((data) => { refresh(); flash(tpl(t("removed"), { name: data.packageName ?? entry.moduleName }) + (data.restart ? t("removedRestart") : "") + (data.uninstallError ? "：" + data.uninstallError : ""), true); })
-					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
-			};
-
-			const doSetRepo = (entry) => setModal({ type: "repo", entry, value: entry.repository ?? "" });
-
-			const submitRepo = () => {
-				const entry = modal.entry;
-				const value = String(modal.value ?? "").trim();
-				if (value !== "" && !/^(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|https?:\/\/github\.com\/[^/]+\/[^/?#]+|github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:#path:[^\s#]+)?$/.test(value)) {
-					flash(t("repoInvalid"), false);
-					return;
-				}
-				// 保存但地址实际没变：不发请求、不标记手动覆盖（服务端同样兜底）
-				if (value === String(entry.repository ?? "")) {
-					setModal(null);
-					flash(t("repoUnchanged"), false);
-					return;
-				}
-				setModal(null);
-				setBusy("repo:" + entry.entryId);
-				call("/plugin-market/set-repo", { entryId: entry.entryId, repository: value })
-					.then((data) => { refresh(); flash(t("repoSaved"), true); })
 					.catch((error) => flash(error.message, false))
 					.finally(() => setBusy(null));
 			};
@@ -520,16 +524,18 @@ window.__ModuleLoader__.load({
 			};
 			const doConfirmUpdate = () => {
 				const entry = modal.entry;
-				setModal(null);
+				// 直接从检查更新时已审查的隔离环境安装（不重新拉取/审查）：先打开进度弹窗，让用户知道正在安装
+				setModal({ type: "update-loading", entry });
 				setBusy("update:" + entry.entryId);
-				call("/plugin-market/update", { entryId: entry.entryId })
+				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", updateJobId: modal.updateJobId ?? "" })
 					.then((data) => {
 						refresh();
 						flash("git 通道更新完成", true);
 						// 更新也做安全审查：报告附更新差异（相对已装代码改了什么）
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
+						else setModal(null);
 					})
-					.catch((error) => flash(error.message, false))
+					.catch((error) => { setModal(null); flash(error.message, false); })
 					.finally(() => setBusy(null));
 			};
 
@@ -573,6 +579,18 @@ window.__ModuleLoader__.load({
 						)
 					);
 				}
+				if (modal.type === "update-loading") {
+					// 更新是数分钟的长请求：进行中弹窗不可关闭，完成后由 doConfirmUpdate 的 then/catch 关闭
+					return h("div", { className: "pm-overlay" },
+						h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation() },
+							h("p", { className: "pm-modalTitle" }, t("updateTitle")),
+							h("div", { className: "pm-loadingRow" },
+								h("span", { className: "pm-spinner" }),
+								h("span", null, t("updateProgress"))
+							)
+						)
+					);
+				}
 				if (modal.type === "review") {
 					const rep = modal.report;
 					const sev = rep.severity ?? "low";
@@ -583,21 +601,20 @@ window.__ModuleLoader__.load({
 					return h("div", { className: "pm-overlay", onClick: () => setModal(null) },
 						h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 480 } },
 							h("p", { className: "pm-modalTitle" }, modal.title),
-							h("p", { className: "pm-modalText" }, rep.summary || ""),
-							rep.risks && rep.risks.length > 0 ? h("ul", { className: "pm-reviewRisks" }, rep.risks.map((r, i) => h("li", { key: i }, r))) : null,
-							h("p", { className: "pm-modalText", style: { color: sevColor } }, t("reviewSeverity") + ": " + (sev === "high" ? t("sevHigh") : sev === "medium" ? t("sevMedium") : t("sevLow"))),
-							h("p", { className: "pm-modalText", style: { color: vdColor, fontWeight: 600 } }, t("reviewVerdict") + ": " + vdLabel),
-							rep.details ? h("p", { className: "pm-modalText" }, rep.details) : null,
-							rep.cached ? h("p", { className: "pm-hint" }, t("reviewCached")) : null,
-							rep.scanned ? h("p", { className: "pm-hint" }, t("reviewScanned") + ": " + rep.scanned.files + " files · " + rep.scanned.sizeKB + " KB · " + rep.scanned.signals + " signals" + (rep.method ? " · " + rep.method : "") + (rep.channel ? " · " + rep.channel : "")) : null,
-						rep.diff ? h("div", { className: "pm-modalText", style: { marginTop: 6 } },
-							h("span", { style: { fontWeight: 600 } }, t("diffTitle") + " · +" + rep.diff.added.length + " / -" + rep.diff.removed.length + " / ~" + rep.diff.changed.length),
-							h("ul", { className: "pm-reviewRisks" },
-								rep.diff.added.slice(0, 15).map((x) => h("li", { key: "a" + x }, t("diffAdded") + ": " + x)),
-								rep.diff.removed.slice(0, 15).map((x) => h("li", { key: "r" + x }, t("diffRemoved") + ": " + x)),
-								rep.diff.changed.slice(0, 15).map((x) => h("li", { key: "c" + x }, t("diffChanged") + ": " + x))
-							)
-						) : null,
+							h("div", { className: "pm-modalBody" },
+								h("p", { className: "pm-modalText" }, rep.summary || ""),
+								rep.risks && rep.risks.length > 0 ? h("ul", { className: "pm-reviewRisks" }, rep.risks.map((r, i) => h("li", { key: i }, r))) : null,
+								h("p", { className: "pm-modalText", style: { color: sevColor } }, t("reviewSeverity") + ": " + (sev === "high" ? t("sevHigh") : sev === "medium" ? t("sevMedium") : t("sevLow"))),
+								h("p", { className: "pm-modalText", style: { color: vdColor, fontWeight: 600 } }, t("reviewVerdict") + ": " + vdLabel),
+								rep.details ? h("p", { className: "pm-modalText" }, rep.details) : null,
+								rep.cached ? h("p", { className: "pm-hint" }, t("reviewCached")) : null,
+								rep.scanned ? h("p", { className: "pm-hint" }, t("reviewScanned") + ": " + rep.scanned.files + " files · " + rep.scanned.sizeKB + " KB · " + rep.scanned.signals + " signals" + (rep.method ? " · " + rep.method : "") + (rep.channel ? " · " + rep.channel : "")) : null,
+								rep.diff && (rep.diff.added.length + rep.diff.removed.length + rep.diff.changed.length) > 0 ? h("ul", { className: "pm-reviewRisks" },
+									rep.diff.added.slice(0, 15).map((x) => h("li", { key: "a" + x }, t("diffAdded") + ": " + x)),
+									rep.diff.removed.slice(0, 15).map((x) => h("li", { key: "r" + x }, t("diffRemoved") + ": " + x)),
+									rep.diff.changed.slice(0, 15).map((x) => h("li", { key: "c" + x }, t("diffChanged") + ": " + x))
+								) : null
+							),
 							h("div", { className: "pm-modalRow" },
 								modal.pending
 									? [
@@ -614,19 +631,8 @@ window.__ModuleLoader__.load({
 						)
 					);
 				}
-				return h("div", { className: "pm-overlay", onClick: () => setModal(null) },
-					h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation() },
-						h("p", { className: "pm-modalTitle" }, t("repoTitle")),
-						h("input", { className: "pm-modalInput", value: modal.value ?? "", placeholder: t("sourcePlaceholder"),
-							onChange: (e) => setModal({ ...modal, value: e.target.value }),
-							onKeyDown: (e) => { if (e.key === "Enter") submitRepo(); }
-						}),
-						h("div", { className: "pm-modalRow" },
-							h("button", { className: "pm-btn", onClick: () => setModal(null) }, t("cancel")),
-							h("button", { className: "pm-btn primary", onClick: submitRepo }, t("save"))
-						)
-					)
-				);
+				// 编辑仓库功能已移除：其余未知弹窗类型不渲染
+				return null;
 			};
 
 			const entries = state.data.entries ?? [];
@@ -736,9 +742,9 @@ window.__ModuleLoader__.load({
 							h("div", { className: "pm-meta" },
 								h("span", null, t("version") + ": " + (entry.version ?? t("unknown"))),
 								h("span", null, t("phase") + ": " + phaseLabel(entry.fiberPhase)),
+								// 只展示安装来源：拉取时的远端仓库或本地路径（编辑仓库功能已移除）
 								entry.repository ? h("span", { className: "pm-repo" }, t("repo") + ": " + entry.repository) : null,
-								entry.repoOverridden ? h("span", { className: "pm-override" }, t("overrideMark")) : null,
-						entry.localInstalled ? h("span", { className: "pm-override" }, t("localInstalled")) : null
+								entry.localPath ? h("span", { className: "pm-repo pm-repoPath" }, t("localPath") + ": " + entry.localPath) : null
 							),
 							check !== undefined && check.git !== null
 								? (check.git.unknown
@@ -746,14 +752,15 @@ window.__ModuleLoader__.load({
 									: (check.git.hasUpdate
 										? h("p", { className: "pm-message", "data-error": "true" }, tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) }))
 										: h("p", { className: "pm-message", "data-ok": "true" }, t("gitUpToDate"))))
-								: null,
+								: check !== undefined && check.git === null
+									? h("p", { className: "pm-message" }, t("gitNoRepo"))
+									: null,
 							h("div", { className: "pm-btns" },
 								entry.toggleable
 									? h("button", { className: "pm-btn", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doToggle(entry, !entry.enabled); } },
 										entry.enabled ? t("off") : t("on"))
 									: null,
 								checkButton,
-								h("button", { className: "pm-btn", disabled: busy !== null || entry.localInstalled, onClick: (e) => { e.stopPropagation(); doSetRepo(entry); } }, t("editRepo")),
 								(entry.extra || entry.userBundle === true) && !entry.localInstalled
 									? h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); confirmUninstall(entry); } }, t("uninstall"))
 									: null
@@ -784,7 +791,7 @@ window.__ModuleLoader__.load({
 		}
 
 		// ── plugin entry ──────────────────────────────────────────────────────
-		const inject = ["slots", "locale"];
+		const inject = ["slots", "locale", "sessions"];
 
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "plugin-market: dictionaries");
@@ -797,6 +804,161 @@ window.__ModuleLoader__.load({
 				locale: NS,
 				inject: () => ({}),
 			}, PluginMarketTab));
+
+			// ── 侧边栏 dsh 版本状态灯（品牌名下方，DOM 注入） ────────────────
+			ctx.effect(() => {
+				if (typeof document === "undefined") return;
+				// 折叠开关按钮（唯一且中英双语文案都匹配），其父元素即 logoRow；
+				// 状态灯注入 logoRow 之后。dsh 升级若改文案，仅需在此处更新选择器。
+				const TOGGLE_SEL = 'button[aria-label="收起侧边栏"], button[aria-label="打开侧边栏"], button[aria-label="Collapse sidebar"], button[aria-label="Open sidebar"]';
+				const NORMAL_POLL_MS = 60000;
+				const FAST_POLL_MS = 1000;
+
+				let statusEl = null;
+				let observer = null;
+				let attrObserver = null;
+				let pollTimer = null;
+				let scanTimer = null;
+				let fast = false;
+				let analyzeBusy = false;
+
+				const readCurrentSessionId = () => {
+					try {
+						const list = ctx.sessions && ctx.sessions.list;
+						const snap = list && typeof list.getSnapshot === "function" ? list.getSnapshot() : null;
+						return snap && typeof snap.current === "string" ? snap.current : "";
+					} catch { return ""; }
+				};
+
+				const paint = (d) => {
+					if (!statusEl) return;
+					let state;
+					let title;
+					let text = "";
+					if (!d || d.ok === false) {
+						state = "unknown"; title = t("dshUnknown");
+					} else if (d.status === "analyzing") {
+						state = "analyzing"; title = t("dshAnalyzing"); text = d.installed ? "v" + d.installed : "";
+					} else if (d.hasUpdate === true && d.verdict === "breaking") {
+						state = "breaking"; title = tpl(t("dshBreaking"), { version: d.latest ?? "?" }); text = d.installed ? "v" + d.installed : "";
+					} else if (d.hasUpdate === true) {
+						state = "update"; title = tpl(t("dshHasUpdate"), { version: d.latest ?? "?" }); text = d.installed ? "v" + d.installed : "";
+					} else if (d.checked === false) {
+						state = "unknown"; title = t("dshUnknown"); text = d.installed ? "v" + d.installed : "";
+					} else {
+						state = "ok"; title = tpl(t("dshUpToDate"), { version: d.installed ?? "?" }); text = d.installed ? "v" + d.installed : "";
+					}
+					statusEl.dataset.state = state;
+					statusEl.title = title;
+					const ver = statusEl.querySelector(".pm-dshselfVersion");
+					if (ver) ver.textContent = text;
+				};
+
+				const startPoll = (f) => {
+					if (pollTimer !== null && fast === f) return;
+					if (pollTimer !== null) clearInterval(pollTimer);
+					fast = f;
+					pollTimer = setInterval(fetchState, f ? FAST_POLL_MS : NORMAL_POLL_MS);
+				};
+
+				const fetchState = () => {
+					fetch("/plugin-market/dsh-version", { cache: "no-store" })
+						.then((r) => r.json())
+						.then((d) => {
+							paint(d);
+							const analyzing = !!(d && d.status === "analyzing");
+							if (analyzing !== fast) startPoll(analyzing);
+						})
+						.catch(() => {});
+				};
+
+				const onClick = () => {
+					if (!statusEl || analyzeBusy) return;
+					const state = statusEl.dataset.state;
+					if (state === "update" || state === "breaking") {
+						analyzeBusy = true;
+						statusEl.dataset.state = "analyzing";
+						statusEl.title = t("dshAnalyzing");
+						startPoll(true);
+						fetch("/plugin-market/dsh-version/analyze", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ sessionId: readCurrentSessionId() }),
+						})
+							.then((r) => r.json())
+							.then((d) => {
+								if (d && typeof d.sessionId === "string" && d.sessionId !== "") {
+									ctx.sessions.refresh().then(() => ctx.sessions.open(d.sessionId)).catch(() => {});
+								} else {
+									statusEl.title = (d && typeof d.error === "string" && d.error !== "") ? d.error : t("dshAnalyzeFailed").replace("{error}", "");
+									fetchState();
+								}
+							})
+							.catch((error) => {
+								statusEl.title = tpl(t("dshAnalyzeFailed"), { error: error && error.message ? error.message : String(error) });
+								fetchState();
+							})
+							.finally(() => { analyzeBusy = false; });
+					} else {
+						// 绿/灰：手动重检
+						statusEl.title = t("dshChecking");
+						fetch("/plugin-market/dsh-version/check", { method: "POST" })
+							.then((r) => r.json())
+							.then((d) => paint(d))
+							.catch(() => fetchState());
+					}
+				};
+
+				const syncCollapsed = (toggle) => {
+					if (!statusEl) return;
+					const label = toggle.getAttribute("aria-label") ?? "";
+					statusEl.dataset.collapsed = /打开侧边栏|Open sidebar/.test(label) ? "true" : "false";
+				};
+
+				const mount = () => {
+					const toggle = document.querySelector(TOGGLE_SEL);
+					if (!toggle) return;
+					const logoRow = toggle.parentElement;
+					if (!logoRow) return;
+					if (statusEl && statusEl.isConnected) { syncCollapsed(toggle); return; }
+					statusEl = document.createElement("span");
+					statusEl.className = "pm-dshself";
+					statusEl.dataset.state = "unknown";
+					statusEl.title = t("dshUnknown");
+					const dot = document.createElement("span");
+					dot.className = "pm-dshselfDot";
+					const ver = document.createElement("span");
+					ver.className = "pm-dshselfVersion";
+					statusEl.appendChild(dot);
+					statusEl.appendChild(ver);
+					statusEl.addEventListener("click", onClick);
+					logoRow.insertAdjacentElement("afterend", statusEl);
+					syncCollapsed(toggle);
+					if (attrObserver) attrObserver.disconnect();
+					attrObserver = new MutationObserver(() => syncCollapsed(toggle));
+					attrObserver.observe(toggle, { attributes: true, attributeFilter: ["aria-label"] });
+					fetchState();
+				};
+
+				const schedule = () => {
+					if (scanTimer !== null) clearTimeout(scanTimer);
+					scanTimer = setTimeout(mount, 120);
+				};
+
+				observer = new MutationObserver(schedule);
+				observer.observe(document.body, { childList: true, subtree: true });
+				mount();
+				startPoll(false);
+
+				return () => {
+					if (observer) observer.disconnect();
+					if (attrObserver) attrObserver.disconnect();
+					if (pollTimer !== null) clearInterval(pollTimer);
+					if (scanTimer !== null) clearTimeout(scanTimer);
+					if (statusEl && statusEl.parentElement) statusEl.parentElement.removeChild(statusEl);
+					statusEl = null;
+				};
+			}, "plugin-market: dsh version light");
 		}
 
 		exports.NS = NS;
