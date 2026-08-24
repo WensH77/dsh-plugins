@@ -637,8 +637,8 @@ check("roundLabelOf review (Overall Verdict)", loaded.roundLabelOf("**Overall Ve
 check("roundLabelOf default", loaded.roundLabelOf("随便一句话", realT) === "回合");
 check("roundLabelOf empty -> empty", loaded.roundLabelOf("") === "" && loaded.roundLabelOf(void 0) === "");
 const reviseMsg = loaded.buildReviseMessage("objection text", chCtx, realT);
-check("revise message = directive + review.md path (no inline action items)", reviseMsg.includes("不认可") && reviseMsg.includes("review.md") && reviseMsg.includes("Action Items") && !reviseMsg.includes("objection text"));
-check("revise message records the review->propose transition", reviseMsg.includes("record review.completed NEEDS_REVISION") && reviseMsg.includes("record propose.completed"));
+check("review revise message is a terse verdict (main model self-executes)", reviseMsg === "审查结论：不认可");
+check("review revise message carries no step-by-step guidance", !reviseMsg.includes("review.md") && !reviseMsg.includes("Action Items") && !reviseMsg.includes("record") && !reviseMsg.includes("objection text"));
 check("stripMarkdown removes emphasis and code", loaded.stripMarkdown("**bold** and `code` and [link](http://x)") === "bold and code and link");
 check("stripMarkdown keeps paragraphs", loaded.stripMarkdown("line1\n\n\n\nline2") === "line1\n\nline2");
 const reviseMd = loaded.buildReviseMessage("**核心问题**：方案有缺陷", { ...chCtx, scene: "business" }, realT);
@@ -1107,7 +1107,7 @@ arenaStore._set({
   }
 });
 await sleep(20);
-check("reject verdict injects revision instruction into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("不认可") && c.content[0].text.includes("review.md") && !c.content[0].text.includes("fix A")));
+check("reject verdict injects terse verdict into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("审查结论") && c.content[0].text.includes("不认可") && !c.content[0].text.includes("fix A")));
 check("review phase = revise after rejection", internals.getArenaMount().challenge.phase === "revise");
 check("reject count = 1", internals.getArenaMount().challenge.rejectCount === 1);
 
@@ -1131,7 +1131,7 @@ arenaStore._set({
   running: false
 });
 await sleep(20);
-check("approval verdict injected into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("READY")));
+check("approval verdict injected into main", promptCalls.some((c) => c.sessionId === "s1" && c.content[0].text.includes("审查结论") && c.content[0].text.includes("认可")));
 check("review done after approval", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
 check("composer unlocked after approval", blockCalls[blockCalls.length - 1].block === void 0);
 check("composer stage label advances with phase", (() => {
@@ -1655,6 +1655,30 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   check("aborted persisted challenge stays terminal after reload", s6Mount !== null && s6Mount.challenge.active === false && s6Mount.challenge.phase === "aborted" && loaded.shouldShowChallengeHeader(s6Mount.challenge) === false);
   check("aborted challenge does NOT re-arm the Theseus bridge", !settingsMutateCalls.slice(mutatesBeforeS6).some((m) => m.ops?.some((o) => o.path?.[0] === "arena" && o.path?.[1] === "mainSessionId" && o.value === "s6")));
 
+  // 4b) REGRESSION (stale bridge steal — 8/24 incident): a knowledge session
+  //     whose Theseus workflow is ALREADY past review (watch.stage ∈
+  //     user-readiness-review/apply/archive/done) must NOT re-arm the Theseus
+  //     bridge on restore. The node half watches ONLY mainSessionId, so
+  //     re-arming an old concluded session steals the poll from the
+  //     actually-active knowledge session — its propose.completed is never
+  //     detected and the challenger is never engaged. The watch only counts
+  //     when the bridge is armed for THIS session (arenaWatchMainSessionId ===
+  //     sessionId): a stale done-watch from a concluded OTHER session must not
+  //     block a fresh round (covered by the S17 regression below).
+  const mutatesBeforeS6b = settingsMutateCalls.length;
+  ns.value = { ...(ns.value ?? {}), arena: { ...(ns.value?.arena ?? {}), mainSessionId: "s6b", watch: { seq: 8, stage: "done", at: Date.now() } } };
+  settingsUpdatedHandler?.("model-arena");
+  linkFor("s6b", "knowledge", "arena-2b");
+  currentSession = "s6b";
+  listSub();
+  await sleep(120);
+  check("knowledge session past review (own watch) does NOT re-arm the Theseus bridge", !settingsMutateCalls.slice(mutatesBeforeS6b).some((m) => m.ops?.some((o) => o.path?.[0] === "arena" && o.path?.[1] === "mainSessionId" && o.value === "s6b")));
+  check("knowledge session past review still restores its linkage", internals.getArenaMount() !== null && internals.getArenaMount().arenaSessionId === "arena-2b");
+  // cleanup: drop the past-review watch so the inference tests below see a
+  // pre-review (or absent) watch again.
+  ns.value = { ...(ns.value ?? {}), arena: { ...(ns.value?.arena ?? {}), watch: null } };
+  settingsUpdatedHandler?.("model-arena");
+
   // 5) REPRODUCTION: knowledge propose 阶段刷新——主模型生成中刷新页面，
   //    刷新后主模型继续生成（propose.completed），node 半段写 reviewRequest，
   //    浏览器端必须消费并推进到 review（挑战者审查）。这是用户报告的
@@ -2038,6 +2062,62 @@ const rcheck = (label, cond, detail) => {
   } finally {
     mockCtx.sessions.create = origCreate;
     snap = origSnap;
+    currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
+}
+
+// ── REGRESSION: 知识沉淀被「全局残留 done watch」拦截（8/24 根因）──
+// 场景：旧的（已归档/已完成）知识会话结束后，settings.arena.watch 残留
+// {seq, stage:"done"}（node 半段解除桥时保留的旧心跳），而 mainSessionId 已清空。
+// 旧代码把全局 latestWatch 无差别喂给 shouldReArmChallenge → 新知识会话首问
+// 触发 startChallenge 时被判 done && isReviewScene → 拒绝重武装 → 挑战永不
+// 启动：没有 header、没有竞技场会话创建、没有挑战者（业务探索不受影响——
+// isReviewScene=false 绕过该分支）。修复：watch 仅当桥武装在本会话
+// （arenaWatchMainSessionId === sessionId）时才计入。
+{
+  const ns17 = settingsNamespaces.find((n) => n.ns === "model-arena");
+  const origSnap17 = snap;
+  const origCreate17 = mockCtx.sessions.create;
+  try {
+    // 残留的全局 done watch（属于一个已结束的其它会话，桥已清空）
+    ns17.value = { ...(ns17.value ?? {}), arena: { ...(ns17.value?.arena ?? {}), mainSessionId: "", watch: { seq: 8, stage: "done", at: Date.now() } } };
+    settingsUpdatedHandler?.("model-arena");
+    snap = twoModelDir; // 两模型 → auto 派生补集
+    snapSub();
+    currentSession = "s17"; // 全新会话：无 link、无持久化 challenge
+    listSub();
+    await sleep(150);
+    // 启用竞技场（幂等：先确保关，再开）
+    const s17Toggle = heroRow.children.find((child) => child.dataset.arenaToggle !== void 0);
+    if (s17Toggle !== void 0 && s17Toggle.getAttribute("aria-pressed") === "true") click(s17Toggle);
+    click(s17Toggle);
+    listSub();
+    await sleep(150);
+    // 知识沉淀场景（默认；防御性再点一次）
+    const s17Panel = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
+    const s17SceneBtns = collectByClass(s17Panel, "ma-sceneBtn");
+    if (s17SceneBtns[1] !== void 0) click(s17SceneBtns[1]);
+    listSub();
+    await sleep(50);
+    let createCalls17 = 0;
+    mockCtx.sessions.create = async () => { createCalls17 += 1; return "arena-s17"; };
+    const s17Store = sessionStores.get("s17") ?? makeSessionStore("s17", { chat: { order: [], nodes: new Map() } });
+    // 首问落地 → 必须启动知识沉淀挑战（propose 阶段）并创建竞技场会话
+    s17Store._set({
+      chat: { order: ["kq17"], nodes: new Map([["kq17", { key: "kq17", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "沉淀知识" }] } }]]) },
+      running: true
+    });
+    await sleep(80);
+    const s17Mount = internals.getArenaMount();
+    check("REGRESSION: 知识沉淀不被全局残留 done watch 拦截——挑战启动（active/propose）", s17Mount !== null && s17Mount.challenge.active === true && s17Mount.challenge.phase === "propose", "active=" + s17Mount?.challenge?.active + " phase=" + s17Mount?.challenge?.phase + " error=" + s17Mount?.error);
+    check("REGRESSION: 知识沉淀挑战启动即创建竞技场会话", createCalls17 === 1, "createCalls=" + createCalls17);
+  } finally {
+    mockCtx.sessions.create = origCreate17;
+    snap = origSnap17;
+    ns17.value = { ...(ns17.value ?? {}), arena: { ...(ns17.value?.arena ?? {}), watch: null } };
+    settingsUpdatedHandler?.("model-arena");
     currentSession = "s1";
     listSub();
     await sleep(80);

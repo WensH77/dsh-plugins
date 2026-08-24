@@ -168,6 +168,18 @@ function apply(ctx) {
       }
     };
 
+    // Theseus workflow stages that are PAST `review`: once the watched workflow
+    // reaches any of these the review loop has concluded and the challenger must
+    // stay dormant. The node half watches ONLY `arena.mainSessionId`, so a stale
+    // id whose workflow is `done` would keep occupying the poll forever and
+    // swallow reviewRequest detection for a NEWER knowledge session (the 8/24
+    // incident: the bridge was stuck on an old archived session while the active
+    // workflow sat at `review` with nobody watching). The node half therefore
+    // disarms the bridge (clears `mainSessionId`) once the watched workflow
+    // moves past review — after writing the watch heartbeat so a reload still
+    // sees the past-review stage and the browser blocks re-arming.
+    const PAST_REVIEW_STAGES = new Set(['user-readiness-review', 'apply', 'archive', 'done']);
+
     let pollTimer = null;
     let watchedSessionId = null;
     let lastSeq = -1;
@@ -250,12 +262,26 @@ function apply(ctx) {
         // can tell "Theseus still advancing" from "genuinely stuck" (rather than
         // guessing from the main session's idle time). Merge preserves the other
         // arena fields (reviewRequest/returnToPropose) between updates.
+        const watch = { seq, stage, at: Date.now() };
         if (seq !== lastWatchSeq || stage !== lastWatchStage) {
           lastWatchSeq = seq;
           lastWatchStage = stage;
           await scope?.update?.({
-            arena: { ...arena, watch: { seq, stage, at: Date.now() } }
+            arena: { ...arena, watch }
           });
+        }
+        // Workflow already PAST review (user-readiness-review / apply / archive /
+        // done): the review loop concluded — the challenger stays dormant and the
+        // bridge must not keep occupying `mainSessionId`. Disarm it here (watch
+        // is written above first, so a reload still blocks re-arming via the
+        // browser's isPastReviewStage guard). Idempotent: after the first disarm
+        // the poll stops (syncPoll sees the empty mainSessionId); a re-arm that
+        // races in afterwards is disarmed again on the next tick.
+        if (PAST_REVIEW_STAGES.has(stage)) {
+          await scope?.update?.({
+            arena: { ...arena, watch, mainSessionId: '', reviewRequest: null }
+          });
+          return;
         }
         if (stage !== 'review' || seq <= lastSeq) return;
         const last = history[seq - 1];
