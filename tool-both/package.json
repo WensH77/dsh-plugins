@@ -12,7 +12,8 @@
   "files": [
     "lib",
     "preset",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "node test/smoke.mjs"

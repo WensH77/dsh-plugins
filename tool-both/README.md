@@ -95,3 +95,7 @@ node tool-both/test/smoke.mjs    # 导出 / 预设安装 / 幂等 / 不覆盖手
 - **预设是快照**：`preset/both/agent.cordis.yml` 基于安装时 dsh 自带的 `standard` 预设复制（标准全部组成 + presentation 行）。dsh 后续版本给标准预设加新行时，需要重新生成本包的预设（重新 `cp` standard 并追加 presentation 行）。手改过 `~/.dsh/.agent-presets/both/*` 的部署不会被插件覆盖（安装幂等跳过已存在文件）。
 - **需要 code runtime**：`both` 与 `code` 一样依赖 host 的 code runtime；没有 runtime 的部署会在挂载时失败（报出 `tool-presentation` 行）。dsh web 自带 runtime，普通使用无感。
 - **呈现行不能放 host 层**：`presentAs` 需要 agent 作用域，`./presentation` 行只适用于 agent preset 组成。
+
+## 变更日志
+
+历次改动见 [CHANGELOG.md](./CHANGELOG.md)。
