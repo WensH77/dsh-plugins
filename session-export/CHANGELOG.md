@@ -2,6 +2,12 @@
 
 本文件记录 `dsh-plugin-session-export` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.1.2
+
+- 修复 header 导出按钮显示整段 SVG 源码文本：图标 SVG 字符串被当作 React children 传入，React 会把字符串渲染成纯文本（需要 `dangerouslySetInnerHTML`）；改为经 `dangerouslySetInnerHTML` 注入真实 `<svg>` 元素
+- 用真实 React（react-dom/server）渲染组件验证：修复前按钮内是转义文本 `&lt;svg`，修复后为真实 `<svg>` 元素
+- client-smoke 新增按钮图标接线回归测试（mini createElement 结构断言：图标必须走 dangerouslySetInnerHTML、按钮无字符串 SVG 子节点）
+
 ## 0.1.1
 
 - 修复导出长图出现「未渲染的 SVG 文本」：Markdown 渲染器在**列表项**与**表格单元格**路径漏了 HTML 转义，消息里的 `` `<backup>` `` / `` `<cwd>` `` 之类文本以裸 `<` 进入 XHTML，破坏 SVG `foreignObject` 的 XML，导致分段图片加载失败/错乱

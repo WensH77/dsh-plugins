@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-session-export",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "dsh web 对话页扩展：在会话标题栏提供「导出长图」按钮，把当前会话从第一条到最新一条的对话导出为长图 PNG——只保留用户输入与模型输出，自动剔除思考（Think / reasoning）与工具调用等过程内容。",
   "type": "module",
   "main": "lib/index.js",

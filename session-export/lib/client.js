@@ -649,6 +649,10 @@ window.__ModuleLoader__.load({
 				}
 			};
 			const label = t(busy ? 'exporting' : 'export');
+			// React renders string children as TEXT — the SVG glyph must go
+			// through dangerouslySetInnerHTML or the header shows the raw SVG
+			// markup instead of the icon.
+			const icon = h('span', { 'aria-hidden': 'true', dangerouslySetInnerHTML: { __html: busy ? ICON_LOADING : ICON_EXPORT } });
 			return h('span', { className: 'dse-wrap' },
 				h('button', {
 					type: 'button',
@@ -657,7 +661,7 @@ window.__ModuleLoader__.load({
 					title: label,
 					disabled: busy,
 					onClick: run
-				}, busy ? ICON_LOADING : ICON_EXPORT),
+				}, icon),
 				note === null ? null : h('span', { className: 'dse-note ' + (note.ok ? 'ok' : 'err'), role: 'status' }, note.text)
 			);
 		}

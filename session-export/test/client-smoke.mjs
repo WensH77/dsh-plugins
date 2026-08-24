@@ -8,6 +8,16 @@ import vm from 'node:vm';
 
 const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
 let loaded = null;
+// Mini createElement that faithfully reproduces React's children semantics
+// (props.children, string children vs dangerouslySetInnerHTML) so the button
+// icon wiring can be asserted structurally without a real React runtime.
+function miniCreateElement(type, props, ...children) {
+  return {
+    type,
+    props: props === null || props === undefined ? {} : props,
+    children: children.length <= 1 ? (children[0] ?? null) : children
+  };
+}
 const sandbox = {
   window: {},
   document: {
@@ -20,7 +30,7 @@ const sandbox = {
   encodeURIComponent,
   fetch: async () => ({ json: async () => ({ ok: true }) }),
   react: {
-    createElement: () => ({}),
+    createElement: miniCreateElement,
     useState: (v) => [v, () => {}],
     useEffect: () => {},
     useRef: () => ({ current: null }),
@@ -124,6 +134,29 @@ console.log('message markup:');
   check('role + time', userHtml.includes('你 · <span class="dse-time">') && /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(userHtml), userHtml);
   const asmHtml = loaded.buildMessageHtml({ role: 'assistant', text: '回答', time: 1700000000000, imageCount: 0 }, labels);
   check('assistant body', asmHtml.includes('class="dse-msg dse-assistant"') && asmHtml.includes('class="dse-body"') && !asmHtml.includes('dse-bubble'), asmHtml);
+}
+
+// ── header button icon wiring ───────────────────────────────────────────────
+// Regression: React renders string children as TEXT — the SVG glyph must be
+// injected via dangerouslySetInnerHTML, or the header shows the raw SVG markup
+// instead of an icon (reported as "header 处只能看见 svg").
+console.log('header button:');
+{
+  const element = loaded.ExportAction({ sessionId: 's1', t: (k) => 'L:' + k });
+  const found = [];
+  const walk = (node) => {
+    if (node === null || node === undefined || typeof node !== 'object') return;
+    found.push(node);
+    if (Array.isArray(node.children)) node.children.forEach(walk);
+    else walk(node.children);
+  };
+  walk(element);
+  const button = found.find((n) => n.type === 'button');
+  const iconSpan = found.find((n) => n.type === 'span' && n.props && typeof n.props.dangerouslySetInnerHTML === 'object');
+  check('button rendered', button !== undefined);
+  check('icon injected via dangerouslySetInnerHTML (not string child)', iconSpan !== undefined && typeof iconSpan.props.dangerouslySetInnerHTML.__html === 'string' && iconSpan.props.dangerouslySetInnerHTML.__html.includes('<svg'), JSON.stringify(iconSpan?.props));
+  const buttonChildren = Array.isArray(button?.children) ? button.children : [button?.children];
+  check('button has no raw string svg child', buttonChildren.every((c) => typeof c !== 'string' || !c.includes('<svg')), JSON.stringify(buttonChildren.map((c) => typeof c)));
 }
 
 // ── segment packing ─────────────────────────────────────────────────────────
