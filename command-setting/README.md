@@ -103,3 +103,7 @@ command-setting:
 node command-setting/test/smoke.mjs          # node 端：catalog/隐藏过滤/作用域
 node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐
 ```
+
+## 变更日志
+
+历次改动见 [CHANGELOG.md](./CHANGELOG.md)。
