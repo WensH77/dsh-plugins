@@ -147,3 +147,7 @@ node chat-rollback/test/client-emit.mjs            # 浏览器端：回滚预填
 - fork 继承：session/created 判据（parentSession 且无 origin/delegationDepth）命中 fork 子会话；子代理（origin:"subagent"）与回滚子会话（无 parentSession）均不触发；回调 async 化，同步抛错不污染会话 attach
 - 源 agent 取消：仅 running 时调用 agent.cancel（keepInbox），失败仅告警
 - 恢复失败路径：codeRollback.restored:false 时源会话不归档、快照保留可重试；子会话已创建，对话回滚仍生效
+
+## 变更日志
+
+历次改动见 [CHANGELOG.md](./CHANGELOG.md)。
