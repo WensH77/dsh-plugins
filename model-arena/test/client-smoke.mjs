@@ -150,7 +150,10 @@ arenaTitle.textContent = "竞技场";
 arenaRow.appendChild(arenaTitle);
 const normalRow = new FakeElement("div");
 normalRow.className = "YDXeBa_sessionRow";
-normalRow.textContent = "普通会话";
+const normalTitle = new FakeElement("span");
+normalTitle.className = "YDXeBa_title";
+normalTitle.textContent = "普通会话";
+normalRow.appendChild(normalTitle);
 bodyRoot.appendChild(arenaRow);
 bodyRoot.appendChild(normalRow);
 bodyRoot.appendChild(scrollBody);
@@ -399,6 +402,14 @@ let settingsNamespaces = [];
 let settingsUpdatedHandler = null;
 let listSub = null;
 let currentSession = "s1";
+// sessions-list byId summary mock (displayTitle is used to locate the arena
+// main session's sidebar row by title)
+const byIdMock = {
+  s1: {
+    cwd: "/ws1",
+    projectionValues: { permissions: { currentValue: "workspace-write" } }
+  }
+};
 const makeSessionStore = (id, initial) => {
   const store = {
     snapshot: initial,
@@ -540,12 +551,7 @@ const mockCtx = {
     list: {
       getSnapshot: () => ({
         current: currentSession,
-        byId: {
-          s1: {
-            cwd: "/ws1",
-            projectionValues: { permissions: { currentValue: "workspace-write" } }
-          }
-        }
+        byId: byIdMock
       }),
       subscribe: (fn) => {
         listSub = fn;
@@ -1746,9 +1752,13 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   check("header has no challenger spinner (removed)", findInVNode(headerEntry.component({ sessionId: "s5" }), (n) => n.props?.["data-challenge-spinner"] !== void 0) === null);
   arena3Store._set({ chat: arena3Store.snapshot.chat, running: false });
 
-  // 10) challenger loading dot in the SIDEBAR session row: the selected (main)
-  //     session row shows the loading dot while a challenger round is active AND
-  //     the arena session is running — like the main model's own running dot.
+  // 10) challenger loading dot in the SIDEBAR session row: the ARENA MAIN
+  //     session's row shows the loading dot while a challenger round is active
+  //     AND its arena session is running — like the main model's own running
+  //     dot. The dot is located on the main session's row via the sessions-list
+  //     displayTitle (falling back to the selected row) and STAYS there even
+  //     when that session is not the current selection — a challenger running
+  //     via the background advance keeps its indicator visible on switch-away.
   //     Mark the normal row as the selected/current row (the real workspace
   //     browser marks the current session with YDXeBa_selected). Use a FRESH
   //     review-phase session (s5 above ended aborted by the watchdog's
@@ -1756,6 +1766,8 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   normalRow.className = "YDXeBa_sessionRow YDXeBa_selected";
   linkFor("s11", "knowledge", "arena-8");
   persistFor("s11", baseChallenge({ phase: "review", scene: "knowledge", arenaAnchor: "", lastReviewSeq: 1 }));
+  // 让 sessions-list 的 displayTitle 与 normalRow 的标题 span 一致，验证按标题定位主会话行
+  byIdMock.s11 = { displayTitle: "普通会话" };
   currentSession = "s11";
   listSub();
   await sleep(120);
@@ -1768,24 +1780,22 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   listSub();
   await sleep(60);
   check("sidebar: challenger idle → no loading dot", !sidebarDotIn(normalRow));
-  // challenger running → sidebar loading dot appears on the selected row
+  // challenger running → sidebar loading dot appears on the main session's row
   // (keep running — dropping it without a reply would abort the round)
   arena8Store._set({ chat: arena8Store.snapshot.chat, running: true });
   await sleep(60);
   check("sidebar: challenger running → loading dot on the main row", sidebarDotIn(normalRow));
-  // switch-away orphan cleanup: the dot only marks the CURRENT session's
-  // challenger, so once the row loses selection it must be removed — it must
-  // not linger on the row while the background advance later moves the duel to
-  // the main model's turn.
+  // switch-away: the main session is no longer the current one, but the dot
+  // STAYS on its row — the challenger is still running (background advance)
   normalRow.className = "YDXeBa_sessionRow";
   listSub();
   await sleep(60);
-  check("sidebar: dot removed from the deselected row (orphan cleanup)", !sidebarDotIn(normalRow));
-  // re-select the row while the challenger is still running → the dot returns
+  check("sidebar: dot stays on the main row when deselected (background challenger running)", sidebarDotIn(normalRow));
+  // re-select the row while the challenger is still running → the dot remains
   normalRow.className = "YDXeBa_sessionRow YDXeBa_selected";
   listSub();
   await sleep(60);
-  check("sidebar: dot restored when the row is reselected", sidebarDotIn(normalRow));
+  check("sidebar: dot remains when the row is reselected", sidebarDotIn(normalRow));
   // challenger replies (NEEDS_REVISION) → the round advances to revise and the
   // dot is removed (main-model phase — the platform's own dot covers it)
   arena8Store._set({
@@ -1798,6 +1808,7 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   await sleep(60);
   check("sidebar: challenger replied → dot removed (revise phase)", !sidebarDotIn(normalRow) && internals.getArenaMount().challenge.phase === "revise", "phase=" + internals.getArenaMount()?.challenge?.phase);
   normalRow.className = "YDXeBa_sessionRow";
+  delete byIdMock.s11;
 
   // 11) background advance (opt-in via settings.backgroundAdvance, default OFF):
   //     a duel whose MAIN session is not the current one advances from its

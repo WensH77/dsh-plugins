@@ -4349,55 +4349,80 @@ window.__ModuleLoader__.load({
 				// Challenger loading indicator in the SIDEBAR: the main session's own
 				// row shows the platform's running dot while the main model generates,
 				// but nothing while the CHALLENGER (arena model) is working — the main
-				// session is idle then. Inject a small rotating dot into the selected
-				// (main) session row's status slot while a challenger round is active
-				// AND the arena session is running, and remove it otherwise. The
-				// selected row is the main session's row because the selection guard
-				// bounces any switch into the competitor session back (and the arena
-				// runtime only mounts for the current session). Idempotent + marked so
-				// repaint never re-touches the row (MutationObserver feedback guard).
+				// session is idle then. Inject a small rotating dot into the ARENA
+				// MAIN session's row's status slot while a challenger round is active
+				// AND its arena session is running, and remove it otherwise. The main
+				// row is located by matching the sessions-list displayTitle (falling
+				// back to the currently-selected row), and the dot STAYS there even
+				// when that session is not the current one — a challenger running via
+				// the background advance keeps its indicator visible on switch-away
+				// instead of vanishing. Idempotent + marked so repaint never
+				// re-touches the row (MutationObserver feedback guard).
 				const syncChallengerLoading = () => {
 					try {
-						const arenaRunning = (() => {
+						// Any linked arena challenger currently running — covers the
+						// current session (live arenaMount challenge) and background
+						// duels (persisted baseline + live arena snapshot) alike.
+						const anyChallengerRunning = (() => {
 							try {
-								const arenaId = arenaMount === null ? void 0 : arenaMount.arenaSessionId;
-								return arenaId !== void 0 && ctx.sessions.binding(arenaId)?.session?.getSnapshot?.()?.running === true;
-							} catch {
-								return false;
-							}
+								const current = currentSessionId();
+								for (const mainId of Object.keys(linksCache)) {
+									const link = linksCache[mainId];
+									if (link === null || typeof link !== "object" || typeof link.sessionId !== "string") continue;
+									// 当前会话用 arenaMount 的实时挑战状态（比持久化基线更新），
+									// 其余会话用持久化基线 challengesCache
+									const challenge = (mainId === current && arenaMount !== null && arenaMount.sessionId === mainId)
+										? arenaMount.challenge
+										: challengesCache[mainId];
+									if (challenge === null || typeof challenge !== "object" || challenge.active !== true) continue;
+									if (!isChallengerPhase(challenge.phase)) continue;
+									const snap = ctx.sessions.binding(link.sessionId)?.session?.getSnapshot?.();
+									if (snap?.running === true) return true;
+								}
+							} catch {}
+							return false;
 						})();
-						const show = arenaMount !== null
-							&& arenaMount.challenge.active === true
-							&& isChallengerPhase(arenaMount.challenge.phase)
-							&& arenaRunning;
+						// 竞技场主会话的侧边栏行：按 sessions-list 的 displayTitle 匹配标题
+						// span（与 hideArenaSessionRows 识别竞技场行同一模式）。
+						const mainRow = (() => {
+							try {
+								const list = ctx.sessions.list.getSnapshot?.();
+								for (const mainId of Object.keys(linksCache)) {
+									const summary = list?.byId?.[mainId];
+									const title = typeof summary?.displayTitle === "string" ? summary.displayTitle.trim() : "";
+									if (title === "") continue;
+									for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
+										if (!(el instanceof HTMLElement)) continue;
+										const titleEl = el.querySelector?.(ANCHORS.sidebarTitle);
+										if (titleEl instanceof HTMLElement && (titleEl.textContent || "").trim() === title) return el;
+									}
+								}
+							} catch {}
+							return null;
+						})();
+						const selectedRow = (() => {
+							for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
+								if (el instanceof HTMLElement && typeof el.className === "string" && el.className.split(/\s+/).includes(ANCHORS.sidebarSelected)) return el;
+							}
+							return null;
+						})();
+						// 注入目标：优先竞技场主会话行（未选中也显示），找不到再回退当前选中行
+						const targetRow = mainRow !== null ? mainRow : selectedRow;
 						for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
 							if (!(el instanceof HTMLElement)) continue;
-							// className split match (not classList) keeps this working
-							// against both the real DOM and the smoke-test element stub.
-							const isSelected = typeof el.className === "string" && el.className.split(/\s+/).includes(ANCHORS.sidebarSelected);
 							const dot = el.querySelector(".ma-sidebarLoading");
-							if (isSelected) {
-								if (show) {
-									if (dot === null) {
-										const slot = el.querySelector(ANCHORS.sidebarSlot) ?? el;
-										const spinner = document.createElement("span");
-										spinner.className = "ma-sidebarLoading";
-										spinner.dataset.arenaSidebarLoading = "";
-										spinner.setAttribute("role", "status");
-										spinner.setAttribute("aria-label", t("challenge.loading"));
-										slot.appendChild(spinner);
-										el.dataset.arenaLoading = "";
-									}
-								} else if (dot !== null) {
-									dot.remove();
-									delete el.dataset.arenaLoading;
+							if (anyChallengerRunning && el === targetRow) {
+								if (dot === null) {
+									const slot = el.querySelector(ANCHORS.sidebarSlot) ?? el;
+									const spinner = document.createElement("span");
+									spinner.className = "ma-sidebarLoading";
+									spinner.dataset.arenaSidebarLoading = "";
+									spinner.setAttribute("role", "status");
+									spinner.setAttribute("aria-label", t("challenge.loading"));
+									slot.appendChild(spinner);
+									el.dataset.arenaLoading = "";
 								}
 							} else if (dot !== null) {
-								// A dot left on a NON-selected row is stale: it marks
-								// the CURRENT session's challenger, so once the row
-								// loses selection (switched away) it must go — even
-								// when the challenger's turn later completes via the
-								// background advance while the user is away.
 								dot.remove();
 								delete el.dataset.arenaLoading;
 							}
