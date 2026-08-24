@@ -677,12 +677,13 @@ window.__ModuleLoader__.load({
 				.trim();
 		};
 		// The challenger's feedback injected into the MAIN conversation as a plain
-		// user message. Review mode: the main model revises per the action items;
+		// user message. Review mode: a terse verdict — the main model's role seed
+		// already instructs it to map 不认可/认可 to the Theseus review step and
+		// self-execute (return to propose, read review.md's Action Items, re-submit);
 		// challenge mode: the raw objection (the revise rule lives in the system prompt).
 		const buildReviseMessage = (arenaText, challenge, _t) => {
 			if (isReviewScene(challenge)) {
-				const reviewPath = typeof challenge?.reviewPath === "string" && challenge.reviewPath !== "" ? challenge.reviewPath : "（未提供）";
-				return "挑战者审查结论：不认可，需修正。请先 record review.completed NEEDS_REVISION（回到 propose），再读 review.md（" + reviewPath + "）的 Action Items 修改方案文件，最后 record propose.completed 重新送审。";
+				return "审查结论：不认可";
 			}
 			return stripMarkdown(arenaText ?? "");
 		};
@@ -711,7 +712,7 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			if (scene.review === true) {
-				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你只负责 explore 和 propose 两个阶段。propose 阶段完成（record propose.completed）后本轮必须立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正，也不要主动向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你只能被动等待审查结论；收到结论后按注入指令继续（NEEDS_REVISION → 回 propose 修正重新送审；READY → record review.completed 并按 Theseus 继续后续阶段）。禁止辩论，请用中文回答。\n\n启动workflow，进行知识沉淀。", { mainRole });
+				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你负责 explore 和 propose 两个阶段，方案的 review 由模型竞技场的挑战者会话独立执行。**每个阶段完成时都必须停下来向用户汇报并询问是否继续，绝对禁止不询问用户就自动推进**：\n1. explore 完成（exploration.md 就绪）后：先向用户汇报探索结论，询问是否确认探索结果并进入 propose；在用户明确同意之前，绝对禁止 record explore.completed、绝对禁止开始 propose。\n2. propose 完成（proposal/design/tasks/metadata-plan 就绪）后：先向用户汇报方案要点，询问是否记录 propose.completed 并提交挑战者审查；在用户明确同意之前，绝对禁止 record propose.completed、绝对禁止提交审查。\n3. 收到挑战者审查结论后：NEEDS_REVISION → 先读取 review.md 中的 Action Items，向用户汇报审查意见，询问是否按意见修正；用户确认后再修正，修正完成重新按第 2 条询问后再送审。READY → 先向用户汇报审查结论，询问是否继续后续阶段；用户确认后再 record review.completed READY 并按 Theseus 继续。\n4. 后续 readiness / apply / archive 每个阶段同样先询问用户，得到明确确认后才 record 该阶段完成并推进。\n5. 在用户明确确认之前，绝对禁止 record 任何 stage 完成事件，绝对禁止 auto-advance 到下一阶段。\n6. 只有在你已 record propose.completed（用户已确认）之后，本轮才立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正——方案的 review 由挑战者会话独立执行，你只能被动等待审查结论。\n禁止辩论，请用中文回答。\n\n启动workflow，进行知识沉淀。", { mainRole });
 			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
@@ -2602,7 +2603,38 @@ window.__ModuleLoader__.load({
 						try { detectChallengeTurn(); } catch {}
 						return Promise.resolve(state.arena.sessionId);
 					}
-					state.arenaCreatePromise = createArenaSession(sessionId, state, null).then((arenaId) => {
+					// Bounded retry for the challenger-session create. A transient
+					// failure here used to leave the challenge with NO arena session at
+					// all: no link, no bridge arming (the `mainSessionId` arming lives
+					// in the create's success path), so even though the main model ran
+					// explore→propose and the workflow reached `review`, no
+					// reviewRequest was ever written and the challenger was never
+					// engaged (the 8/24 incident). Retries are safe: createArenaSession
+					// only rejects BEFORE the session exists — every post-create step
+					// (selectModel/rename/open/permission) is best-effort inside it — so
+					// a retry can never orphan a session. Each attempt is time-boxed so
+					// a create RPC that hangs (never resolves/rejects) also surfaces as
+					// an observable failure instead of leaving the challenge silently
+					// waiting for a reviewRequest that can never arrive.
+					const createWithTimeout = (attempt) => {
+						let timer = null;
+						const attemptPromise = createArenaSession(sessionId, state, null)
+							.finally(() => { if (timer !== null) clearTimeout(timer); });
+						const timeout = new Promise((_, reject) => {
+							timer = setTimeout(() => reject(new Error("createArenaSession attempt " + (attempt + 1) + " timed out after 12s")), 12000);
+						});
+						return Promise.race([attemptPromise, timeout]);
+					};
+					const createWithRetry = async (attempt) => {
+						try {
+							return await createWithTimeout(attempt);
+						} catch (error) {
+							if (attempt >= 2) throw error; // 3 attempts total, then surface
+							await new Promise((r) => setTimeout(r, 1500));
+							return createWithRetry(attempt + 1);
+						}
+					};
+					state.arenaCreatePromise = createWithRetry().then((arenaId) => {
 						state.arenaCreatePromise = void 0;
 						// Record the id FIRST (independent of arenaMount): a
 						// switch-away that lands between create and mount can never
@@ -2664,6 +2696,20 @@ window.__ModuleLoader__.load({
 						return arenaId;
 					}).catch((error) => {
 						state.arenaCreatePromise = void 0;
+						// Diagnostic (8/24 incidents): persist the create failure to
+						// settings.arena.lastError so the root cause is inspectable from
+						// settings.yaml instead of living only in the browser's arena
+						// tab. Persisted BEFORE the mount guard so a switch-away
+						// mid-create still leaves the trail. Harmless when apiSettings
+						// is unavailable.
+						try {
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [{ op: "set", path: ["arena", "lastError"], value: { at: Date.now(), sessionId, error: String(error?.message ?? error) } }]
+							}).catch(() => {});
+						} catch (_diagnosticsFailure) {
+							// best effort
+						}
 						if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
 						arenaMount.error = String(error?.message ?? error);
 						arenaMount.failedText = typeof c.userQuestion === "string" ? c.userQuestion : "";
@@ -2951,7 +2997,7 @@ window.__ModuleLoader__.load({
 							} else {
 								c.stallSince = 0;
 							}
-							const proposeDone = latestWatch !== null && latestWatch.stage === "review";
+							const proposeDone = arenaWatchMainSessionId === mainId && latestWatch !== null && latestWatch.stage === "review";
 							if (idle && !hasNewNode && c.mainWasRunning && !proposeDone) {
 								abortChallenge();
 								return;
@@ -3007,7 +3053,7 @@ window.__ModuleLoader__.load({
 									// READY 并按 Theseus workflow 继续后续阶段，本插件放手。
 									c.phase = "done";
 									c.active = false;
-									const readyNote = "挑战者审查结论：READY（认可）。请 record review.completed READY 并按 Theseus workflow 继续后续阶段（user-readiness-review → apply → archive）。";
+									const readyNote = "审查结论：认可";
 									promptSession(mainId, readyNote);
 									c.lastInjectedText = readyNote;
 									stopArenaWatch();
@@ -3103,7 +3149,15 @@ window.__ModuleLoader__.load({
 								// messages are user nodes too but arrive after the round began.
 								// The review scene is one-shot: once done, do NOT re-arm (the
 								// challenger stays dormant — see shouldReArmChallenge).
-								if (shouldReArmChallenge(arenaMount.challenge, linksCache[sessionId], latestWatch)) {
+								// The `watch` is GLOBAL (settings.arena.watch — the node half's
+								// heartbeat for whatever session mainSessionId points at); it
+								// only counts for THIS session when the bridge is armed for it.
+								// A stale done-watch from a CONCLUDED other session must never
+								// block a fresh knowledge round (the 8/24 incidents: knowledge
+								// startChallenge never fired → no arena session → no header →
+								// challenger never engaged, while business was unaffected).
+								const sessionWatch = arenaWatchMainSessionId === sessionId ? latestWatch : null;
+								if (shouldReArmChallenge(arenaMount.challenge, linksCache[sessionId], sessionWatch)) {
 									startChallenge(sessionId, state, text);
 								}
 							}
@@ -3457,7 +3511,7 @@ window.__ModuleLoader__.load({
 									if (verdict === "READY") {
 										c.phase = "done";
 										c.active = false;
-										const readyNote = "挑战者审查结论：READY（认可）。请 record review.completed READY 并按 Theseus workflow 继续后续阶段（user-readiness-review → apply → archive）。";
+										const readyNote = "审查结论：认可";
 										promptSession(sessionId, readyNote);
 										c.lastInjectedText = readyNote;
 										markReviewDone(sessionId);
@@ -3649,9 +3703,12 @@ window.__ModuleLoader__.load({
 				const inferRestoredChallenge = (sessionId, state) => {
 					const link = linksCache[sessionId];
 					if (link === void 0 || typeof link.sessionId !== "string" || link.sessionId === "") return null;
-					// done signals block inference
+					// done signals block inference. The watch is global and only
+					// counts for THIS session when the bridge is armed for it (a
+					// stale done-watch from a concluded other session must not block
+					// inferring this session's mid-flight round).
 					if (link.done === true) return null;
-					if (latestWatch !== null && isPastReviewStage(latestWatch.stage)) return null;
+					if (arenaWatchMainSessionId === sessionId && latestWatch !== null && isPastReviewStage(latestWatch.stage)) return null;
 					const snap = (() => {
 						try {
 							return ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
@@ -3738,8 +3795,21 @@ window.__ModuleLoader__.load({
 						// re-arming the challenger once the loop has already ended.
 						// A persisted terminal challenge (done/aborted) must NOT re-arm
 						// — otherwise an aborted review loop resurrects after reload.
+						// A session whose Theseus workflow is ALREADY past review
+						// (watch.stage ∈ user-readiness-review/apply/archive/done)
+						// must NOT re-arm either: the node half watches ONLY
+						// mainSessionId, so re-arming an old concluded session would
+						// steal the poll from the actually-active knowledge session
+						// (its propose.completed would never be detected → the
+						// challenger is never engaged). The node half itself disarms
+						// on past-review and writes the watch heartbeat, so the
+						// guard here closes the loop on reload. The watch only counts
+						// when the bridge is armed for THIS session — a stale
+						// done-watch from another concluded session must not block
+						// re-arming this session's live knowledge round.
 						if (state.scene === "knowledge" && link.done !== true
 							&& !isTerminalPhase(challengesCache[sessionId]?.phase)
+							&& !(arenaWatchMainSessionId === sessionId && latestWatch !== null && isPastReviewStage(latestWatch.stage))
 							&& typeof link.sessionId === "string" && link.sessionId !== "") {
 							apiSettings()?.mutate?.({
 								ns: "model-arena",
