@@ -1,0 +1,12 @@
+# Changelog
+
+本文件记录 `dsh-plugin-session-export` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
+
+## 0.1.0
+
+- 会话导出为长图：会话标题栏新增「导出长图」按钮（`conversation.session.header.actions` 槽位）
+- 导出内容 = 用户输入 + 模型输出，从对话最开始到结束：只取 append 视图的 `user/message`（`source.kind === 'user'`）与 `assistant/message` 的 `text` 块，自动剔除思考（reasoning / Think）与工具调用（tool-call）并计数提示
+- node 半段 `GET /session-export/data`：事件日志 → 导出转录 + 标题（`session/title` 优先，回退首条用户消息首行）+ 跳过计数 + 渲染配置
+- 浏览器半段：无第三方依赖的 GFM 子集 Markdown → XHTML 渲染器（标题/加粗/斜体/删除线/行内与围栏代码/嵌套与任务列表/引用/表格/分隔线/链接），主题取色 + 分消息测高 + 分段打包，SVG `foreignObject` 栅格化到 canvas 并拼接为长图 PNG 下载
+- 长会话按 `partHeight` 拆分为多张下载；单条超高消息降 1x 渲染防 canvas 超限；`maxMessages` 防御上限带 `truncated` 标记
+- 新增 node / client 两侧 smoke 测试
