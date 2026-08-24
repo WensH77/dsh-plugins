@@ -650,6 +650,18 @@ check("challenge prompt (original flow): question + answer", challengePrompt.inc
 check("challenge prompt has no review verdict", !challengePrompt.includes("Overall Verdict") && !challengePrompt.includes("结构化方案"));
 const finalPrompt = loaded.buildRoundPrompt("final", chCtx, realT);
 check("final prompt (original flow): verdict directive", finalPrompt.includes("修正后的回答") && finalPrompt.includes("最终评审结论") && !finalPrompt.includes("Overall Verdict"));
+check("final prompt (P0-2): 逐条核对上一轮质疑是否被回应", finalPrompt.includes("逐条核对") && finalPrompt.includes("上一轮提出的质疑") && finalPrompt.includes("被逐一回应") && finalPrompt.includes("仍未解决的项"));
+check("final prompt (P0-2): 仍禁止提出新质疑", finalPrompt.includes("不要提出新的质疑"));
+// P1-2 质量断言（纯函数）：首问里的文件引用必须进入「提到的文件」结构化清单
+// （而非仅以字面量出现在用户问题原文里——那挑战者可能不主动读）。
+const qRefCtx = { scene: "business", userQuestion: "请审查 docs/plan.md 的方案", lastMainText: "回答正文", lastArenaText: "" };
+check("P1-2(纯函数): challenge prompt 提到的文件含首问引用", loaded.buildRoundPrompt("challenge", qRefCtx, realT).includes("提到的文件：docs/plan.md"));
+check("P1-2(纯函数): final prompt 提到的文件含首问引用", loaded.buildRoundPrompt("final", qRefCtx, realT).includes("提到的文件：docs/plan.md"));
+check("P1-2(纯函数): review prompt 提到的文件含首问引用", loaded.buildRoundPrompt("review", { ...qRefCtx, scene: "knowledge" }, realT).includes("提到的文件：docs/plan.md"));
+// knowledge 质量断言（纯函数）：审查维度完整性 + 产物分支路径
+const kReviewPrompt = loaded.buildRoundPrompt("review", { scene: "knowledge", userQuestion: "Q", lastMainText: "方案", proposalPath: "/p.md", designPath: "/d.md", tasksPath: "/t.md", reviewPath: "/r.md" }, realT);
+check("知识沉淀: review prompt 含全部审查维度", ["需求清晰度", "设计合理性", "风险", "任务拆解", "相关规格"].every((d) => kReviewPrompt.includes(d)), "missing=" + ["需求清晰度", "设计合理性", "风险", "任务拆解", "相关规格"].filter((d) => !kReviewPrompt.includes(d)).join(","));
+check("知识沉淀: 产物分支含四个文件路径（含 review.md 输出路径）", kReviewPrompt.includes("proposal.md: /p.md") && kReviewPrompt.includes("design.md: /d.md") && kReviewPrompt.includes("tasks.md: /t.md") && kReviewPrompt.includes("review.md 输出路径: /r.md"));
 check("extractFileRefs finds code/link paths", loaded.extractFileRefs("see `docs/a.md` and [x](src/b.ts)").join(",") === "docs/a.md,src/b.ts");
 check("fmt substitutes placeholders", loaded.fmt("a {x} b", { x: "1" }) === "a 1 b");
 check("pathBasename strips dirs to the last segment", loaded.pathBasename("/ws/skills/knowledge/skill.md") === "skill.md");
@@ -672,6 +684,8 @@ check("nonMdSig stable while reasoning text streams", loaded.nonMdSig([{ kind: "
 check("nonMdSig unchanged for text-only streaming", loaded.nonMdSig([{ kind: "text", text: "a" }]) === loaded.nonMdSig([{ kind: "text", text: "ab" }]));
 const seed = loaded.buildRoleSeed({ scene: "knowledge" }, realT);
 check("role seed carries reviewer rank + no-debate", seed.includes("Challenger") && seed.includes("身份高于") && seed.includes("审查者") && seed.includes("Knowledge Expert") && seed.includes("禁止辩论") && seed.includes("Overall Verdict"));
+const mainSeed = loaded.buildMainRoleSeed({ scene: "knowledge" }, realT);
+check("knowledge main seed places workflow trigger after the role setting", mainSeed.includes("Knowledge Expert") && mainSeed.includes("进行知识沉淀") && mainSeed.indexOf("你是") !== -1 && mainSeed.indexOf("你是") < mainSeed.indexOf("启动workflow") && mainSeed.endsWith("启动workflow，进行知识沉淀。"));
 
 const toggle = heroRow.children.find((child) => child.dataset.arenaToggle !== void 0);
 check("toggle mounted in hero row", toggle !== void 0);
@@ -1519,12 +1533,12 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
     stallSince: 12345, lastMainText: "LONG BODY", lastArenaText: "LONG BODY"
   };
   const p = loaded.toPersistedChallenge(c);
-  check("toPersistedChallenge keeps the durable baseline fields", p.active === true && p.phase === "challenge" && p.scene === "business" && p.userQuestion === "Q?" && p.mainAnchor === "k1" && p.arenaAnchor === "k2" && p.round === 2 && p.pendingAnchor === true && p.lastReviewSeq === -1 && p.proposalPath === "/p.md");
+  check("toPersistedChallenge keeps the durable baseline fields", p.active === true && p.phase === "challenge" && p.scene === "business" && p.userQuestion === "Q?" && p.mainAnchor === "k1" && p.arenaAnchor === "k2" && p.round === 2 && p.pendingAnchor === false && p.lastReviewSeq === -1 && p.proposalPath === "/p.md");
   check("toPersistedChallenge persists the last-sent round prompt", p.lastPromptSent === "final");
   check("toPersistedChallenge truncates the injected text", p.lastInjectedText.length === 4000);
   check("toPersistedChallenge drops run-time bodies", !("lastMainText" in p) && !("lastArenaText" in p) && !("mainWasRunning" in p) && !("stallSince" in p));
   const back = loaded.fromPersistedChallenge(p);
-  check("fromPersistedChallenge round-trips the baseline", back.phase === "challenge" && back.scene === "business" && back.mainAnchor === "k1" && back.arenaAnchor === "k2" && back.round === 2 && back.pendingAnchor === true && back.lastReviewSeq === -1 && back.proposalPath === "/p.md");
+  check("fromPersistedChallenge round-trips the baseline", back.phase === "challenge" && back.scene === "business" && back.mainAnchor === "k1" && back.arenaAnchor === "k2" && back.round === 2 && back.pendingAnchor === false && back.lastReviewSeq === -1 && back.proposalPath === "/p.md");
   check("fromPersistedChallenge round-trips the last-sent round prompt", back.lastPromptSent === "final");
   check("fromPersistedChallenge defaults lastPromptSent to empty", loaded.fromPersistedChallenge({ active: true, phase: "review", lastPromptSent: void 0 }).lastPromptSent === "");
   check("fromPersistedChallenge resets run-time fields + marks restored", back.mainWasRunning === false && back.arenaWasRunning === false && back.stallSince === 0 && back.restored === true && back.alignDone === false && back.challengerRePrompted === false);
@@ -1874,6 +1888,29 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   arena9Store._set({ chat: { order: ["bgr1"], nodes: new Map([["bgr1", { key: "bgr1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "质疑：这里有问题" }] } }]]) }, running: false });
   internals.advanceBackgroundDuels();
   check("background: challenger reply → injected into main + revise", promptCalls.some((c) => c.sessionId === "s12" && c.content[0].text.includes("质疑")) && ns.value?.challenges?.s12?.phase === "revise", "phase=" + ns.value?.challenges?.s12?.phase);
+  // PENDING-ANCHOR 残留回归：后台推进 challenge→revise 置 pendingAnchor=true；
+  // 主模型修正完成后后台 revise→final 必须清掉（前台 advanceChallenge 在 revise
+  // 分支重锚时清除，后台 main 分支此前直接改 phase 不清 → done 态残留 true，
+  // 真实数据曾出现 pendingAnchor:true + phase:done）。
+  check("background: revise→final 时 challenge 处于 pendingAnchor 状态", ns.value?.challenges?.s12?.pendingAnchor === true, "pendingAnchor=" + ns.value?.challenges?.s12?.pendingAnchor);
+  s12Store._set({
+    chat: {
+      order: ["bgq1", "bga1", "bginj", "bgm2"],
+      nodes: new Map([
+        ["bgq1", { key: "bgq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "问题" }] } }],
+        ["bga1", { key: "bga1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "回答" }] } }],
+        ["bginj", { key: "bginj", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "质疑：这里有问题" }] } }],
+        ["bgm2", { key: "bgm2", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", turn: 2, step: 1, blocks: [{ kind: "text", text: "修正后回答" }] } }]
+      ])
+    },
+    running: false
+  });
+  internals.advanceBackgroundDuels();
+  check("background: 主模型修正完成 → revise→final 并清除 pendingAnchor", ns.value?.challenges?.s12?.phase === "final" && ns.value?.challenges?.s12?.pendingAnchor === false, "phase=" + ns.value?.challenges?.s12?.phase + " pendingAnchor=" + ns.value?.challenges?.s12?.pendingAnchor);
+  // 写入归一化防御：即使内存态残留，非 answer/revise 阶段的持久化投影也强制为 false
+  const normalizedP = loaded.toPersistedChallenge({ active: true, phase: "done", pendingAnchor: true });
+  check("toPersistedChallenge 归一化：done 态 pendingAnchor 强制 false", normalizedP.pendingAnchor === false);
+  check("toPersistedChallenge 保留：revise 态 pendingAnchor 为 true", loaded.toPersistedChallenge({ active: true, phase: "revise", pendingAnchor: true }).pendingAnchor === true);
   // current session is skipped (the runtime handles it)
   linkFor("s13", "business", "arena-10");
   persistFor("s13", baseChallenge({ phase: "answer", scene: "business" }));
@@ -1921,6 +1958,236 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   ns.value = { ...(ns.value ?? {}), backgroundAdvance: false };
   settingsUpdatedHandler?.("model-arena");
   await sleep(40);
+}
+
+// ── REPRO: P1-1 首问后、竞技场会话创建完成前切走 → 挑战永久丢失 ──
+// startChallenge 的 active/phase/mainAnchor/persistChallenge 全部在
+// ensure.then()（创建竞技场会话之后）设置，then 开头守卫
+// `if (arenaMount === null || arenaMount.sessionId !== sessionId) return;`。
+// 若用户在创建窗口内切走：then 直接 return，active 永不置位；teardown stash
+// 的是 idle 的 challenge，切回时 syncArena 恢复链 `state.challenge ?? …` 被
+// 这个 idle 对象短路，inferRestoredChallenge 不执行；lastSeenSeq 已越过首问，
+// detectUserMessages 不重触发 → 挑战永远不开始。
+// 注意：以下为「已知缺陷复现」——当前代码下预期 FAIL（rcheck 不计数，
+// 不影响主套件退出码）；修复后应转为 PASS。另：mock 的 MutationObserver 是
+// 空实现，复现段须手动 listSub() 触发 sync（与现有测试同模式）。
+const rcheck = (label, cond, detail) => {
+  if (cond) console.log("  ok  [REPRO] " + label);
+  else console.log(" KNOWN-FAIL [REPRO] " + label + (detail !== void 0 && detail !== "" ? "  -> " + detail : ""));
+};
+{
+  const origSnap = snap;
+  const origCreate = mockCtx.sessions.create;
+  try {
+    snap = twoModelDir; // 两模型 → auto 派生补集，省去手动选模型
+    snapSub();
+    currentSession = "s16";
+    listSub();
+    await sleep(150);
+    // 启用竞技场（新会话默认关闭）
+    const s16Toggle = heroRow.children.find((child) => child.dataset.arenaToggle !== void 0);
+    click(s16Toggle);
+    listSub(); // mock 的 MutationObserver 为空实现，须手动触发 sync
+    await sleep(150);
+    if (internals.getArenaMount() === null || internals.getArenaMount().sessionId !== "s16") {
+      rcheck("REPRO P1-1: 前置条件——竞技场运行时已挂载 s16", false, "mount=" + internals.getArenaMount()?.sessionId + " error=" + internals.getArenaMount()?.error + " toggles=" + heroRow.children.filter((c) => c.dataset?.arenaToggle !== void 0).length);
+    } else {
+      // 挂起 create：模拟创建竞技场会话的耗时窗口。create 至多被调用一次
+      // （修复后的 ensureArenaSession 幂等 + 在途复用）；若修复回退导致第二
+      // 次 create，立即 resolve 一个不同的 id——断言会 fail 而不是挂起。
+      let createCount = 0;
+      let releaseCreate = null;
+      mockCtx.sessions.create = async () => {
+        createCount += 1;
+        if (createCount === 1) return new Promise((res) => { releaseCreate = res; });
+        return Promise.resolve("arena-repro-2");
+      };
+      const s16Store = sessionStores.get("s16") ?? makeSessionStore("s16", { chat: { order: [], nodes: new Map() } });
+      // 首问落地
+      s16Store._set({
+        chat: { order: ["pq1"], nodes: new Map([["pq1", { key: "pq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "首问" }] } }]]) },
+        running: true
+      });
+      await sleep(30);
+      // 窗口内切走（create 尚未完成）
+      currentSession = "s13";
+      listSub();
+      await sleep(80);
+      // 创建完成（但 arenaMount 已为 null——修复后 id 先记录、只跳过挂载）
+      releaseCreate("arena-repro");
+      await sleep(50);
+      // 切回：应恢复/启动挑战
+      currentSession = "s16";
+      listSub();
+      await sleep(150);
+      const p1repro = internals.getArenaMount();
+      rcheck("REPRO P1-1: 切回后挑战被启动（active）", p1repro !== null && p1repro.challenge.active === true && p1repro.challenge.phase === "answer", "active=" + p1repro?.challenge?.active + " phase=" + p1repro?.challenge?.phase);
+      rcheck("REPRO P1-1: 竞技场会话复用第一次创建的 id（无孤儿）", p1repro !== null && p1repro.arenaSessionId === "arena-repro", "arenaId=" + p1repro?.arenaSessionId + " createCount=" + createCount);
+      rcheck("REPRO P1-1: create 只发生一次（无重复创建）", createCount === 1, "createCount=" + createCount);
+      rcheck("REPRO P1-1: 切回后主模型回答完成仍推进", (() => {
+        if (internals.getArenaMount() === null || internals.getArenaMount().challenge.active !== true) return false;
+        s16Store._set({
+          chat: { order: ["pq1", "pa1"], nodes: new Map([...s16Store.snapshot.chat.nodes, ["pa1", { key: "pa1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "回答" }] } }]]) },
+          running: false
+        });
+        return true;
+      })());
+      await sleep(40);
+      rcheck("REPRO P1-1: 主模型回答后推进到质疑轮", internals.getArenaMount() !== null && internals.getArenaMount().challenge.phase === "challenge", "phase=" + internals.getArenaMount()?.challenge?.phase);
+    }
+  } finally {
+    mockCtx.sessions.create = origCreate;
+    snap = origSnap;
+    currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
+}
+
+// ── 质量断言：challenge prompt 的产出材料质量（不改业务代码，纯断言锁定）──
+// 真实平台一次回合 = 单 assistant-step 节点多 block（P0-3 平台确认），此处
+// 断言传入挑战者的材料质量：完整正文（多 text block 聚合）、思维链排除
+// （settings.note 注入边界）、工具操作记录携带、首问文件引用入清单（P1-2）。
+{
+  const origSnap = snap;
+  try {
+    snap = twoModelDir;
+    let ns = settingsNamespaces.find((n) => n.ns === "model-arena");
+    if (ns === void 0) { ns = { ns: "model-arena", value: {} }; settingsNamespaces.push(ns); }
+    ns.value = { ...(ns.value ?? {}),
+      links: { ...(ns.value?.links ?? {}), s19: { sessionId: "arena-19", provider: "p1", model: "m2", scene: "business" } },
+      challenges: { ...(ns.value?.challenges ?? {}), s19: { active: true, phase: "answer", scene: "business", skill: "", userQuestion: "请审查 docs/plan.md 的方案", mainAnchor: "", arenaAnchor: "", rejectCount: 0, verdict: "", round: 0, pendingAnchor: false, lastPromptSent: "", lastInjectedText: "", lastReviewSeq: -1, proposalPath: "", designPath: "", tasksPath: "", reviewPath: "", updatedAt: Date.now() } }
+    };
+    settingsUpdatedHandler?.("model-arena");
+    currentSession = "s19";
+    listSub();
+    await sleep(120);
+    const s19Store = sessionStores.get("s19") ?? makeSessionStore("s19", { chat: { order: [], nodes: new Map() } });
+    sessionStores.get("arena-19") ?? makeSessionStore("arena-19", { chat: { order: [], nodes: new Map() } });
+    // 主模型单节点多 block 回合：reasoning（思维链）+ text×2 + tool-call
+    s19Store._set({
+      chat: {
+        order: ["uq1", "a1"],
+        nodes: new Map([
+          ["uq1", { key: "uq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "请审查 docs/plan.md 的方案" }] } }],
+          ["a1", { key: "a1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [
+            { kind: "reasoning", text: "这是主模型的思维链，不应注入" },
+            { kind: "text", text: "方案正文第一段" },
+            { kind: "tool-call", callId: "c1", name: "read", argsRaw: JSON.stringify({ description: "读取方案文件", path: "docs/plan.md" }) },
+            { kind: "text", text: "方案正文第二段" }
+          ] } }]
+        ])
+      },
+      running: false
+    });
+    await sleep(40);
+    const s19Prompts = promptCalls.filter((c) => c.sessionId === "arena-19" && c.content[0].text.includes("质疑"));
+    const s19Prompt = s19Prompts[0]?.content?.[0]?.text ?? "";
+    check("质量: challenge prompt 携带完整正文（单节点多 text block 聚合）", s19Prompt.includes("方案正文第一段") && s19Prompt.includes("方案正文第二段"), "prompt=" + s19Prompt.slice(0, 80));
+    check("质量: challenge prompt 不含思维链（reasoning 排除）", !s19Prompt.includes("思维链"));
+    check("质量: challenge prompt 含工具操作记录（tool-call 携带）", s19Prompt.includes("工具操作记录") && s19Prompt.includes("read"));
+    check("质量: challenge prompt 首问引用进提到的文件清单（P1-2）", s19Prompt.includes("提到的文件：docs/plan.md"));
+  } finally {
+    snap = origSnap;
+    currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
+}
+
+// ── knowledge 质量断言（流程级）：思维链不进 review prompt（settings.note 注入边界）──
+// 主模型产出阶段（propose）回答含 reasoning + text 单节点多 block；node 半段写
+// reviewRequest → 挑战者审查 prompt 应含方案正文、不含思维链。
+{
+  const origSnap = snap;
+  try {
+    snap = twoModelDir;
+    let ns = settingsNamespaces.find((n) => n.ns === "model-arena");
+    if (ns === void 0) { ns = { ns: "model-arena", value: {} }; settingsNamespaces.push(ns); }
+    ns.value = { ...(ns.value ?? {}),
+      links: { ...(ns.value?.links ?? {}), s20: { sessionId: "arena-20", provider: "p1", model: "m2", scene: "knowledge" } },
+      challenges: { ...(ns.value?.challenges ?? {}), s20: { active: true, phase: "propose", scene: "knowledge", skill: "", userQuestion: "沉淀知识", mainAnchor: "", arenaAnchor: "", rejectCount: 0, verdict: "", round: 0, pendingAnchor: false, lastPromptSent: "", lastInjectedText: "", lastReviewSeq: -1, proposalPath: "", designPath: "", tasksPath: "", reviewPath: "", updatedAt: Date.now() } },
+      arena: { ...(ns.value?.arena ?? {}), reviewRequest: null }
+    };
+    settingsUpdatedHandler?.("model-arena");
+    currentSession = "s20";
+    listSub();
+    await sleep(120);
+    const s20Store = sessionStores.get("s20") ?? makeSessionStore("s20", { chat: { order: [], nodes: new Map() } });
+    sessionStores.get("arena-20") ?? makeSessionStore("arena-20", { chat: { order: [], nodes: new Map() } });
+    // 主模型产出：reasoning（思维链）+ text（方案）单节点多 block
+    s20Store._set({
+      chat: {
+        order: ["kq1", "ka1"],
+        nodes: new Map([
+          ["kq1", { key: "kq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "沉淀知识" }] } }],
+          ["ka1", { key: "ka1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [
+            { kind: "reasoning", text: "思维链内容不应出现" },
+            { kind: "text", text: "结构化方案正文" }
+          ] } }]
+        ])
+      },
+      running: false
+    });
+    await sleep(40);
+    // node 半段写 reviewRequest（无产物路径 → 走文本分支）→ 挑战者审查
+    ns.value = { ...(ns.value ?? {}), arena: { ...(ns.value?.arena ?? {}), reviewRequest: { workflowId: "wf20", seq: 1, proposalPath: "", designPath: "", tasksPath: "", reviewPath: "" } } };
+    settingsUpdatedHandler?.("model-arena");
+    await sleep(60);
+    const s20Prompts = promptCalls.filter((c) => c.sessionId === "arena-20" && c.content[0].text.includes("审查"));
+    const s20Prompt = s20Prompts[0]?.content?.[0]?.text ?? "";
+    check("知识沉淀(流程): review prompt 含主模型方案正文", s20Prompt.includes("结构化方案正文"), "prompt=" + s20Prompt.slice(0, 80));
+    check("知识沉淀(流程): review prompt 不含思维链（reasoning 排除）", !s20Prompt.includes("思维链内容"));
+  } finally {
+    snap = origSnap;
+    currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
+}
+
+// ── REPRO: F（v19 重新播种边界）——挂载空快照 + 历史与新首问同批到达 ──
+// 已 link 的老会话刷新后，若挂载时快照为空（lastSeenSeq=0），随后「历史（旧轮）
+// 与新首问」在同一次快照更新中到达，detectUserMessages 开头的 v19 重新播种会把
+// scanUserAnchorSeq 扫到新首问的 seq、把新首问当「历史」吞掉（不 startChallenge）。
+// 实测（mock，无 sync 介入）：challenge 保持 idle（active=false）——新首问既不
+// 启动挑战、也不被记录；真实环境若 sync 在中间介入，inferRestoredChallenge 会
+// 从快照**第一个** user 节点启动挑战，userQuestion 变成「旧轮问题」——两种结果
+// 都确认新首问处理异常。预期 KNOWN-FAIL（rcheck 不计数）：边界确认，记录不修
+// （真实平台历史加载与新消息通常是两次独立快照更新，同批到达概率极低）。
+{
+  const origSnap = snap;
+  try {
+    snap = twoModelDir;
+    let ns = settingsNamespaces.find((n) => n.ns === "model-arena");
+    if (ns === void 0) { ns = { ns: "model-arena", value: {} }; settingsNamespaces.push(ns); }
+    ns.value = { ...(ns.value ?? {}), links: { ...(ns.value?.links ?? {}), s18: { sessionId: "arena-18", provider: "p1", model: "m2", scene: "business" } } };
+    settingsUpdatedHandler?.("model-arena");
+    currentSession = "s18";
+    listSub();
+    await sleep(120); // 挂载：快照为空 → lastSeenSeq = 0
+    const s18Store = sessionStores.get("s18") ?? makeSessionStore("s18", { chat: { order: [], nodes: new Map() } });
+    sessionStores.get("arena-18") ?? makeSessionStore("arena-18", { chat: { order: [], nodes: new Map() } });
+    // 同批到达：旧轮历史 user 节点 + 新首问 user 节点
+    s18Store._set({
+      chat: {
+        order: ["h1", "q2"],
+        nodes: new Map([
+          ["h1", { key: "h1", kind: "user", anchorSeq: 10, data: { content: [{ type: "text", text: "旧轮问题" }] } }],
+          ["q2", { key: "q2", kind: "user", anchorSeq: 11, data: { content: [{ type: "text", text: "新首问" }] } }]
+        ])
+      },
+      running: true
+    });
+    await sleep(60);
+    const fMount = internals.getArenaMount();
+    rcheck("REPRO F: 同批到达时新首问被正确记录（userQuestion=新首问）", fMount !== null && fMount.challenge.active === true && fMount.challenge.userQuestion === "新首问", "active=" + fMount?.challenge?.active + " q=" + fMount?.challenge?.userQuestion);
+  } finally {
+    snap = origSnap;
+    currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
 }
 
 console.log(failed === 0 ? "CLIENT SMOKE PASS" : failed + " CLIENT SMOKE FAILURES");

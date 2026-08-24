@@ -476,7 +476,7 @@ window.__ModuleLoader__.load({
 				rejectCount: typeof c.rejectCount === "number" ? c.rejectCount : 0,
 				verdict: typeof c.verdict === "string" ? c.verdict : "",
 				round: typeof c.round === "number" ? c.round : 0,
-				pendingAnchor: c.pendingAnchor === true,
+				pendingAnchor: c.pendingAnchor === true && (c.phase === "answer" || c.phase === "revise"),
 				// Which challenger round prompt (challenge/final/review) was last
 				// SENT to the arena session. Persisted so a reload/restore does not
 				// re-inject a round prompt that is already queued server-side — the
@@ -624,7 +624,11 @@ window.__ModuleLoader__.load({
 		const buildRoundPrompt = (kind, challenge, _t) => {
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
-			const files = extractFileRefs(challenge?.lastMainText ?? "").join("\n") || "（无）";
+			// File references handed to the challenger as "read and review" context:
+			// both the user's question AND the main model's reply may mention paths
+			// (the question's references used to be lost — the challenger saw the
+			// literal text but never the structured list, so it might not read them).
+			const files = extractFileRefs((challenge?.userQuestion ?? "") + "\n" + (challenge?.lastMainText ?? "")).join("\n") || "（无）";
 			const trail = formatToolTrail(challenge?.lastMainTools);
 			const toolsPart = trail === "" ? "" : "\n" + fmt("{mainRole} 的工具操作记录：\n{tools}", { mainRole, tools: trail });
 			if (kind === "review") {
@@ -647,7 +651,7 @@ window.__ModuleLoader__.load({
 			}
 			if (kind === "final") {
 				return fmt("{mainRole}修正后的回答：「{mainText}」\n提到的文件：{files}", { mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
-					+ "\n\n修正已完成，请不再质疑，仅给出最终评审结论（认可或仍存疑）。禁止辩论，只输出你的结论，不要提出新的质疑。";
+					+ "\n\n修正已完成。请先**逐条核对**你上一轮提出的质疑是否在修正后的回答中被逐一回应：逐点对照每条质疑，确认已被解决或指出仍未解决的项；然后仅给出最终评审结论（认可或仍存疑）。禁止辩论，只输出你的结论，不要提出新的质疑。";
 			}
 			return fmt("用户问题：「{question}」\n{mainRole}的回答：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 				+ "\n\n请用中文对上述回答**逐条质疑**：逐点审查回答中的每个观点、结论与依据，指出问题或漏洞；禁止辩论，只输出你的质疑（直接以质疑者口吻表达，不要自我称呼角色名）。";
@@ -707,7 +711,7 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			if (scene.review === true) {
-				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你只负责 explore 和 propose 两个阶段。propose 阶段完成（record propose.completed）后本轮必须立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正，也不要主动向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你只能被动等待审查结论；收到结论后按注入指令继续（NEEDS_REVISION → 回 propose 修正重新送审；READY → record review.completed 并按 Theseus 继续后续阶段）。禁止辩论，请用中文回答。", { mainRole });
+				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你只负责 explore 和 propose 两个阶段。propose 阶段完成（record propose.completed）后本轮必须立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正，也不要主动向用户询问是否继续。方案的 review 由模型竞技场的挑战者会话独立执行，你只能被动等待审查结论；收到结论后按注入指令继续（NEEDS_REVISION → 回 propose 修正重新送审；READY → record review.completed 并按 Theseus 继续后续阶段）。禁止辩论，请用中文回答。\n\n启动workflow，进行知识沉淀。", { mainRole });
 			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
@@ -2499,7 +2503,10 @@ window.__ModuleLoader__.load({
 					return false;
 				};
 				// Text of the LATEST assistant node of a session (model output to
-				// forward as context).
+				// forward as context). A platform turn is ONE assistant-step node
+				// carrying all its blocks (P0-3 platform confirmation: main turn
+				// nodes = user | context | … | single assistant-step), so the whole
+				// reply is read from that one node via assistantRows.
 				const extractLastAssistantText = (sessionId) => {
 					try {
 						const snap = ctx.sessions.binding(sessionId)?.session?.getSnapshot?.();
@@ -2510,7 +2517,7 @@ window.__ModuleLoader__.load({
 							if (node === void 0) continue;
 							if (isAssistantNode(node)) {
 								for (const row of assistantRows(blocksOf(node))) {
-										if (row.kind === "assistant") out += row.text + "\n";
+									if (row.kind === "assistant") out += row.text + "\n";
 								}
 								break;
 							}
@@ -2544,10 +2551,134 @@ window.__ModuleLoader__.load({
 					}
 				};
 
+				// Bind the challenger-turn subscription to the arena session. The
+				// wrapper bumps arenaTick on every arena-snapshot change (including
+				// the running flag flipping idle→running) so the header/sidebar
+				// loading indicators track the challenger, and re-syncs the sidebar
+				// loading dot.
+				const bindArenaTurn = (arenaId) => {
+					if (arenaMount === null) return;
+					try {
+						arenaMount.unsubArenaTurn?.();
+						arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaId)?.session?.subscribe?.(() => {
+							arenaTick.bump();
+							syncChallengerLoading();
+							detectChallengeTurn();
+						}) ?? null;
+					} catch {
+						arenaMount.unsubArenaTurn = null;
+					}
+				};
+
+				// Ensure the arena session exists for an ACTIVE challenge. Idempotent
+				// and in-flight-reusing, so the arena session is created at most once
+				// per challenge no matter how often this is called across session
+				// switches:
+				//   (1) id already mounted   → resolve immediately;
+				//   (2) create in flight     → return the SAME promise (never a
+				//                              second create — the switch-away
+				//                              restore path reuses the in-flight one);
+				//   (3) id recorded but not mounted (the create finished while the
+				//       runtime was torn down) → mount it here;
+				//   (4) otherwise → create. The id is recorded (state.arena + the
+				//       persisted link) BEFORE the mount guard, so a switch-away that
+				//       lands between create and mount can never orphan the created
+				//       session — the restore path picks it up from state.arena /
+				//       the link and never creates a duplicate. Once the id is in
+				//       place the round is advanced immediately (detectChallengeTurn),
+				//       so a main answer that completed while the arena id was still
+				//       unknown is caught up right away, not on the next sync tick.
+				const ensureArenaSession = (sessionId, state, c) => {
+					if (arenaMount === null || arenaMount.sessionId !== sessionId) return Promise.resolve(void 0);
+					// (1) already mounted
+					if (arenaMount.arenaSessionId !== void 0) return Promise.resolve(arenaMount.arenaSessionId);
+					// (2) create already in flight — reuse the same promise
+					if (state.arenaCreatePromise !== void 0) return state.arenaCreatePromise;
+					// (3) id recorded but not mounted (created while the runtime was away)
+					if (state.arena !== void 0 && typeof state.arena.sessionId === "string" && state.arena.sessionId !== "") {
+						arenaMount.arenaSessionId = state.arena.sessionId;
+						mountArenaRuntime(state);
+						bindArenaTurn(state.arena.sessionId);
+						try { detectChallengeTurn(); } catch {}
+						return Promise.resolve(state.arena.sessionId);
+					}
+					state.arenaCreatePromise = createArenaSession(sessionId, state, null).then((arenaId) => {
+						state.arenaCreatePromise = void 0;
+						// Record the id FIRST (independent of arenaMount): a
+						// switch-away that lands between create and mount can never
+						// orphan the session — the restore path picks it up from
+						// state.arena / the persisted link and never creates a
+						// duplicate.
+						state.arena = { sessionId: arenaId };
+						saveLink(sessionId, {
+							sessionId: arenaId,
+							provider: state.model.provider,
+							model: state.model.model,
+							...(state.model.reasoningEffort === void 0 ? {} : { reasoningEffort: state.model.reasoningEffort }),
+							...(state.model.name === void 0 ? {} : { name: state.model.name }),
+							scene: c.scene
+						});
+						// The challenger's role is injected via the system-prompt waterfall
+						// (persona map synced to settings); archiving hides it from the sidebar.
+						// Archive the challenger immediately: the platform excludes archived
+						// sessions from the sidebar AND from the "show N more" counter,
+						// so it never shows up as a phantom session. Archiving is a UI
+						// hide only — the session stays fully usable (we keep prompting
+						// it through binding().session).
+						try {
+							const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
+							if (workspaces !== void 0 && typeof workspaces.archiveSession === "function") {
+								workspaces.archiveSession(arenaId).catch(() => {});
+							}
+						} catch (_archiveFailure) {
+							// best effort — hiding is cosmetic; the challenger still works
+						}
+						if (arenaMount === null || arenaMount.sessionId !== sessionId) return arenaId;
+						// Mount the runtime + subscription now that the id is known.
+						arenaMount.arenaSessionId = arenaId;
+						mountArenaRuntime(state);
+						bindArenaTurn(arenaId);
+						if (c.arenaAnchor === null || c.arenaAnchor === void 0 || c.arenaAnchor === "") {
+							try { c.arenaAnchor = lastKeyOfSnapshot(arenaId) ?? null; } catch {}
+						}
+						// Knowledge scene: arm the node half's propose.completed detector
+						// by persisting the main session id + cwd so it can poll the
+						// Theseus workflow state and write back `arena.reviewRequest`.
+						if (isReviewScene(c)) {
+							const arenaCwd = workspacePathOf(sessionId);
+							apiSettings()?.mutate?.({
+								ns: "model-arena",
+								ops: [
+									{ op: "set", path: ["arena", "mainSessionId"], value: sessionId },
+									{ op: "set", path: ["arena", "cwd"], value: typeof arenaCwd === "string" ? arenaCwd : "" }
+								]
+							}).catch(() => {});
+						}
+						updateBlock(sessionId, state);
+						syncPersona();
+						arenaTick.bump();
+						persistChallenge(sessionId);
+						// Advance immediately: a main answer that completed while the
+						// arena id was still unknown must not wait for the next sync tick.
+						try { detectChallengeTurn(); } catch {}
+						return arenaId;
+					}).catch((error) => {
+						state.arenaCreatePromise = void 0;
+						if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
+						arenaMount.error = String(error?.message ?? error);
+						arenaMount.failedText = typeof c.userQuestion === "string" ? c.userQuestion : "";
+						arenaTick.bump();
+					});
+					return state.arenaCreatePromise;
+				};
+
 				// Start (or restart) the challenge flow on the user's first question:
-				// ensure the arena session WITHOUT mirroring the question, record the
-				// question + anchors, lock the composer, and wait for the main session
-				// to finish answering.
+				// record the question + anchors and lock the composer SYNCHRONOUSLY
+				// (anchor-first: the first question must never be lost to the async
+				// arena-session creation — a switch-away mid-create previously left the
+				// challenge idle forever because the state was only set inside the
+				// create's .then()), then ensure the arena session WITHOUT mirroring
+				// the question, and wait for the main session to finish answering.
 				const startChallenge = (sessionId, state, text) => {
 					if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
 					// The arena model may never equal the input box's model (the hero
@@ -2575,106 +2706,46 @@ window.__ModuleLoader__.load({
 					// The challenge state lives in the per-session state too, so a session
 					// switch (teardown) can restore it on the way back.
 					state.challenge = c;
-					const ensure = arenaMount.arenaSessionId !== void 0
-						? Promise.resolve(arenaMount.arenaSessionId)
-						: createArenaSession(sessionId, state, null).then((arenaId) => {
-							if (arenaMount === null || arenaMount.sessionId !== sessionId) throw new Error("session switched");
-							arenaMount.arenaSessionId = arenaId;
-							state.arena = { sessionId: arenaId };
-							mountArenaRuntime(state);
-							saveLink(sessionId, {
-								sessionId: arenaId,
-								provider: state.model.provider,
-								model: state.model.model,
-								...(state.model.reasoningEffort === void 0 ? {} : { reasoningEffort: state.model.reasoningEffort }),
-								...(state.model.name === void 0 ? {} : { name: state.model.name }),
-								scene: c.scene
-							});
-							// The challenger's role is injected via the system-prompt waterfall
-							// (persona map synced to settings); archiving hides it from the sidebar.
-							// Archive the challenger immediately: the platform excludes archived
-							// sessions from the sidebar AND from the "show N more" counter,
-							// so it never shows up as a phantom session. Archiving is a UI
-							// hide only — the session stays fully usable (we keep prompting
-							// it through binding().session).
-							try {
-								const workspaces = typeof ctx.get === "function" ? ctx.get("workspaces") : void 0;
-								if (workspaces !== void 0 && typeof workspaces.archiveSession === "function") {
-									workspaces.archiveSession(arenaId).catch(() => {});
-								}
-							} catch (_archiveFailure) {
-								// best effort — hiding is cosmetic; the challenger still works
-							}
-							// Bind the challenger-turn subscription to the new session.
-							// The wrapper also bumps arenaTick on every arena-snapshot
-							// change so the header loading animation tracks the
-							// challenger's running flag (see syncArena restore site),
-							// and re-syncs the sidebar loading dot.
-							try {
-								arenaMount.unsubArenaTurn?.();
-								arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaId)?.session?.subscribe?.(() => {
-									arenaTick.bump();
-									syncChallengerLoading();
-									detectChallengeTurn();
-								}) ?? null;
-							} catch {
-								arenaMount.unsubArenaTurn = null;
-							}
-							return arenaId;
-						});
-					ensure.then(() => {
-						if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
-						c.userQuestion = text;
-						c.active = true;
-						// Model 1's role comes from the system-prompt waterfall (persona
-						// map synced to settings), active from the first turn — no message.
-						c.phase = isReviewScene(c) ? "propose" : "answer";
-						c.skill = state.skill ?? "";
-						c.rejectCount = 0;
-						c.verdict = "";
-						c.round = 0;
-						c.stallSince = 0;
-						c.challengerRePrompted = false;
-						// A fresh round has never prompted the challenger yet.
-						c.lastPromptSent = "";
-						// A fresh round is NOT a restored challenge: restore alignment
-						// must never touch it (see alignChallengeAfterRestore).
-						c.restored = false;
-						c.alignDone = false;
-						c.lastReviewSeq = -1;
-						c.proposalPath = "";
-						c.designPath = "";
-						c.tasksPath = "";
-						c.reviewPath = "";
-						c.mainAnchor = lastKeyOfSnapshot(sessionId);
-						c.arenaAnchor = lastKeyOfSnapshot(arenaMount.arenaSessionId);
-						// Knowledge scene: arm the node half's propose.completed detector
-						// by persisting the main session id + cwd so it can poll the
-						// Theseus workflow state and write back `arena.reviewRequest`.
-						if (isReviewScene(c)) {
-							const arenaCwd = workspacePathOf(sessionId);
-							apiSettings()?.mutate?.({
-								ns: "model-arena",
-								ops: [
-									{ op: "set", path: ["arena", "mainSessionId"], value: sessionId },
-									{ op: "set", path: ["arena", "cwd"], value: typeof arenaCwd === "string" ? arenaCwd : "" }
-								]
-							}).catch(() => {});
-						}
-						updateBlock(sessionId, state);
-						// The challenger session now exists: sync the persona map right away
-						// (main role + challenger role) instead of waiting for the next sync.
-						syncPersona();
-						arenaTick.bump();
-						// Persist the baseline immediately so a reload right after the
-						// first question resumes the duel instead of restarting it.
-						persistChallenge(sessionId);
-					}).catch((error) => {
-						if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
-						arenaMount.error = String(error?.message ?? error);
-						arenaMount.failedText = text;
-						arenaTick.bump();
-					});
+					// ── anchor-first (synchronous): the challenge starts NOW, before
+					// the (async) arena-session creation — the creation can never lose
+					// the first question again. Placed AFTER the conflict check so a
+					// conflict path never leaves active=true with model=null.
+					c.userQuestion = text;
+					c.active = true;
+					// Model 1's role comes from the system-prompt waterfall (persona
+					// map synced to settings), active from the first turn — no message.
+					c.phase = isReviewScene(c) ? "propose" : "answer";
+					c.skill = state.skill ?? "";
+					c.rejectCount = 0;
+					c.verdict = "";
+					c.round = 0;
+					c.stallSince = 0;
+					c.challengerRePrompted = false;
+					// A fresh round has never prompted the challenger yet.
+					c.lastPromptSent = "";
+					// A fresh round is NOT a restored challenge: restore alignment
+					// must never touch it (see alignChallengeAfterRestore).
+					c.restored = false;
+					c.alignDone = false;
+					c.lastReviewSeq = -1;
+					c.proposalPath = "";
+					c.designPath = "";
+					c.tasksPath = "";
+					c.reviewPath = "";
+					// Anchor to the node that was last when the question landed — i.e.
+					// the question node itself (or whatever precedes the answer).
+					c.mainAnchor = lastKeyOfSnapshot(sessionId);
+					updateBlock(sessionId, state);
+					// The challenger session now exists: sync the persona map right away
+					// (main role + challenger role) instead of waiting for the next sync.
+					syncPersona();
+					arenaTick.bump();
+					// Persist the baseline immediately so a reload right after the
+					// first question resumes the duel instead of restarting it.
+					persistChallenge(sessionId);
+					// Ensure the arena session (idempotent + in-flight reuse; the
+					// create's success path mounts, subscribes and advances).
+					ensureArenaSession(sessionId, state, c);
 				};
 
 				// Stop the whole challenge from the MAIN session: cancels the
@@ -3362,6 +3433,13 @@ window.__ModuleLoader__.load({
 										promptSession(arenaId, buildRoundPrompt("challenge", c, t));
 									} else {
 										c.phase = "final";
+										// pendingAnchor only matters while re-anchoring in
+										// answer/revise (the FOREGROUND advanceChallenge
+										// clears it in its revise branch before reaching
+										// final); the background path has no such step, so
+										// leaving it true would persist a stale flag into
+										// final/done.
+										c.pendingAnchor = false;
 										c.round += 1;
 										c.lastPromptSent = "final";
 										promptSession(arenaId, buildRoundPrompt("final", c, t));
@@ -3784,7 +3862,18 @@ window.__ModuleLoader__.load({
 					};
 					// Seed from the current snapshot so pre-existing messages are not re-mirrored.
 					arenaMount.lastSeenSeq = scanUserAnchorSeq(sessionId);
-					if (arenaMount.arenaSessionId !== void 0) {
+					if (arenaMount.challenge.active === true && RUNNING_CHALLENGE_PHASES.has(arenaMount.challenge.phase)
+						&& arenaMount.arenaSessionId === void 0 && arenaMount.error === null) {
+						// Anchor-first restore path: the challenge is already active
+						// (startChallenge set it synchronously) but the arena session
+						// id is not in place yet — either the create was interrupted by
+						// a switch-away (its success path records the id first, so the
+						// in-flight promise / recorded id is reused here) or the round
+						// was persisted as active without an id. ensureArenaSession is
+						// idempotent and in-flight-reusing: the create happens at most
+						// once, and its success path mounts, subscribes and advances.
+						ensureArenaSession(sessionId, state, arenaMount.challenge);
+					} else if (arenaMount.arenaSessionId !== void 0) {
 						mountArenaRuntime(state);
 						// Returning mid-challenge: re-apply the composer lock immediately.
 						updateBlock(sessionId, state);
@@ -3795,15 +3884,7 @@ window.__ModuleLoader__.load({
 						// loading animation while the arena model is generating; the
 						// sidebar loading dot is re-synced here too (the arena session's
 						// snapshot change is the only prompt for its running flag).
-						try {
-							arenaMount.unsubArenaTurn = ctx.sessions.binding(arenaMount.arenaSessionId)?.session?.subscribe?.(() => {
-								arenaTick.bump();
-								syncChallengerLoading();
-								detectChallengeTurn();
-							}) ?? null;
-						} catch {
-							arenaMount.unsubArenaTurn = null;
-						}
+						bindArenaTurn(arenaMount.arenaSessionId);
 					}
 					// Restore alignment: a persisted/restored in-flight challenge is
 					// re-aligned against the LIVE snapshots — main-model phases wait
@@ -4790,6 +4871,7 @@ window.__ModuleLoader__.load({
 		exports.buildReviseMessage = buildReviseMessage;
 		exports.stripMarkdown = stripMarkdown;
 		exports.buildRoleSeed = buildRoleSeed;
+		exports.buildMainRoleSeed = buildMainRoleSeed;
 		exports.shouldShowChallengeHeader = shouldShowChallengeHeader;
 		exports.shouldReArmChallenge = shouldReArmChallenge;
 		exports.isPastReviewStage = isPastReviewStage;
