@@ -1046,6 +1046,8 @@ function listInstallJobs() {
       progress: job.progress ?? null,
       createdAt: job.createdAt,
       review: job.review,
+      error: job.error ?? null,
+      helpSessionId: job.helpSessionId ?? null,
     })
   }
   return out
@@ -1133,9 +1135,11 @@ async function installPlugin(ctx, options) {
       installJobs.delete(job.id)
       return { ...result, review: null }
     } catch (error) {
+      // 保留失败任务在列表（供「帮我安装」/中断操作），只清理隔离目录
       job.status = 'failed'
-      installJobs.delete(job.id)
+      job.error = error instanceof Error ? error.message : String(error)
       await rm(job.staged?.jobDir, { recursive: true, force: true }).catch(() => {})
+      job.staged = null
       throw error
     }
   }
@@ -1200,7 +1204,7 @@ async function performInstall({ repoInfo, name, profileDir, patchPath, taken, st
   return { ok: true, packageName: name, usedChannel: 'git', entryId, bundle, restart }
 }
 
-/** 阶段 2 确认：把挂起的任务真正安装进 profile（成功/失败任务都从队列消失）。 */
+/** 阶段 2 确认：把挂起的任务真正安装进 profile（成功即从队列消失；失败保留卡片供「帮我安装」/中断）。 */
 async function confirmInstall(jobId) {
   const job = installJobs.get(jobId)
   if (!job) throw new Error('安装任务不存在或已过期（请重新发起安装）')
@@ -1209,17 +1213,39 @@ async function confirmInstall(jobId) {
     await rm(job.staged?.jobDir, { recursive: true, force: true }).catch(() => {})
     throw new Error('安装任务已过期（请重新发起安装）')
   }
-  installJobs.delete(jobId)
+  if (job.status === 'installing' || job.status === 'done') {
+    throw new Error('安装正在进行或已完成')
+  }
   job.status = 'installing'
   try {
     const result = await performInstall({ repoInfo: job.repoInfo, name: job.name, profileDir: job.profileDir, patchPath: job.patchPath, taken: job.taken, staged: job.staged, job, ctx: job.ctx ?? null })
     job.status = 'done'
+    installJobs.delete(jobId)
     return result
   } catch (error) {
+    // 保留失败任务在列表（供「帮我安装」/中断操作），只清理隔离目录
     job.status = 'failed'
+    job.error = error instanceof Error ? error.message : String(error)
     await rm(job.staged?.jobDir, { recursive: true, force: true }).catch(() => {})
+    job.staged = null
     throw error
   }
+}
+
+/** 组装「帮我安装」提示词：把失败的安装请求 + 报错信息交给 harness 会话，由其诊断并完成安装。 */
+function buildInstallHelpPrompt(job, errorText, profileDir) {
+  return [
+    '你是 DeepSeek Harness 的插件安装助手。用户在插件市场安装一个插件时失败，请诊断失败原因并完成安装。',
+    '',
+    '安装请求（仓库）：' + (job.repo ?? '未知'),
+    '包名：' + (job.name && job.name !== '' ? job.name : '（拉取失败，包名未知，需从仓库 package.json 读取）'),
+    '失败信息：' + (errorText !== '' ? errorText : '（无详细错误信息）'),
+    '目标 profile 目录：' + profileDir + '（该目录含 package.json 与 cordis.patch.yml）',
+    '',
+    '安装方式（与 dsh plugin CLI 一致）：先在 profile 目录用 pnpm 安装依赖（普通插件还可直接执行 `dsh plugin --profile web add <仓库地址>`），再把插件行写入 cordis.patch.yml：普通插件追加 `- insert:\n    - id: <入口id>\n      name: <包名>`；bundle 插件（package.json 声明 dsh.bundle.patch）则把包名加入 package.json 的 dsh.profile.bundles 数组。',
+    '',
+    '任务：先诊断失败原因（网络 / pnpm 锁文件 / 构建脚本授权 / 仓库地址等），修复后完成安装并确保插件已写入补丁层；完成后简要说明安装结果与插件是否已可用。',
+  ].join('\n')
 }
 
 /**
@@ -2286,15 +2312,16 @@ async function attachSessionToWorkspace(ctx, sessionId, currentSessionId) {
 }
 
 /**
- * 创建可见的分析会话并自动发题（默认模型）。与 `runReviewSession` 不同：不归档、不 dispose，
+ * 创建可见的分析/执行会话并自动发题（默认模型）。与 `runReviewSession` 不同：不归档、不 dispose，
  * 会话保留在侧边栏供用户查看。返回 { sessionId, session, startIdx } 供后台轮询提取回复。
+ * @param prefix - 会话 id 前缀（默认 dsh-update-，供按用途区分）。
  */
-async function createVisibleAnalysisSession(ctx, promptText, signal) {
+async function createVisibleAnalysisSession(ctx, promptText, signal, prefix = 'dsh-update-') {
   let agents = null
   try { agents = ctx.get('agents') } catch {}
   if (!agents || typeof agents.create !== 'function') return null
   const route = reviewLlmRoute(ctx)
-  const sessionId = 'dsh-update-' + randomUUID().slice(0, 8)
+  const sessionId = prefix + randomUUID().slice(0, 8)
   let handle = null
   try {
     handle = await agents.create({
@@ -2606,6 +2633,43 @@ async function handle(ctx, req, res) {
     try {
       const result = await confirmInstall(jobId)
       sendJson(res, 200, result)
+    } catch (error) {
+      sendError(res, 500, error instanceof Error ? error.message : String(error))
+    }
+    return
+  }
+
+  // 帮我安装：安装失败时开启可见 harness 会话，把报错信息交给它诊断并完成安装
+  if (pathname === ROUTE_PREFIX + '/install/help') {
+    const jobId = typeof body.jobId === 'string' ? body.jobId.trim() : ''
+    const currentSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+    if (jobId === '') {
+      sendError(res, 400, 'jobId 不能为空')
+      return
+    }
+    try {
+      const job = installJobs.get(jobId)
+      if (!job) {
+        sendError(res, 404, '安装任务不存在或已过期（请重新发起安装）')
+        return
+      }
+      // 幂等：已交予会话的任务直接返回原会话
+      if (job.status === 'helping' && typeof job.helpSessionId === 'string' && job.helpSessionId !== '') {
+        sendJson(res, 200, { ok: true, sessionId: job.helpSessionId })
+        return
+      }
+      const errorText = String(job.error ?? '') || (typeof job.review?.details === 'string' ? job.review.details : '')
+      const profileDir = job.profileDir ?? dirname(findPatchPath(ctx))
+      const promptText = buildInstallHelpPrompt(job, errorText, profileDir)
+      const created = await createVisibleAnalysisSession(ctx, promptText, null, 'dsh-install-')
+      if (created === null || created.sessionId === undefined) {
+        sendError(res, 500, '未能开启会话（默认模型通道不可用）')
+        return
+      }
+      await attachSessionToWorkspace(ctx, created.sessionId, currentSessionId)
+      job.status = 'helping'
+      job.helpSessionId = created.sessionId
+      sendJson(res, 200, { ok: true, sessionId: created.sessionId })
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : String(error))
     }

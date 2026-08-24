@@ -154,6 +154,10 @@ window.__ModuleLoader__.load({
 			jobClickToReview: "点击卡片查看报告",
 			interrupt: "中断",
 			interrupted: "已中断",
+			jobHelping: "已交予会话安装",
+			helpInstall: "帮我安装",
+			helpInstallDone: "已开启安装会话（{sessionId}），报错信息已附上，请到侧边栏会话查看进度",
+			helpSessionOpen: "安装会话：{sessionId}",
 			uninstall: "卸载",
 			uninstallTitle: "确认卸载",
 			uninstallConfirm: "确定卸载 {name}？该操作会移除插件包与配置，无法撤销。",
@@ -244,6 +248,10 @@ window.__ModuleLoader__.load({
 			jobClickToReview: "Click card to view report",
 			interrupt: "Interrupt",
 			interrupted: "Interrupted",
+			jobHelping: "Handed to session",
+			helpInstall: "Help me install",
+			helpInstallDone: "Help session opened ({sessionId}) — error attached, see the sidebar session",
+			helpSessionOpen: "Help session: {sessionId}",
 			uninstall: "Uninstall",
 			uninstallTitle: "Confirm uninstall",
 			uninstallConfirm: "Uninstall {name}? This removes the package and its config. This cannot be undone.",
@@ -334,7 +342,7 @@ window.__ModuleLoader__.load({
 		}
 
 		// ── main tab component ───────────────────────────────────────────────
-		function PluginMarketTab({ t }) {
+		function PluginMarketTab({ t, sessions }) {
 			const [state, setState] = useState({ status: "loading" });
 			const [busy, setBusy] = useState(null);
 			const [message, setMessage] = useState(null);
@@ -496,6 +504,29 @@ window.__ModuleLoader__.load({
 				setBusy("interrupt:" + jobId);
 				call("/plugin-market/install/interrupt", { jobId })
 					.then(() => { refresh(); flash(t("interrupted"), true); })
+					.catch((error) => flash(error.message, false))
+					.finally(() => setBusy(null));
+			};
+			const readCurrentSessionId = () => {
+				try {
+					const list = sessions && sessions.list;
+					const snap = list && typeof list.getSnapshot === "function" ? list.getSnapshot() : null;
+					return snap && typeof snap.current === "string" ? snap.current : "";
+				} catch { return ""; }
+			};
+			// 帮我安装：失败任务 → 开启可见 harness 会话并附上报错，由会话诊断并完成安装
+			const doHelpInstall = (job, event) => {
+				if (event) event.stopPropagation();
+				setBusy("help:" + job.jobId);
+				call("/plugin-market/install/help", { jobId: job.jobId, sessionId: readCurrentSessionId() })
+					.then((data) => {
+						refresh();
+						flash(tpl(t("helpInstallDone"), { sessionId: data.sessionId ?? "" }), true);
+						if (data && typeof data.sessionId === "string" && data.sessionId !== ""
+							&& sessions && typeof sessions.refresh === "function" && typeof sessions.open === "function") {
+							sessions.refresh().then(() => sessions.open(data.sessionId)).catch(() => {});
+						}
+					})
 					.catch((error) => flash(error.message, false))
 					.finally(() => setBusy(null));
 			};
@@ -684,12 +715,17 @@ window.__ModuleLoader__.load({
 				jobs.length === 0
 					? h("p", { className: "pm-empty" }, t("pendingEmpty"))
 					: h("ul", { className: "pm-list" }, jobs.map((job) => {
+						// 失败判定（显示报错与失败状态）：显式 failed，或拉取/审查失败（status 仍为 pending 但带 error）
+						const jobFailed = job.status !== "helping" && (job.status === "failed" || (job.error != null && job.error !== ""));
+						// 可「帮我安装」：仅安装阶段失败（审查选中时指审查结束、点击确认安装之后的失败；拉取/审查失败不提供）
+						const jobHelpable = job.status === "failed";
 						const statusLabel = job.status === "pulling"
 							? (t("jobPulling") + " · " + Math.max(1, Math.round((Date.now() - job.createdAt) / 1000)) + "s")
 							: job.status === "reviewing"
 								? (t("jobReviewing") + (job.stage ? " · " + stageLabel(job.stage) : "") + " · " + Math.max(1, Math.round((Date.now() - job.createdAt) / 1000)) + "s")
 							: job.status === "installing" ? t("jobInstalling")
-							: job.status === "failed" ? t("jobFailed")
+							: jobFailed ? t("jobFailed")
+							: job.status === "helping" ? t("jobHelping")
 							: t("jobPending");
 						return h("li", { className: "pm-row", key: job.jobId, "data-job": job.status,
 							onClick: () => clickJob(job) },
@@ -701,7 +737,9 @@ window.__ModuleLoader__.load({
 							h("div", { className: "pm-meta" },
 								h("span", { className: "pm-repo" }, job.repo),
 								job.scan ? h("span", { className: "pm-hint" }, tpl(t("scanInfo"), { files: job.scan.files, signals: job.scan.signals })) : null,
-								job.review && job.review.verdict ? h("span", { className: "pm-hint" }, t("jobClickToReview")) : null
+								job.review && job.review.verdict ? h("span", { className: "pm-hint" }, t("jobClickToReview")) : null,
+								jobFailed && job.error ? h("span", { className: "pm-message", "data-error": "true" }, job.error) : null,
+								job.status === "helping" && job.helpSessionId ? h("span", { className: "pm-hint" }, tpl(t("helpSessionOpen"), { sessionId: job.helpSessionId })) : null
 							),
 							(job.status === "pulling" || job.status === "installing") && job.progress
 								? h("div", { className: "pm-progress" },
@@ -714,6 +752,9 @@ window.__ModuleLoader__.load({
 								)
 								: null,
 							h("div", { className: "pm-btns" },
+								jobHelpable
+									? h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: (e) => doHelpInstall(job, e) }, t("helpInstall"))
+									: null,
 								h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: (e) => doInterrupt(job.jobId, e) }, t("interrupt"))
 							)
 						);
@@ -802,7 +843,7 @@ window.__ModuleLoader__.load({
 				order: 20,
 				label: () => t("tab"),
 				locale: NS,
-				inject: () => ({}),
+				inject: () => ({ sessions: ctx.sessions }),
 			}, PluginMarketTab));
 
 			// ── 侧边栏 dsh 版本状态灯（品牌名下方，DOM 注入） ────────────────

@@ -18,6 +18,7 @@ plugin-market 自身）。dsh 自带的官方 bundle（@deepseek-ai/dsh-base、@
 - **开关**：写 `cordis.patch.yml`（用户补丁层，逐键覆盖）——追加 `- id: X` + `disabled: true` 停用、移除即恢复；HMR 热生效，无需重启（host 代码除外）。
 - **开关校验**：开关后轮询 loader 树校验是否真的生效；若热更新未应用（树与补丁文件脱节），界面会提示「需重启 dsh web 后生效」。
 - **安装（两阶段 + 任务可视化）**：阶段 1 创建安装任务（拉取中 → 审查中 → 待安装），在隔离目录拉取并做安全审查；「待安装插件」区实时展示任务卡片（状态/阶段/耗时/扫描信息/**拉取进度**，1s 轮询）——拉取与安装阶段流式解析 pnpm 的 Progress 行，卡片上展示进度条与依赖解析数；可随时**中断**（无需二次确认，清理残留后任务即刻消失）；点击任务卡片可重开审查报告。审查通过后**需点击「确认安装」**才迁移到 profile（`pnpm add`；bundle 包追加 `dsh.profile.bundles`，普通插件追加 insert 行）；取消则清理隔离目录、不安装。任务 30 分钟过期。关闭安全审查时保持直接安装。
+- **帮我安装（失败交给 harness 会话）**：安装失败时任务卡片**保留在列表**并展示报错信息；「**帮我安装**」按钮仅在**安装阶段失败**（审查选中时：审查结束、点击「确认安装」之后的 `pnpm add`/迁移失败）时出现在卡片上——点击自动开启一个**可见的 harness 会话**（挂到当前工作区、侧边栏可直接打开），把安装请求、失败报错与 profile 目录等信息写进首条消息，由会话诊断失败原因（网络 / pnpm 锁文件 / 构建脚本授权 / 仓库地址等）并完成安装（修复后写补丁层/manifest）。任务随即标记「已交予会话安装」，再次点击幂等返回同一会话。拉取/审查阶段失败（尚未走到安装）只展示报错、不提供该按钮。
 - **安全审查（harness 会话 + 分层）**：先在隔离目录拉取，L0 确定性正则对**全量文件**（不限大小）扫描风险信号（shell 执行 / eval / 动态 import / 外链 URL / base64 / fs 写入 / DOM 注入 / 混淆等），再对命中信号**自动起一轮 dsh 会话**（`agents.create` + `followup` + 轮询会话日志精确提取 JSON 报告）做**定向深挖**，信号多时做一层**聚合终审**；会话在发提示词前即归档隐藏（防用户干扰、防误操作）。会话通道不可用时回退云 LLM 直连。报告按 `包名@版本` 缓存 7 天，含扫描范围（文件数/KB/信号数）、分层方法（L0 clean / L0+L1 / L0+L1+aggregate）与通道（session/llm）。source map 带 `sourcesContent` 时会还原可读源码供交叉参考。
 - **审查开关交互**：开启仅需 1 次点击；**关闭需连点 5 次**（点击整个文案计数，实时提示剩余次数）；每次状态切换后有 1 秒保护期，防止误触又开启。状态持久化在 localStorage。
 - **pnpm 构建脚本授权（自动 allowBuilds）**：pnpm v10.26+/v11 安全策略（GHSA-5wx6-mg75-v57r）默认禁止 git 托管依赖执行 prepare 构建脚本（报 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED）、并把被忽略的传递依赖构建（如 node-pty）以退出码 1 结束（ERR_PNPM_IGNORED_BUILDS）。插件市场作为显式安装器，在安装/更新/布局修复遇到这两类错误时，会**自动把授权写入 pnpm-workspace.yaml 的 allowBuilds 并重试**：git 插件写仓库级键 `包名@git+https://github.com/owner/repo.git`（跨 commit 稳定，插件更新后无需再次授权），被忽略的构建脚本按包名放行；行级合并，保留 profile 原有的 packages/nodeLinker 等配置。
@@ -25,8 +26,8 @@ plugin-market 自身）。dsh 自带的官方 bundle（@deepseek-ai/dsh-base、@
 - **卸载**：先 `pnpm remove` 移除依赖（失败即报错、配置保留、可重试），成功后再移除 insert 行 / bundle 配置；bundle 卸载会额外写一条**临时禁用行**让运行树立即 HMR 卸载（避免"文件已删、旧服务仍引用"导致页面启动报错，重装时自动清理）；卸载同时清除该插件的仓库地址覆盖。
 - **检查更新**：git 通道，用 `git ls-remote` 对比远端 HEAD 与本地 lockfile 锁定的 commit；开启安全审查时，与「更新」一致对新版本与已装代码做文件级差异审查，报告标注 `method: update-diff` 并直接展示本次改动（新增/删除/修改）；审查后保留隔离目录，确认更新直接安装（见上条）。
 - **整合仓库（monorepo）**：地址支持 `#path:子目录` 语法（如 `https://github.com/WensH77/dsh-plugins.git#path:chat-rollback`）——git 通道安装该仓库内的子目录插件包，检查更新/更新同样生效（lockfile 的 codeload commit 对比天然兼容子目录格式）。
-- **仓库展示（安装来源）**：安装时自动保存**用户填写的仓库地址**（归一化为 `owner/name[#path:子目录]`）为该插件的**来源仓库**；已安装卡片只展示该来源仓库（git 通道「拉取下来的远端仓库」）或本地安装路径（link:/file: 依赖），不再回落到包内 `repository` 字段（很多包未声明），也不支持手动编辑仓库地址。
-- **待重启提示**：bundle 层启动时加载——安装后若未重启，已写入 manifest 的 bundle 会显示在「**待重启**」卡片区（标注来源与依赖 spec），重启 dsh web 后加载生效。
+- **仓库展示（安装来源）**：安装时自动保存**用户填写的仓库地址**（归一化为 `owner/name[#path:子目录]`）为该插件的**来源仓库**；已安装卡片展示来源仓库或本地安装路径（link:/file: 依赖）。没有 marketplace 记录时（如 CLI 安装的插件）自动**回落**到包内 `repository` 字段、再到 `github:` 依赖 spec，保证 CLI 安装的 git 插件也能看到来源并检查更新。
+- **待重启提示**：bundle 层启动时加载——安装后若未重启，已写入 manifest 的 bundle 会显示在「**待重启**」卡片区（标注来源与依赖 spec），重启 dsh web 后加载生效。insert 层插件在热重载关闭/未生效时（已写入补丁但未进运行树）同样列入「待重启」，避免「已安装」「待重启」都看不到它。
 - **清理缓存**：一键删除 1 小时前的隔离残留与过期审查报告（`/cleanup`）。**已安装插件当前版本的审查报告永久保留**——点击已安装插件卡片即可查看（复用安装/更新时生成的报告；没有则首次点击时对已安装包现场生成），生成后标记为保留，自动清理与清理缓存都不会删除。
 - **dsh 版本状态灯（侧边栏）**：在侧边栏品牌名（DeepSeek Harness）下方注入一个**状态灯 + 已装 dsh 版本号**，检测对象是 **`deepseek-ai/deepseek-harness`**（dsh 本体）——**web 启动时检测一次 + 每 1 小时同步**（`git ls-remote --tags` 取最新 `dsh-v*` tag 与已装版本对比）。绿=已是最新；黄=有新版本（尚未分析或无破坏性）；红=有新版本且存在破坏性更新；灰=无法检查。**点击黄/红灯**会开启一个可见的新会话，用默认模型（`agent-default-model`）自动分析“新版本更新了什么、是否对当前已安装插件有破坏性更新”，要求结构化 JSON 回复（`changes`/`breakingChanges`/`affectedPlugins`），宿主读取该会话首条 assistant 回复解析 `breakingChanges` 并持久化——无破坏保持黄、有破坏变红。判定持久化在 `~/.dsh/plugin-market-dsh.json`，重启后仍生效，远端版本变化后重置为待分析。
 
@@ -52,6 +53,7 @@ dsh plugin --profile web add ./plugin-market
 | `/plugin-market/install/confirm` | POST | 确认安装：把阶段 1 的任务迁移进 profile |
 | `/plugin-market/install/cancel` | POST | 取消安装：清理隔离目录，不迁移 |
 | `/plugin-market/install/interrupt` | POST | 中断安装任务（拉取中/审查中/待安装均可；清理残留后任务即刻消失） |
+| `/plugin-market/install/help` | POST | 帮我安装：安装失败时开启可见 harness 会话（附报错信息与 profile 目录），由会话诊断并完成安装；返回 `{ sessionId }` |
 | `/plugin-market/update` | POST | 更新已安装插件（优先用 `updateJobId` 指向的隔离目录直接安装，不重新拉取/审查；审查报告保存为新版本，点击已安装卡片即可查看；进行中有进度提示） |
 | `/plugin-market/uninstall` | POST | 卸载插件（先删依赖后删配置，失败可重试；bundle 即时卸载） |
 | `/plugin-market/cleanup` | POST | 一键清理缓存（1 小时前的隔离残留与过期审查报告） |
