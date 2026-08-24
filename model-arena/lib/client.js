@@ -812,13 +812,21 @@ window.__ModuleLoader__.load({
 			".ma-challengeStop:hover{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)}",
 			// shared rotation keyframes for the sidebar challenger loading dot
 			// (the header spinner was removed per user feedback — the sidebar row
-			// dot is the only challenger loading indicator now).
-			"@keyframes ma-spin{to{transform:rotate(360deg)}}",
-			// challenger loading dot inside the SIDEBAR session row (the selected
-			// main-session row): a small rotating ring seated where the native
-			// StateDot goes, so the workspace list shows "this session's challenger
-			// is working" just like the main model's own running dot.
-			".ma-sidebarLoading{width:8px;height:8px;border:1.5px solid var(--dsw-alias-border-l3);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;flex:none;animation:ma-spin .8s linear infinite}",
+			// dot is the only challenger loading indicator now). The ring centers
+			// itself with translate(-50%,-50%), so the rotation keyframes carry the
+			// SAME translate to keep it centered while spinning.
+			"@keyframes ma-spin{from{transform:translate(-50%,-50%) rotate(0deg)}to{transform:translate(-50%,-50%) rotate(360deg)}}",
+			// Challenger loading indicator inside the SIDEBAR session row: a thin
+			// spinning ring that wraps AROUND the native StateDot (10px). When the
+			// main model is idle the ring shows alone (clear "challenger working");
+			// when the main model is ALSO running (green/ongoing dot) the ring
+			// encircles that dot instead of being hidden under it. The slot is made
+			// the positioning context via an INLINE style at inject time (not a CSS
+			// rule on the hashed .YDXeBa_* class, which is fragile across dsh web
+			// upgrades), and the ring centers with translate so its containing block
+			// is always the slot — never a larger ancestor (that was the "ring spins
+			// in the middle of the title" bug).
+			".ma-sidebarLoading{box-sizing:border-box;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:14px;height:14px;border:1.5px solid var(--dsw-alias-border-l3);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;animation:ma-spin .8s linear infinite}",
 			"@media (prefers-reduced-motion:reduce){.ma-sidebarLoading{animation:none}}",
 			".ma-conflict{flex:none;color:var(--dsw-alias-state-warn-label);font-size:12px;line-height:18px}",
 			".ma-error{flex:none;color:var(--dsw-alias-state-error-primary);align-items:center;gap:6px;font-size:12px;line-height:18px;display:inline-flex}",
@@ -4360,58 +4368,69 @@ window.__ModuleLoader__.load({
 				// re-touches the row (MutationObserver feedback guard).
 				const syncChallengerLoading = () => {
 					try {
-						// Any linked arena challenger currently running — covers the
-						// current session (live arenaMount challenge) and background
-						// duels (persisted baseline + live arena snapshot) alike.
-						const anyChallengerRunning = (() => {
+						const current = currentSessionId();
+						const list = ctx.sessions.list.getSnapshot?.();
+						// Collect the MAIN session ids whose challenger is currently
+						// generating — not just "is any challenger running". linksCache
+						// may hold several historical links (one per arena duel), and the
+						// dot must land on the row of the main session whose challenger
+						// is ACTUALLY running, never on an already-ended duel's row.
+						const runningMainIds = [];
+						for (const mainId of Object.keys(linksCache)) {
+							const link = linksCache[mainId];
+							if (link === null || typeof link !== "object" || typeof link.sessionId !== "string") continue;
+							// 当前会话用 arenaMount 的实时挑战状态（比持久化基线更新），
+							// 其余会话用持久化基线 challengesCache
+							const challenge = (mainId === current && arenaMount !== null && arenaMount.sessionId === mainId)
+								? arenaMount.challenge
+								: challengesCache[mainId];
+							if (challenge === null || typeof challenge !== "object" || challenge.active !== true) continue;
+							if (!isChallengerPhase(challenge.phase)) continue;
+							let snap = void 0;
 							try {
-								const current = currentSessionId();
-								for (const mainId of Object.keys(linksCache)) {
-									const link = linksCache[mainId];
-									if (link === null || typeof link !== "object" || typeof link.sessionId !== "string") continue;
-									// 当前会话用 arenaMount 的实时挑战状态（比持久化基线更新），
-									// 其余会话用持久化基线 challengesCache
-									const challenge = (mainId === current && arenaMount !== null && arenaMount.sessionId === mainId)
-										? arenaMount.challenge
-										: challengesCache[mainId];
-									if (challenge === null || typeof challenge !== "object" || challenge.active !== true) continue;
-									if (!isChallengerPhase(challenge.phase)) continue;
-									const snap = ctx.sessions.binding(link.sessionId)?.session?.getSnapshot?.();
-									if (snap?.running === true) return true;
-								}
+								snap = ctx.sessions.binding(link.sessionId)?.session?.getSnapshot?.();
 							} catch {}
-							return false;
-						})();
+							if (snap?.running === true) runningMainIds.push(mainId);
+						}
 						// 竞技场主会话的侧边栏行：按 sessions-list 的 displayTitle 匹配标题
 						// span（与 hideArenaSessionRows 识别竞技场行同一模式）。
-						const mainRow = (() => {
+						const rowForMainId = (mainId) => {
 							try {
-								const list = ctx.sessions.list.getSnapshot?.();
-								for (const mainId of Object.keys(linksCache)) {
-									const summary = list?.byId?.[mainId];
-									const title = typeof summary?.displayTitle === "string" ? summary.displayTitle.trim() : "";
-									if (title === "") continue;
-									for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
-										if (!(el instanceof HTMLElement)) continue;
-										const titleEl = el.querySelector?.(ANCHORS.sidebarTitle);
-										if (titleEl instanceof HTMLElement && (titleEl.textContent || "").trim() === title) return el;
-									}
+								const summary = list?.byId?.[mainId];
+								const title = typeof summary?.displayTitle === "string" ? summary.displayTitle.trim() : "";
+								if (title === "") return null;
+								for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
+									if (!(el instanceof HTMLElement)) continue;
+									const titleEl = el.querySelector?.(ANCHORS.sidebarTitle);
+									if (titleEl instanceof HTMLElement && (titleEl.textContent || "").trim() === title) return el;
 								}
 							} catch {}
 							return null;
-						})();
-						const selectedRow = (() => {
+						};
+						// 注入目标：每个「挑战者正在运行」的主会话行（未选中也显示）。
+						const runningRows = new Set();
+						for (const mainId of runningMainIds) {
+							const row = rowForMainId(mainId);
+							if (row !== null) runningRows.add(row);
+						}
+						// 回退：标题定位失败（会话列表尚未加载完）时，仅当运行的挑战者
+						// 恰好属于当前会话，才回退到当前选中行——绝不复用到其它（可能已
+						// 结束）会话的行，这正是「spin 挂在已结束挑战者会话上」的根因。
+						let fallbackRow = null;
+						if (runningRows.size === 0 && runningMainIds.length === 1 && runningMainIds[0] === current) {
 							for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
-								if (el instanceof HTMLElement && typeof el.className === "string" && el.className.split(/\s+/).includes(ANCHORS.sidebarSelected)) return el;
+								if (el instanceof HTMLElement && typeof el.className === "string" && el.className.split(/\s+/).includes(ANCHORS.sidebarSelected)) {
+									fallbackRow = el;
+									break;
+								}
 							}
-							return null;
-						})();
-						// 注入目标：优先竞技场主会话行（未选中也显示），找不到再回退当前选中行
-						const targetRow = mainRow !== null ? mainRow : selectedRow;
+						}
+						const showDot = runningRows.size > 0 || fallbackRow !== null;
 						for (const el of document.querySelectorAll(ANCHORS.sidebarRow)) {
 							if (!(el instanceof HTMLElement)) continue;
 							const dot = el.querySelector(".ma-sidebarLoading");
-							if (anyChallengerRunning && el === targetRow) {
+							const isTarget = runningRows.has(el) || (fallbackRow !== null && el === fallbackRow);
+							if (showDot && isTarget) {
 								if (dot === null) {
 									const slot = el.querySelector(ANCHORS.sidebarSlot) ?? el;
 									const spinner = document.createElement("span");
@@ -4419,6 +4438,15 @@ window.__ModuleLoader__.load({
 									spinner.dataset.arenaSidebarLoading = "";
 									spinner.setAttribute("role", "status");
 									spinner.setAttribute("aria-label", t("challenge.loading"));
+									// Make the seat the positioning context for the absolutely-
+									// positioned ring via an inline style — a CSS rule on the
+									// hashed .YDXeBa_* class is fragile across dsh web upgrades
+									// and left the ring centered over a larger ancestor (the
+									// "spins in the middle of the title" bug). Inline style on
+									// the exact element is bulletproof.
+									try {
+										slot.style.position = "relative";
+									} catch {}
 									slot.appendChild(spinner);
 									el.dataset.arenaLoading = "";
 								}

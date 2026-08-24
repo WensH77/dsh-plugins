@@ -154,8 +154,18 @@ const normalTitle = new FakeElement("span");
 normalTitle.className = "YDXeBa_title";
 normalTitle.textContent = "普通会话";
 normalRow.appendChild(normalTitle);
+// A second MAIN session row (a previously-finished arena duel) so the
+// sidebar-dot regression can prove the indicator lands on the RUNNING
+// challenger's row and never on an already-ended duel's row.
+const endedRow = new FakeElement("div");
+endedRow.className = "YDXeBa_sessionRow";
+const endedTitle = new FakeElement("span");
+endedTitle.className = "YDXeBa_title";
+endedTitle.textContent = "已结束会话";
+endedRow.appendChild(endedTitle);
 bodyRoot.appendChild(arenaRow);
 bodyRoot.appendChild(normalRow);
+bodyRoot.appendChild(endedRow);
 bodyRoot.appendChild(scrollBody);
 
 function findInTree(node, pred) {
@@ -182,7 +192,7 @@ const documentStub = {
     return null;
   },
   querySelectorAll: (selector) => {
-    if (selector === ".YDXeBa_sessionRow") return [arenaRow, normalRow];
+    if (selector === ".YDXeBa_sessionRow") return [arenaRow, normalRow, endedRow];
     return [];
   },
   createElement: (tag) => new FakeElement(tag),
@@ -1809,6 +1819,31 @@ if (stalledMount !== null && stalledMount.challenge.active === true && stalledMo
   check("sidebar: challenger replied → dot removed (revise phase)", !sidebarDotIn(normalRow) && internals.getArenaMount().challenge.phase === "revise", "phase=" + internals.getArenaMount()?.challenge?.phase);
   normalRow.className = "YDXeBa_sessionRow";
   delete byIdMock.s11;
+
+  // 10b) REGRESSION: the sidebar dot must land on the RUNNING challenger's
+  //      main-session row, not on an earlier linked session whose duel already
+  //      ended. linksCache holds one link per duel; the first key in iteration
+  //      order used to win the displayTitle match and grab the dot even though
+  //      its challenger was long done. Two links, the ended one FIRST, prove
+  //      the indicator follows the running challenger — not key order.
+  linkFor("sEnded", "business", "arena-ended");
+  persistFor("sEnded", baseChallenge({ phase: "done", active: false }));
+  byIdMock.sEnded = { displayTitle: "已结束会话" };
+  linkFor("sRun", "knowledge", "arena-run");
+  persistFor("sRun", baseChallenge({ phase: "review", scene: "knowledge", arenaAnchor: "", lastReviewSeq: 1 }));
+  byIdMock.sRun = { displayTitle: "普通会话" };
+  // current session stays s11 (its round already moved to a main-model phase),
+  // so both sEnded and sRun read the persisted baseline; only sRun's challenger runs.
+  const arenaRunStore = sessionStores.get("arena-run") ?? makeSessionStore("arena-run", { chat: emptyChat, running: false });
+  arenaRunStore._set({ chat: emptyChat, running: true });
+  listSub();
+  await sleep(120);
+  check("sidebar: dot on the RUNNING challenger's row, not the ended duel's row", sidebarDotIn(normalRow) && !sidebarDotIn(endedRow));
+  // clean up: idle the challenger, drop the temp titles
+  arenaRunStore._set({ chat: emptyChat, running: false });
+  await sleep(60);
+  delete byIdMock.sEnded;
+  delete byIdMock.sRun;
 
   // 11) background advance (opt-in via settings.backgroundAdvance, default OFF):
   //     a duel whose MAIN session is not the current one advances from its
