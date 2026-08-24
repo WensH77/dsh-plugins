@@ -25,12 +25,11 @@ const Config = z.object({
   // Export image width in CSS px (clamped client-side to 480..1400).
   width: z.number(),
   // Raster scale (device pixels per CSS px; clamped client-side to 1..3).
+  // The export is ALWAYS one image: very long sessions lower the effective
+  // scale so the final canvas stays within browser dimension limits.
   scale: z.number(),
-  // Max canvas height per output part in CSS px (long sessions split into
-  // <name>-1.png, <name>-2.png …).
-  partHeight: z.number(),
-  // Segment rasterization height in CSS px (each segment is drawn separately
-  // then stitched onto the part canvas).
+  // Segment rasterization height in CSS px (each segment is drawn separately,
+  // then stitched onto the single output canvas).
   segmentHeight: z.number()
 });
 
@@ -140,7 +139,7 @@ export function deriveTitle(events, messages) {
 
 /**
  * Build the `/session-export/data` request handler bound to an env.
- * @param {{ctx: any, config: {maxMessages: number, width: number, scale: number, partHeight: number, segmentHeight: number}}} env
+ * @param {{ctx: any, config: {maxMessages: number, width: number, scale: number, segmentHeight: number}}} env
  * @returns {(req: any, res: any) => Promise<void>}
  */
 export function buildDataHandler(env) {
@@ -169,7 +168,6 @@ export function buildDataHandler(env) {
         config: {
           width: env.config.width,
           scale: env.config.scale,
-          partHeight: env.config.partHeight,
           segmentHeight: env.config.segmentHeight
         }
       });
@@ -201,7 +199,6 @@ function apply(ctx, config = {}) {
       maxMessages: config.maxMessages ?? 4000,
       width: config.width ?? 860,
       scale: config.scale ?? 2,
-      partHeight: config.partHeight ?? 10000,
       segmentHeight: config.segmentHeight ?? 8000
     }
   };

@@ -62,7 +62,7 @@ function check(label, cond, detail) {
 console.log('module surface:');
 check('apply exported', typeof loaded.apply === 'function');
 check('ExportAction exported', typeof loaded.ExportAction === 'function');
-check('pure helpers exported', ['escapeXml', 'renderMarkdownHtml', 'buildMessageHtml', 'buildExportCss', 'buildSegmentsHtml', 'sanitizeFileName'].every((k) => typeof loaded[k] === 'function'));
+check('pure helpers exported', ['escapeXml', 'renderMarkdownHtml', 'buildMessageHtml', 'buildExportCss', 'packSegments', 'buildSegmentHtml', 'sanitizeFileName'].every((k) => typeof loaded[k] === 'function'));
 
 // ── markdown → XHTML ────────────────────────────────────────────────────────
 console.log('markdown renderer:');
@@ -159,7 +159,7 @@ console.log('header button:');
   check('button has no raw string svg child', buttonChildren.every((c) => typeof c !== 'string' || !c.includes('<svg')), JSON.stringify(buttonChildren.map((c) => typeof c)));
 }
 
-// ── segment packing ─────────────────────────────────────────────────────────
+// ── segment packing + segment html ──────────────────────────────────────────
 console.log('segment packing:');
 {
   const opts = { segmentHeight: 200 };
@@ -167,20 +167,23 @@ console.log('segment packing:');
   const headerHtml = '<header class="dse-export-head"><h1 class="dse-title">T</h1></header>';
   const footerHtml = '<footer class="dse-footer">F</footer>';
   const messageHtmls = ['<section class="dse-msg">1</section>', '<section class="dse-msg">2</section>', '<section class="dse-msg">3</section>', '<section class="dse-msg">4</section>'];
-  const messageHeights = [80, 80, 80, 80]; // 4 × 80 = 320 > 200 -> 2 segments
-  const segments = loaded.buildSegmentsHtml({ css, headerHtml, footerHtml, messageHtmls, messageHeights, headerH: 40, footerH: 20, opts });
-  check('packs into 2 segments', segments.length === 2, String(segments.length));
-  check('segment 1 height = 56 + header(40) + 160', segments[0].height === 256, String(segments[0].height));
-  check('segment 2 height = 56 + 160 + footer(20+30)', segments[1].height === 266, String(segments[1].height));
-  check('header only on first segment', segments[0].html.includes('dse-export-head') && !segments[1].html.includes('dse-export-head'));
-  check('footer only on last segment', !segments[0].html.includes('dse-footer') && segments[1].html.includes('dse-footer'));
-  check('embed style on every segment', segments.every((s) => s.html.startsWith('<style>')));
-  check('message order preserved', segments[0].html.includes('>1</section>') && segments[0].html.includes('>2</section>') && segments[1].html.includes('>3</section>') && segments[1].html.includes('>4</section>'));
-  const single = loaded.buildSegmentsHtml({ css, headerHtml, footerHtml, messageHtmls: ['<section class="dse-msg">1</section>'], messageHeights: [30], headerH: 40, footerH: 20, opts });
-  check('single message -> one segment with header+footer', single.length === 1 && single[0].html.includes('dse-export-head') && single[0].html.includes('dse-footer'), JSON.stringify(single));
-  // an over-tall message gets its own (over-limit) segment instead of splitting
-  const tall = loaded.buildSegmentsHtml({ css, headerHtml, footerHtml, messageHtmls: ['<section class="dse-msg">big</section>', '<section class="dse-msg">2</section>'], messageHeights: [500, 20], headerH: 0, footerH: 0, opts });
-  check('over-tall message keeps its own segment', tall.length === 2 && tall[0].height === 556, JSON.stringify(tall.map((s) => s.height)));
+  const groups = loaded.packSegments([80, 80, 80, 80], opts); // 4 × 80 = 320 > 200 -> 2 segments
+  check('packs into 2 segments', groups.length === 2 && groups[0].idx.join(',') === '0,1' && groups[1].idx.join(',') === '2,3', JSON.stringify(groups));
+  const html0 = loaded.buildSegmentHtml({ css, headerHtml, footerHtml, messageHtmls, idx: groups[0].idx, first: true, last: false });
+  const html1 = loaded.buildSegmentHtml({ css, headerHtml, footerHtml, messageHtmls, idx: groups[1].idx, first: false, last: true });
+  check('header only on first segment', html0.includes('dse-export-head') && !html1.includes('dse-export-head'));
+  check('footer only on last segment', !html0.includes('dse-footer') && html1.includes('dse-footer'));
+  check('embed style on every segment', html0.startsWith('<style>') && html1.startsWith('<style>'));
+  check('message order preserved', html0.includes('>1</section>') && html0.includes('>2</section>') && html1.includes('>3</section>') && html1.includes('>4</section>'));
+  check('wrapped in .dse-export', html0.includes('<div class="dse-export">') && html0.endsWith('</div>'));
+  const single = loaded.buildSegmentHtml({ css, headerHtml, footerHtml, messageHtmls, idx: [0], first: true, last: true });
+  check('single segment has header+footer', single.includes('dse-export-head') && single.includes('dse-footer'), single);
+  // an over-tall message keeps its own (over-limit) segment instead of splitting
+  const tall = loaded.packSegments([500, 20], opts);
+  check('over-tall message keeps its own segment', tall.length === 2 && tall[0].idx.join(',') === '0' && tall[1].idx.join(',') === '1', JSON.stringify(tall));
+  // zero/undefined heights degrade to a single group
+  const zeros = loaded.packSegments([0, 0, 0], opts);
+  check('zero heights -> one group', zeros.length === 1 && zeros[0].idx.length === 3, JSON.stringify(zeros));
 }
 
 // ── filename sanitize ───────────────────────────────────────────────────────

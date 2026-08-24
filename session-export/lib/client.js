@@ -49,7 +49,6 @@ window.__ModuleLoader__.load({
 			'export': '导出当前会话为长图',
 			'exporting': '导出中…',
 			'done': '已导出长图 {name}',
-			'doneParts': '会话较长，已导出 {n} 张长图',
 			'doneSkipped': '（已隐藏 {n} 条思考）',
 			'empty': '会话暂无消息可导出',
 			'error': '导出失败：{message}',
@@ -64,7 +63,6 @@ window.__ModuleLoader__.load({
 			'export': 'Export this session as a long image',
 			'exporting': 'Exporting…',
 			'done': 'Exported long image {name}',
-			'doneParts': 'Long session — exported {n} images',
 			'doneSkipped': '（{n} thinking blocks hidden）',
 			'empty': 'Nothing to export in this session',
 			'error': 'Export failed: {message}',
@@ -365,41 +363,36 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Pack messages into segments and produce each segment's standalone HTML.
-		 * Pure: heights come from a browser measure pass, everything else is
-		 * string assembly.
-		 * @param {{css: string, headerHtml: string, footerHtml: string, messageHtmls: string[], messageHeights: number[], headerH?: number, footerH?: number, opts: {segmentHeight: number}}} input
-		 * @returns {{html: string, height: number}[]}
+		 * Group message indices into segments by cumulative height. Purely a
+		 * packing hint — the ACTUAL per-segment height is measured from real
+		 * layout at render time, so a slightly over-limit group is harmless.
+		 * @param {number[]} messageHeights
+		 * @param {{segmentHeight: number}} opts
+		 * @returns {{idx: number[]}[]}
 		 */
-		function buildSegmentsHtml(input) {
-			const { css, headerHtml, footerHtml, messageHtmls, messageHeights, headerH = 0, footerH = 0, opts } = input;
+		function packSegments(messageHeights, opts) {
 			const segMax = opts.segmentHeight;
 			const segments = [];
 			let current = [];
 			let currentH = 0;
-			for (let i = 0; i < messageHtmls.length; i += 1) {
-				const height = messageHeights[i];
+			for (let i = 0; i < messageHeights.length; i += 1) {
+				const height = messageHeights[i] || 0;
 				if (current.length > 0 && currentH + height > segMax) {
-					segments.push({ idx: current, contentH: currentH });
+					segments.push({ idx: current });
 					current = [];
 					currentH = 0;
 				}
 				current.push(i);
 				currentH += height;
 			}
-			if (current.length > 0) segments.push({ idx: current, contentH: currentH });
-			return segments.map((segment, index) => {
-				const first = index === 0;
-				const last = index === segments.length - 1;
-				const body = segment.idx.map((i) => messageHtmls[i]).join('');
-				const head = first ? headerHtml : '';
-				const foot = last ? footerHtml : '';
-				// .dse-export padding (28 top + 28 bottom) plus the footer's
-				// margin-top (30); header bottom padding is inside headerH.
-				const height = Math.round((first ? headerH : 0) + segment.contentH + (last ? footerH + 30 : 0) + 56);
-				const html = '<style>' + css + '</style><div class="dse-export">' + head + body + foot + '</div>';
-				return { html, height };
-			});
+			if (current.length > 0) segments.push({ idx: current });
+			return segments;
+		}
+
+		/** One segment's standalone HTML: embedded style + .dse-export wrapper. */
+		function buildSegmentHtml({ css, headerHtml, footerHtml, messageHtmls, idx, first, last }) {
+			const body = idx.map((i) => messageHtmls[i]).join('');
+			return '<style>' + css + '</style><div class="dse-export">' + (first ? headerHtml : '') + body + (last ? footerHtml : '') + '</div>';
 		}
 
 		/** Make a filesystem- and download-friendly file base name. */
@@ -473,48 +466,36 @@ window.__ModuleLoader__.load({
 			return { canvas, cssHeight: segment.height };
 		}
 
-		/** Stitch segment canvases into one part canvas (height ≤ partHeight). */
-		function composePart(segmentCanvases, partScale, width) {
-			const totalPx = segmentCanvases.reduce((sum, item) => sum + Math.round(item.cssHeight * partScale), 0);
+		/**
+		 * Stitch all segment canvases onto ONE final canvas (a single image, no
+		 * multi-part splitting). Each segment is drawn at the shared final scale,
+		 * so per-segment guard scaling is normalized away.
+		 */
+		function composeOne(segmentCanvases, scale, width) {
+			const totalPx = segmentCanvases.reduce((sum, item) => sum + Math.round(item.cssHeight * scale), 0);
 			const canvas = document.createElement('canvas');
-			canvas.width = Math.round(width * partScale);
+			canvas.width = Math.round(width * scale);
 			canvas.height = totalPx;
 			const context = canvas.getContext('2d');
 			let y = 0;
 			for (const item of segmentCanvases) {
-				const heightPx = Math.round(item.cssHeight * partScale);
+				const heightPx = Math.round(item.cssHeight * scale);
 				context.drawImage(item.canvas, 0, y, canvas.width, heightPx);
 				y += heightPx;
 			}
 			return canvas;
 		}
 
-		/** Rasterize all segments, grouped into downloadable parts. */
-		async function rasterizeParts(segments, opts) {
-			const partMaxPx = opts.partHeight * opts.scale;
-			const parts = [];
-			let current = [];
-			let currentPx = 0;
+		/** Rasterize every segment; each keeps its own guard scale. */
+		async function rasterizeSegments(segments, opts) {
+			const rendered = [];
 			for (const segment of segments) {
-				const segmentPx = segment.height * opts.scale;
-				if (current.length > 0 && currentPx + segmentPx > partMaxPx) {
-					parts.push(current);
-					current = [];
-					currentPx = 0;
-				}
-				current.push(segment);
-				currentPx += segmentPx;
+				// a single over-tall segment (one huge message) is rasterized at
+				// its own scale so its canvas stays within dimension limits.
+				const segScale = Math.min(opts.scale, 24000 / Math.max(1, segment.height));
+				rendered.push(await rasterizeSegment(segment, { ...opts, scale: segScale }));
 			}
-			if (current.length > 0) parts.push(current);
-			const canvases = [];
-			for (const part of parts) {
-				const rendered = [];
-				for (const segment of part) rendered.push(await rasterizeSegment(segment, opts));
-				const anyGuard = rendered.some((item) => item.canvas.height !== Math.round(item.cssHeight * opts.scale));
-				const partScale = anyGuard ? 1 : opts.scale;
-				canvases.push(composePart(rendered, partScale, opts.width));
-			}
-			return canvases;
+			return rendered;
 		}
 
 		function canvasToBlob(canvas) {
@@ -550,12 +531,11 @@ window.__ModuleLoader__.load({
 		 */
 		async function exportToLongImage(data, { t }) {
 			const cfg = Object.assign(
-				{ width: 860, scale: 2, partHeight: 10000, segmentHeight: 8000 },
+				{ width: 860, scale: 2, segmentHeight: 8000 },
 				typeof data.config === 'object' && data.config !== null ? data.config : {}
 			);
 			const width = clamp(cfg.width, 480, 1400);
-			const scale = clamp(cfg.scale, 1, 3);
-			const partHeight = clamp(cfg.partHeight, 2000, 20000);
+			const cfgScale = clamp(cfg.scale, 1, 3);
 			const segMax = clamp(cfg.segmentHeight, 1000, 12000);
 			const colors = sampleThemeColors();
 			const css = buildExportCss(colors, { width });
@@ -570,42 +550,78 @@ window.__ModuleLoader__.load({
 			const footerHtml = '<footer class="dse-footer">' + escapeXml(t('footer')) + '</footer>';
 			const messageHtmls = data.messages.map((message) => buildMessageHtml(message, labels));
 
-			// Measure pass: a fixed off-screen container at the export width.
-			const root = document.createElement('div');
-			root.style.cssText = 'position:fixed;left:-100000px;top:0;width:' + width + 'px;pointer-events:none;z-index:-1';
-			root.innerHTML = '<style>' + css + '</style>' + headerHtml + messageHtmls.join('') + footerHtml;
-			document.body.appendChild(root);
+			// Pass 1 — per-message heights (packing hint only).
+			const measureRoot = document.createElement('div');
+			measureRoot.style.cssText = 'position:fixed;left:-100000px;top:0;width:' + width + 'px;pointer-events:none;z-index:-1';
+			measureRoot.innerHTML = '<style>' + css + '</style>' + messageHtmls.join('');
+			document.body.appendChild(measureRoot);
+			let messageHeights;
 			try {
-				try {
-					await document.fonts.ready;
-				} catch {}
-				const headerNode = root.querySelector('.dse-export-head');
-				const footerNode = root.querySelector('.dse-footer');
-				const headerH = headerNode === null ? 0 : headerNode.offsetHeight;
-				const footerH = footerNode === null ? 0 : footerNode.offsetHeight;
-				const messageHeights = [...root.querySelectorAll('.dse-msg')].map((el) => el.offsetHeight);
-				const segments = buildSegmentsHtml({
-					css,
-					headerHtml,
-					footerHtml,
-					messageHtmls,
-					messageHeights,
-					headerH,
-					footerH,
-					opts: { segmentHeight: segMax }
-				});
-				const partCanvases = await rasterizeParts(segments, { width, scale, partHeight, guardHeight: segMax });
-				const baseName = sanitizeFileName(title);
-				const blobs = [];
-				for (const canvas of partCanvases) blobs.push(await canvasToBlob(canvas));
-				blobs.forEach((blob, index) => {
-					const filename = blobs.length > 1 ? baseName + '-' + (index + 1) + '.png' : baseName + '.png';
-					downloadBlob(blob, filename);
-				});
-				return { parts: blobs.length, name: baseName + (blobs.length > 1 ? '-1.png' : '.png') };
+				await settleFonts();
+				messageHeights = [...measureRoot.querySelectorAll('.dse-msg')].map((el) => el.offsetHeight);
 			} finally {
-				root.remove();
+				measureRoot.remove();
 			}
+			const groups = packSegments(messageHeights, { segmentHeight: segMax });
+
+			// Pass 2 — build each segment's real DOM and measure its ACTUAL
+			// height directly. Predicting heights from per-message offsets
+			// accumulates sub-pixel rounding drift and clips the bottom; the SVG
+			// is sized to the measured layout, so nothing is ever cut off.
+			const segRoot = document.createElement('div');
+			segRoot.style.cssText = 'position:fixed;left:-100000px;top:0;width:' + width + 'px;pointer-events:none;z-index:-1';
+			document.body.appendChild(segRoot);
+			const segments = [];
+			try {
+				await settleFonts();
+				for (let i = 0; i < groups.length; i += 1) {
+					// Serialize the ORIGINAL XHTML string, never holder.innerHTML:
+					// an innerHTML round-trip normalizes void elements (`<hr/>` →
+					// `<hr>`), which is invalid XML inside the SVG foreignObject
+					// and makes the segment image fail to load. The DOM is used
+					// only to measure the ACTUAL rendered height.
+					const html = buildSegmentHtml({
+						css,
+						headerHtml,
+						footerHtml,
+						messageHtmls,
+						idx: groups[i].idx,
+						first: i === 0,
+						last: i === groups.length - 1
+					});
+					const holder = document.createElement('div');
+					holder.style.cssText = 'width:' + width + 'px';
+					holder.innerHTML = html;
+					segRoot.appendChild(holder);
+					const exportEl = holder.querySelector('.dse-export');
+					const height = exportEl === null ? 0 : exportEl.offsetHeight;
+					segments.push({ html, height });
+				}
+				const totalCssH = segments.reduce((sum, seg) => sum + seg.height, 0);
+				if (totalCssH <= 0) throw new Error('export content has zero height');
+
+				// One complete image: cap the final canvas height (Safari/Firefox
+				// dimension limit ≈ 32767 px) by lowering the scale for very long
+				// chats instead of splitting into parts.
+				const maxCanvasHeight = 32000;
+				const scale = Math.max(0.5, Math.min(cfgScale, maxCanvasHeight / totalCssH));
+
+				const rendered = await rasterizeSegments(segments, { width, scale, guardHeight: segMax });
+				const canvas = composeOne(rendered, scale, width);
+				const blob = await canvasToBlob(canvas);
+				const baseName = sanitizeFileName(title);
+				downloadBlob(blob, baseName + '.png');
+				return { parts: 1, name: baseName + '.png' };
+			} finally {
+				segRoot.remove();
+			}
+		}
+
+		/** Await document.fonts.ready defensively (fonts must be settled before any measurement). */
+		async function settleFonts() {
+			try {
+				await document.fonts.ready;
+			} catch {}
 		}
 
 		// ── header action button ──────────────────────────────────────────────
@@ -635,9 +651,7 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					const result = await exportToLongImage(data, { t });
-					let message = result.parts > 1
-						? t('doneParts', { n: result.parts })
-						: t('done', { name: result.name });
+					let message = t('done', { name: result.name });
 					if (typeof data.skipped?.reasoning === 'number' && data.skipped.reasoning > 0) {
 						message += ' ' + t('doneSkipped', { n: data.skipped.reasoning });
 					}
@@ -684,7 +698,8 @@ window.__ModuleLoader__.load({
 		exports.renderMarkdownHtml = renderMarkdownHtml;
 		exports.buildMessageHtml = buildMessageHtml;
 		exports.buildExportCss = buildExportCss;
-		exports.buildSegmentsHtml = buildSegmentsHtml;
+		exports.packSegments = packSegments;
+		exports.buildSegmentHtml = buildSegmentHtml;
 		exports.sanitizeFileName = sanitizeFileName;
 		exports.sampleThemeColors = sampleThemeColors;
 		exports.exportToLongImage = exportToLongImage;

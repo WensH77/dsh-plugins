@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-session-export` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.1.3
+
+- 导出**始终为一张完整长图**：移除按 `partHeight` 拆多张下载；总高超过浏览器 canvas 高度上限（约 32000px）时自动降低栅格倍率（scale）保持单张完整
+- 修复最底部被截断：分段高度不再用逐条消息 `offsetHeight` 预测求和（取整漂移会累积误差），改为**直接测量每个分段真实布局高度**（`offsetHeight`），SVG 按实测高度绘制，页脚与最后一条消息完整呈现
+- 修复含 `<hr/>` 内容时分段图片加载失败：`holder.innerHTML` 回读会把 XHTML 空元素 `<hr/>` 规范化为 `<hr>`（HTML 序列化），破坏 SVG foreignObject 的 XML——改为序列化原始 XHTML 字符串、DOM 仅用于测高
+- 用真实会话（169 条消息，约 31000px 高）在 headless Chrome 验证：单张 880×32000 PNG、底部页脚内容完整；60 条会话 1720×13690 单张
+- 纯函数重构：`packSegments`（打包提示）+ `buildSegmentHtml`（单段 HTML）取代 `buildSegmentsHtml`；移除 `partHeight` 配置
+
 ## 0.1.2
 
 - 修复 header 导出按钮显示整段 SVG 源码文本：图标 SVG 字符串被当作 React children 传入，React 会把字符串渲染成纯文本（需要 `dangerouslySetInnerHTML`）；改为经 `dangerouslySetInnerHTML` 注入真实 `<svg>` 元素
