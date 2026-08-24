@@ -79,3 +79,7 @@ host 端零第三方依赖（只用 node 内置模块）；client 端为 ModuleL
 ## License
 
 MIT
+
+## 变更日志
+
+历次改动见 [CHANGELOG.md](./CHANGELOG.md)。
