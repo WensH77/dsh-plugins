@@ -93,6 +93,17 @@ console.log('markdown renderer:');
   check('paragraph lines joined', html.includes('<p>段落一 第二行</p>') && html.includes('<p>段落二</p>'), html);
 }
 {
+  // regression: raw <tag>-like text inside LIST ITEMS and TABLE CELLS must be
+  // escaped — an unescaped < would break the SVG foreignObject XML (real
+  // session messages hit this: `zstd -dc <backup> | tar -C <cwd> -xf -`)
+  const listHtml = loaded.renderMarkdownHtml('- 执行 `zstd -dc <backup> | tar -C <cwd> -xf -` 撤销');
+  check('list inline code with <tag> escaped', listHtml.includes('&lt;backup&gt;') && listHtml.includes('&lt;cwd&gt;') && !listHtml.includes('<backup>') && !listHtml.includes('<cwd>'), listHtml);
+  const tableHtml = loaded.renderMarkdownHtml('| cmd | desc |\n| --- | --- |\n| `<a>` | 用 `<b>` 替换 |');
+  check('table cell <tag> escaped', tableHtml.includes('&lt;a&gt;') && tableHtml.includes('&lt;b&gt;') && !tableHtml.includes('<a>') && !tableHtml.includes('<b>'), tableHtml);
+  const nestedListHtml = loaded.renderMarkdownHtml('- 外层\n  - 内层含 `<x>`');
+  check('nested list item escaped', nestedListHtml.includes('&lt;x&gt;') && !nestedListHtml.includes('<x>'), nestedListHtml);
+}
+{
   // XHTML hygiene: no raw & outside entities, no unescaped < followed by space
   const samples = [
     loaded.renderMarkdownHtml('**a** & <x> `c` [l](https://e.com/?q=1&r=2)'),

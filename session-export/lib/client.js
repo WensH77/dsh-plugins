@@ -180,7 +180,10 @@ window.__ModuleLoader__.load({
 					const task = renderTaskPrefix(li.content);
 					const childrenHtml = li.children.length > 0 ? li.children.map(renderList).join('') : '';
 					const cls = task.prefix === '' ? '' : ' class="dse-task"';
-					return '<li' + cls + '>' + task.prefix + renderInline(task.rest) + childrenHtml + '</li>';
+					// content MUST pass escapeMarkdownSource like every other block
+					// path — a raw `<tag>` inside a list item would break the SVG
+					// foreignObject XML and make the segment image fail to load.
+					return '<li' + cls + '>' + task.prefix + renderInline(escapeMarkdownSource(task.rest)) + childrenHtml + '</li>';
 				}).join('');
 				return '<' + tag + '>' + items + '</' + tag + '>';
 			};
@@ -196,10 +199,10 @@ window.__ModuleLoader__.load({
 			const header = split(lines[0]);
 			const separator = split(lines[1]);
 			if (header.length === 0 || !separator.every((cell) => /^:?-{3,}:?$/.test(cell))) return null;
-			const headRow = '<tr>' + header.map((cell) => '<th>' + renderInline(cell) + '</th>').join('') + '</tr>';
+			const headRow = '<tr>' + header.map((cell) => '<th>' + renderInline(escapeMarkdownSource(cell)) + '</th>').join('') + '</tr>';
 			const bodyRows = lines.slice(2).map((line) => {
 				const cells = split(line);
-				return '<tr>' + cells.map((cell) => '<td>' + renderInline(cell) + '</td>').join('') + '</tr>';
+				return '<tr>' + cells.map((cell) => '<td>' + renderInline(escapeMarkdownSource(cell)) + '</td>').join('') + '</tr>';
 			}).join('');
 			return '<table><thead>' + headRow + '</thead><tbody>' + bodyRows + '</tbody></table>';
 		}

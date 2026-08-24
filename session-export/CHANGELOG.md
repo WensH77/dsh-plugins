@@ -2,6 +2,12 @@
 
 本文件记录 `dsh-plugin-session-export` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.1.1
+
+- 修复导出长图出现「未渲染的 SVG 文本」：Markdown 渲染器在**列表项**与**表格单元格**路径漏了 HTML 转义，消息里的 `` `<backup>` `` / `` `<cwd>` `` 之类文本以裸 `<` 进入 XHTML，破坏 SVG `foreignObject` 的 XML，导致分段图片加载失败/错乱
+- 列表/表格与段落/引用/标题路径统一先 `escapeMarkdownSource` 再行内渲染；新增列表、嵌套列表、表格单元格含 `<tag>` 的回归测试
+- 用真实会话日志（169 条消息，含 `zstd -dc <backup> | tar -C <cwd> -xf -` 之类内容）在 headless Chrome 验证：修复前 3/3 分段 SVG 加载失败，修复后 3/3 全部成功
+
 ## 0.1.0
 
 - 会话导出为长图：会话标题栏新增「导出长图」按钮（`conversation.session.header.actions` 槽位）
