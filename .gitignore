@@ -1,3 +1,6 @@
 node_modules
 .DS_Store
 MEMORY.md
+# 仓库根测试依赖解析（schemastery 等 @deepseek-ai/*），非插件包，不入库
+/package.json
+/package-lock.json
