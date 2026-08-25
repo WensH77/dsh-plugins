@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
 			".pm-meta .pm-repoPath{white-space:normal;word-break:break-all;overflow-wrap:anywhere;min-width:0}",
 			".pm-meta .pm-override{color:var(--dsw-alias-state-warn-primary);font-weight:600}",
 			".pm-btns{gap:6px;display:flex;align-items:center;flex-wrap:wrap;margin-top:2px}",
+			".pm-updateRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 2px}",
 
 			// 按钮三档
 			".pm-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);font:inherit;cursor:pointer;border-radius:7px;padding:4px 11px;font-size:12px;line-height:18px;flex:none;transition:border-color .15s ease,color .15s ease,background .15s ease,transform .12s ease}",
@@ -182,6 +183,8 @@ window.__ModuleLoader__.load({
 			reviewUnavailableDetail: "审查会话与 LLM 通道均未产出报告（可能是宿主上下文不支持或模型调用失败）。可确认安装或中断。",
 			ok: "知道了",
 			checkUpdate: "检查更新",
+			update: "更新",
+			localUpdateHint: "本地安装（link/file）插件：请在源码目录 git pull 拉取更新后重启 dsh web 生效（插件市场只能更新 git 通道安装的插件）",
 			on: "启用",
 			off: "停用",
 			toggleOn: "已启用",
@@ -276,6 +279,8 @@ window.__ModuleLoader__.load({
 			reviewUnavailableDetail: "Neither the review session nor the LLM channel produced a report (host context or model call failure). You may confirm the install or interrupt.",
 			ok: "OK",
 			checkUpdate: "Check update",
+			update: "Update",
+			localUpdateHint: "Locally linked (link/file) plugin: run git pull in the source directory and restart dsh web (the market can only update git-installed plugins)",
 			on: "Enable",
 			off: "Disable",
 			toggleOn: "Enabled",
@@ -561,8 +566,33 @@ window.__ModuleLoader__.load({
 				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", updateJobId: modal.updateJobId ?? "" })
 					.then((data) => {
 						refresh();
+						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
 						flash("git 通道更新完成", true);
 						// 更新也做安全审查：报告附更新差异（相对已装代码改了什么）
+						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
+						else setModal(null);
+					})
+					.catch((error) => { setModal(null); flash(error.message, false); })
+					.finally(() => setBusy(null));
+			};
+			// 检查更新后出现「有更新」时的更新入口：
+			//   审查开启且已生成隔离任务（updateJobId）→ 打开审查报告弹窗，确认后直接安装；
+			//   审查关闭/无任务 → 直接 git 通道更新（不重新拉取审查），避免「检查到更新却无处更新」
+			const doUpdateFromCheck = (entry, check) => {
+				if (check && check.updateJobId) {
+					setModal({ type: "review", report: check.review, title: t("updateReviewTitle"), entry, updateJobId: check.updateJobId });
+					return;
+				}
+				doDirectUpdate(entry);
+			};
+			const doDirectUpdate = (entry) => {
+				setModal({ type: "update-loading", entry });
+				setBusy("update:" + entry.entryId);
+				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", review: false })
+					.then((data) => {
+						refresh();
+						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
+						flash("git 通道更新完成", true);
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
 						else setModal(null);
 					})
@@ -770,6 +800,7 @@ window.__ModuleLoader__.load({
 						const checkButton = h("button", {
 							className: "pm-btn",
 							disabled: busy !== null || entry.localInstalled,
+							title: entry.localInstalled ? t("localUpdateHint") : undefined,
 							onClick: (e) => { e.stopPropagation(); doCheckUpdate(entry); }
 						}, t("checkUpdate"));
 						return h("li", { className: "pm-row", key: entry.entryId, "data-enabled": entry.enabled ? "true" : "false",
@@ -791,7 +822,9 @@ window.__ModuleLoader__.load({
 								? (check.git.unknown
 									? h("p", { className: "pm-message" }, t("gitUnknown"))
 									: (check.git.hasUpdate
-										? h("p", { className: "pm-message", "data-error": "true" }, tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) }))
+										? h("div", { className: "pm-updateRow" },
+											h("p", { className: "pm-message", "data-error": "true" }, tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })),
+											h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doUpdateFromCheck(entry, check); } }, t("update")))
 										: h("p", { className: "pm-message", "data-ok": "true" }, t("gitUpToDate"))))
 								: check !== undefined && check.git === null
 									? h("p", { className: "pm-message" }, t("gitNoRepo"))

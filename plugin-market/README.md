@@ -22,9 +22,9 @@ plugin-market 自身）。dsh 自带的官方 bundle（@deepseek-ai/dsh-base、@
 - **安全审查（harness 会话 + 分层）**：先在隔离目录拉取，L0 确定性正则对**全量文件**（不限大小）扫描风险信号（shell 执行 / eval / 动态 import / 外链 URL / base64 / fs 写入 / DOM 注入 / 混淆等），再对命中信号**自动起一轮 dsh 会话**（`agents.create` + `followup` + 轮询会话日志精确提取 JSON 报告）做**定向深挖**，信号多时做一层**聚合终审**；会话在发提示词前即归档隐藏（防用户干扰、防误操作）。会话通道不可用时回退云 LLM 直连。报告按 `包名@版本` 缓存 7 天，含扫描范围（文件数/KB/信号数）、分层方法（L0 clean / L0+L1 / L0+L1+aggregate）与通道（session/llm）。source map 带 `sourcesContent` 时会还原可读源码供交叉参考。
 - **审查开关交互**：开启仅需 1 次点击；**关闭需连点 5 次**（点击整个文案计数，实时提示剩余次数）；每次状态切换后有 1 秒保护期，防止误触又开启。状态持久化在 localStorage。
 - **pnpm 构建脚本授权（自动 allowBuilds）**：pnpm v10.26+/v11 安全策略（GHSA-5wx6-mg75-v57r）默认禁止 git 托管依赖执行 prepare 构建脚本（报 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED）、并把被忽略的传递依赖构建（如 node-pty）以退出码 1 结束（ERR_PNPM_IGNORED_BUILDS）。插件市场作为显式安装器，在安装/更新/布局修复遇到这两类错误时，会**自动把授权写入 pnpm-workspace.yaml 的 allowBuilds 并重试**：git 插件写仓库级键 `包名@git+https://github.com/owner/repo.git`（跨 commit 稳定，插件更新后无需再次授权），被忽略的构建脚本按包名放行；行级合并，保留 profile 原有的 packages/nodeLinker 等配置。
-- **更新（git + 本地差异，直接安装）**：git 通道 `pnpm add github:<owner>/<repo>`（跟随默认分支最新提交）。**检查更新**开启安全审查并检测到更新时，拉取新版本到隔离目录、与**本地已装代码**做逐文件差异（新增/删除/修改）并审查变更，报告标注 `method: update-diff`、直接展示改动内容；审查通过后**保留隔离目录**（登记更新任务，30 分钟有效）——点「确认更新」时**直接从该隔离环境安装**，不再重新拉取/审查（只弹进行中提示，安装完成后展示结果或更新审查报告，不静默执行）；审查报告同时**保存为该插件的新版本**，之后点击已安装插件卡片即可直接查看（无需再次生成）。
+- **更新（git + 本地差异，直接安装）**：git 通道 `pnpm add github:<owner>/<repo>`（跟随默认分支最新提交）。**检查更新**开启安全审查并检测到更新时，拉取新版本到隔离目录、与**本地已装代码**做逐文件差异（新增/删除/修改）并审查变更，报告标注 `method: update-diff`、直接展示改动内容；审查通过后**保留隔离目录**（登记更新任务，30 分钟有效）——点「确认更新」时**直接从该隔离环境安装**，不再重新拉取/审查（只弹进行中提示，安装完成后展示结果或更新审查报告，不静默执行）；审查报告同时**保存为该插件的新版本**，之后点击已安装插件卡片即可直接查看（无需再次生成）。**关闭安全审查时**，检查更新检测到新版本后已安装卡片直接出现「更新」按钮，点击即 git 通道直接更新（不重新审查），不再出现「检查到更新却无处更新」。
 - **卸载**：先 `pnpm remove` 移除依赖（失败即报错、配置保留、可重试），成功后再移除 insert 行 / bundle 配置；bundle 卸载会额外写一条**临时禁用行**让运行树立即 HMR 卸载（避免"文件已删、旧服务仍引用"导致页面启动报错，重装时自动清理）；卸载同时清除该插件的仓库地址覆盖。
-- **检查更新**：git 通道，用 `git ls-remote` 对比远端 HEAD 与本地 lockfile 锁定的 commit；开启安全审查时，与「更新」一致对新版本与已装代码做文件级差异审查，报告标注 `method: update-diff` 并直接展示本次改动（新增/删除/修改）；审查后保留隔离目录，确认更新直接安装（见上条）。
+- **检查更新**：git 通道，用 `git ls-remote` 对比远端 HEAD 与本地 lockfile 锁定的 commit；开启安全审查时，与「更新」一致对新版本与已装代码做文件级差异审查，报告标注 `method: update-diff` 并直接展示本次改动（新增/删除/修改）；审查后保留隔离目录，确认更新直接安装（见上条）。本地 link/file 安装的插件（无锁定 commit）「检查更新」按钮禁用——此类插件在源码目录 `git pull` 后重启 dsh web 生效。
 - **整合仓库（monorepo）**：地址支持 `#path:子目录` 语法（如 `https://github.com/WensH77/dsh-plugins.git#path:chat-rollback`）——git 通道安装该仓库内的子目录插件包，检查更新/更新同样生效（lockfile 的 codeload commit 对比天然兼容子目录格式）。
 - **仓库展示（安装来源）**：安装时自动保存**用户填写的仓库地址**（归一化为 `owner/name[#path:子目录]`）为该插件的**来源仓库**；已安装卡片展示来源仓库或本地安装路径（link:/file: 依赖）。没有 marketplace 记录时（如 CLI 安装的插件）自动**回落**到包内 `repository` 字段、再到 `github:` 依赖 spec，保证 CLI 安装的 git 插件也能看到来源并检查更新。
 - **待重启提示**：bundle 层启动时加载——安装后若未重启，已写入 manifest 的 bundle 会显示在「**待重启**」卡片区（标注来源与依赖 spec），重启 dsh web 后加载生效。insert 层插件在热重载关闭/未生效时（已写入补丁但未进运行树）同样列入「待重启」，避免「已安装」「待重启」都看不到它。
@@ -54,7 +54,7 @@ dsh plugin --profile web add ./plugin-market
 | `/plugin-market/install/cancel` | POST | 取消安装：清理隔离目录，不迁移 |
 | `/plugin-market/install/interrupt` | POST | 中断安装任务（拉取中/审查中/待安装均可；清理残留后任务即刻消失） |
 | `/plugin-market/install/help` | POST | 帮我安装：安装失败时开启可见 harness 会话（附报错信息与 profile 目录），由会话诊断并完成安装；返回 `{ sessionId }` |
-| `/plugin-market/update` | POST | 更新已安装插件（优先用 `updateJobId` 指向的隔离目录直接安装，不重新拉取/审查；审查报告保存为新版本，点击已安装卡片即可查看；进行中有进度提示） |
+| `/plugin-market/update` | POST | 更新已安装插件（优先用 `updateJobId` 指向的隔离目录直接安装，不重新拉取/审查；审查报告保存为新版本，点击已安装卡片即可查看；进行中有进度提示；无隔离任务时重新拉取安装，`review: false` 跳过差异审查） |
 | `/plugin-market/uninstall` | POST | 卸载插件（先删依赖后删配置，失败可重试；bundle 即时卸载） |
 | `/plugin-market/cleanup` | POST | 一键清理缓存（1 小时前的隔离残留与过期审查报告） |
 | `/plugin-market/dsh-version` | GET | dsh 自更新状态（已装/远端版本 + 破坏性判定），供侧边栏状态灯 |

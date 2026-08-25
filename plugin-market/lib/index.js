@@ -1344,7 +1344,7 @@ function buildUpdatePrompt(scan, pkgName, version, diff, changedContent) {
   ].join('\n').slice(0, PROMPT_CAP)
 }
 
-async function updatePlugin(ctx, entryId, repository = '', updateJobId = '') {
+async function updatePlugin(ctx, entryId, repository = '', updateJobId = '', reviewEnabled = true) {
   const entry = ctx.loader.entries().find((candidate) => candidate.id === entryId)
   if (!entry) throw new Error('没有名为 ' + entryId + ' 的插件条目')
   const moduleName = entry.options.name
@@ -1373,7 +1373,7 @@ async function updatePlugin(ctx, entryId, repository = '', updateJobId = '') {
     }
   }
 
-  // 无隔离任务（审查关闭/旧流程兼容）：重新拉取 + 差异审查 + 安装
+  // 无隔离任务（审查关闭直接更新 / 旧流程兼容）：重新拉取 + （可选）差异审查 + 安装
   // 仓库解析：优先客户端传入的安装来源仓库（与展示/检查更新同一来源），否则回落包内 repository 字段
   let repoInfo = null
   if (typeof repository === 'string' && repository.trim() !== '') {
@@ -1387,16 +1387,27 @@ async function updatePlugin(ctx, entryId, repository = '', updateJobId = '') {
   }
   if (repoInfo === null) throw new Error('git 通道需要 GitHub 仓库地址（repository 字段缺失）')
 
-  // 更新审查：暂存新版本 → 与已装代码做文件级 diff → 审查变更 → 报告附 diff
+  // 更新审查：暂存新版本 → 与已装代码做文件级 diff → 审查变更 → 报告附 diff。
+  // 审查关闭（reviewEnabled === false）时跳过审查，直接安装；审查开启时把报告
+  // 保存为新版本（与隔离任务路径一致，点击已安装卡片即可查看）
   let review = null
+  let stagedVersion = null
   const staged = await stagePackage(gitSpec(repoInfo))
   try {
-    review = await reviewUpdateDiff(ctx, installedPackageDir(profileDir, moduleName), staged.pkgDir, moduleName)
+    if (reviewEnabled) {
+      review = await reviewUpdateDiff(ctx, installedPackageDir(profileDir, moduleName), staged.pkgDir, moduleName)
+      stagedVersion = readStagedVersion(staged.pkgDir)
+    }
   } finally {
     await rm(staged.jobDir, { recursive: true, force: true }).catch(() => {})
   }
 
   await pnpmInstall(profileDir, gitSpec(repoInfo))
+  if (reviewEnabled && review !== null && review !== undefined && stagedVersion !== null) {
+    await writeReviewCache(reviewKey(moduleName, stagedVersion), review)
+    // 版本元信息已变化：清掉缓存，避免 /review 用旧版本键查不到刚保存的报告
+    pkgMetaCache.delete(moduleName)
+  }
   return { ok: true, entryId, moduleName, usedChannel: 'git', restart: true, review }
 }
 
@@ -2692,7 +2703,8 @@ async function handle(ctx, req, res) {
     return
   }
 
-  // 更新已安装插件（git 通道；优先用检查更新保留的隔离目录直接安装，不重新拉取/审查）
+  // 更新已安装插件（git 通道；优先用检查更新保留的隔离目录直接安装，不重新拉取/审查；
+  // 无隔离任务时走重新拉取流程；body.review === false（审查关闭）时跳过差异审查直接安装）
   if (pathname === ROUTE_PREFIX + '/update') {
     const entryId = typeof body.entryId === 'string' ? body.entryId.trim() : ''
     if (entryId === '') {
@@ -2702,7 +2714,8 @@ async function handle(ctx, req, res) {
     try {
       const result = await updatePlugin(ctx, entryId,
         typeof body.repository === 'string' ? body.repository.trim() : '',
-        typeof body.updateJobId === 'string' ? body.updateJobId.trim() : '')
+        typeof body.updateJobId === 'string' ? body.updateJobId.trim() : '',
+        body.review !== false)
       sendJson(res, 200, result)
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : String(error))
