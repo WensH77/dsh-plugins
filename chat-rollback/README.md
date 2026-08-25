@@ -103,6 +103,7 @@ dsh web
 | `snapshotDir` | `~/.dsh/chat-rollback-snapshots` | 快照根目录 |
 | `excludes` | `['git', 'node_modules']` | 快照与恢复排除的路径（tar `--exclude` 语义） |
 | `snapshotEnabled` | `true` | 设为 `false` 禁用轮次快照（退化为纯对话回滚） |
+| `pruneIntervalMs` | `3600000`（1 小时） | 定时兜底清理间隔（毫秒）；`0` 禁用定时器（仍可手动调清理端点） |
 
 ## 使用
 
@@ -117,7 +118,7 @@ node --test chat-rollback/test/fork-rollback.mjs   # 或 npm test（依赖仓库
 node chat-rollback/test/client-emit.mjs            # 浏览器端：回滚预填 emit 定向性（vm 加载 bundle）
 ```
 
-覆盖：轮次快照排除 `.git`/`node_modules`；逐文件 hash manifest 写入与排除；fork 子会话硬链接继承（含 manifest）；**用户消息回滚**（截断到消息之前 + 预填自身文本 + open-turn 剪除、steer 场景排队消息保留）；助手消息回滚（旧版语义）；含 `.git` 的旧版快照恢复时**不回滚 git 状态**（解包侧 excludes 保护）；**preflight 冲突检测**（本会话自改 → 无冲突；外部改动/新增文件 → 命中冲突并列出文件）；**双会话端到端**（会话1新建文件 → 会话2改动 → 回滚2 → 回滚1：有 end manifest 时回滚1无冲突且删除文件；无 end manifest 时同样无冲突，`reason: 'no-end-manifest'`）；**空目录保护**（快照内空目录恢复后保留、排除项空目录如空 `node_modules/` 不被剪枝清理删除）；**recovery 备份排除 `.git`/`node_modules`**；**含 `$` 路径的工作区**快照/恢复（shell 转义，防 `$HOME` 展开）；**`snapshotEnabled:false` 降级**（纯对话回滚、不写快照、工作区不动）；**恢复失败路径**（源会话不归档、快照保留可重试）。
+覆盖：轮次快照排除 `.git`/`node_modules`；逐文件 hash manifest 写入与排除；fork 子会话硬链接继承（含 manifest）；**用户消息回滚**（截断到消息之前 + 预填自身文本 + open-turn 剪除、steer 场景排队消息保留）；助手消息回滚（旧版语义）；含 `.git` 的旧版快照恢复时**不回滚 git 状态**（解包侧 excludes 保护）；**preflight 冲突检测**（本会话自改 → 无冲突；外部改动/新增文件 → 命中冲突并列出文件）；**双会话端到端**（会话1新建文件 → 会话2改动 → 回滚2 → 回滚1：有 end manifest 时回滚1无冲突且删除文件；无 end manifest 时同样无冲突，`reason: 'no-end-manifest'`）；**空目录保护**（快照内空目录恢复后保留、排除项空目录如空 `node_modules/` 不被剪枝清理删除）；**recovery 备份排除 `.git`/`node_modules`**；**含 `$` 路径的工作区**快照/恢复（shell 转义，防 `$HOME` 展开）；**`snapshotEnabled:false` 降级**（纯对话回滚、不写快照、工作区不动）；**恢复失败路径**（源会话不归档、快照保留可重试）；**写侧前缀过滤**（`arena-*` 等非标准会话不写快照，标准会话不受影响）；**统一清理**（已归档残留 + 非标准前缀目录 + 老孤儿被回收，活跃会话/缓冲期内新孤儿/非快照目录保留）；**定时兜底清理**（归档后无回滚也自动回收）。
 
 ## 已知限制
 
@@ -125,7 +126,8 @@ node chat-rollback/test/client-emit.mjs            # 浏览器端：回滚预填
 - 快照自插件启动后生效：插件安装/重启之前的历史会话没有快照（降级为纯对话回滚）；继承只覆盖源会话已有的档位
 - 恢复操作覆盖共享工作区（目标轮次之后的修改被撤销）；恢复前有 recovery 备份，可手动 `zstd -dc <backup> | tar -C <cwd> -xf -` 撤销（备份与快照一样排除 `.git`/`node_modules`——恢复对排除项路径三侧都不改动，无需备份它们）
 - **恢复保护**：解包、文件剪枝、空目录清理三侧均应用 excludes —— 即使快照内混入 `.git`/`node_modules`（旧版插件产物或外部归档），恢复也绝不动这两类路径；快照内本有的空目录也会被保留（实测：含 `.git` 的快照恢复后仓库 HEAD 保持当前提交，空的 `node_modules/` 目录不被清掉）
-- **清理策略：归档即清理** —— 回滚成功后源会话立即归档，其快照随即删除（recovery 备份位于新会话目录，不受影响）；其余已归档会话的快照在下次回滚时惰性清理，也可 `POST /chat-rollback/prune-archived` 手动清理；未归档会话的快照永久保留
+- **清理策略：归档即清理 + 定时兜底 + 手动端点** —— 回滚成功后源会话立即归档，其快照随即删除（recovery 备份位于新会话目录，不受影响）；**已归档会话的快照**（含手动归档的）由每小时一次的定时清理自动回收，也可 `POST /chat-rollback/prune-archived` 手动清理；**非标准前缀的快照目录**（arena 对局会话、旧格式 id——写侧已停，见下）与**孤儿目录**（registry 无记录且停止活动超过 24h）一并回收。未归档且仍活跃的标准会话快照按设计保留（保留其回滚能力）。快照目录回收前会检查目录内确有本插件产物（`turn-*.tar.zst` 等），snapshotDir 被指向无关目录树时也不会误删用户数据
+- **快照只写给标准会话** —— 写侧仅处理 `session-` 前缀的会话（与清理侧同一前缀规则）：arena 对局会话、旧格式 id 不再产生新快照，杜绝「写了清不掉」的不对称
 - **共享 cwd 与冲突门**：并存会话共享同一目录；回滚前按文件 hash 比对，被其他会话改动过的文件会先以 **?** 提示冲突、需二次确认才覆盖（`POST /chat-rollback/preflight`）。运行中的源会话（steer 中途）跳过冲突门——其未落盘改动与外部改动无法区分，回滚会取消该 agent
 - **无 end manifest 时的信息缺口**：本会话最后写入参照缺失（end manifest 未写入、且没有更晚的 start manifest）时，冲突门无法区分「文件是本会话自己写的」还是「其他会话改的」。此时按无冲突放行（`reason: 'no-end-manifest'`），避免把本会话新建的文件误报为冲突（场景：回滚会话2后文件已回到会话1内容，再回滚会话1不应提示冲突）；代价是同条件下若确有其他会话的未回滚写入，不会提前告警——恢复前生成的 recovery 备份可手动撤销
 - 回滚目标是消息事件 seq，必须在会话日志范围内；异常中断（interrupted）的半成品消息没有稳定 messageId，不显示回滚入口

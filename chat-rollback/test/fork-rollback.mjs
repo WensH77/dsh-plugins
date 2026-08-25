@@ -9,7 +9,7 @@
 //      (restore re-applies excludes on unpack — regression from live e2e)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, readFile, stat, readdir, link } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, readdir, link, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -786,6 +786,131 @@ test('M: restore failure — source kept unarchived for retry', async () => {
     assert.ok(!archived.includes(SRC), 'archiveSession not called');
     assert.ok((await stat(join(snapRoot, SRC)).catch(() => null)) !== null, 'source snapshots kept for retry');
   } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// N: snapshot writes are scoped to standard dsh session ids (session-*). arena
+// sessions (model-arena) and legacy id formats are not rollback targets — they
+// must not get snapshot dirs at all (write side and prune side share one rule).
+test('N: write-side prefix filter — non session- sessions get no snapshots', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-filt-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-filt-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([{ turn: 1, user: 'do X', assistant: 'done X' }]);
+    const ARENA = 'arena-write-test';
+    const SRC = 'session-write-test';
+    const { ctx, handlers } = makeCtx(workspace, snapRoot, { [ARENA]: events, [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, pruneIntervalMs: 0 });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(ARENA), { type: 'turn/start', data: { turn: 1 } });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(ARENA), { type: 'turn/end', data: { turn: 1 } });
+    await sleep(250);
+    assert.ok((await stat(join(snapRoot, ARENA)).catch(() => null)) === null, 'arena session gets no snapshot dir');
+
+    // standard session on the same plugin instance still snapshots
+    handlers.get('session/event').forEach((h) => h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } }));
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'standard session still snapshots');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// O: the prune-archived endpoint reclaims (1) archived residue that was never
+// lazily cleaned, (2) non-standard snapshot dirs (arena/legacy ids), (3) old
+// orphans with no registry record — while keeping live sessions, fresh orphans
+// inside the grace window, and non-snapshot dirs (content guard).
+test('O: prune-archived endpoint — archived + non-standard + orphan reclamation', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-prune-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-prune-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([{ turn: 1, user: 'do X', assistant: 'done X' }]);
+    const LIVE = 'session-live';
+    const { ctx, handlers, routes, archived } = makeCtx(workspace, snapRoot, { [LIVE]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, pruneIntervalMs: 0 });
+
+    // live session snapshot (must survive the prune)
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(LIVE), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, LIVE, 'turn-1.tar.zst')).catch(() => null)) !== null), 'live snapshot exists');
+
+    // 1) archived residue: marked archived, snapshot dir never pruned
+    const ARCHIVED = 'session-archived-residue';
+    await mkdir(join(snapRoot, ARCHIVED), { recursive: true });
+    await writeFile(join(snapRoot, ARCHIVED, 'turn-1.tar.zst'), 'x');
+    archived.push(ARCHIVED);
+
+    // 2) non-standard dir with snapshot content (legacy arena/old-format)
+    const ARENA = 'arena-legacy-dir';
+    await mkdir(join(snapRoot, ARENA), { recursive: true });
+    await writeFile(join(snapRoot, ARENA, 'turn-1.tar.zst'), 'y');
+
+    // 3) old orphan: session- prefix, no registry record, mtime beyond grace
+    const ORPHAN = 'session-orphan-old';
+    await mkdir(join(snapRoot, ORPHAN), { recursive: true });
+    await writeFile(join(snapRoot, ORPHAN, 'turn-1.tar.zst'), 'z');
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await utimes(join(snapRoot, ORPHAN), old, old);
+
+    // 4) fresh orphan inside the grace window — must be kept
+    const FRESH = 'session-orphan-fresh';
+    await mkdir(join(snapRoot, FRESH), { recursive: true });
+    await writeFile(join(snapRoot, FRESH, 'turn-1.tar.zst'), 'w');
+
+    // 5) non-standard dir WITHOUT snapshot content — content guard must keep it
+    const PLAIN = 'plain-dir';
+    await mkdir(join(snapRoot, PLAIN), { recursive: true });
+    await writeFile(join(snapRoot, PLAIN, 'readme.txt'), 'not a snapshot');
+
+    const res = fakeRes();
+    await routes.get('/chat-rollback/prune-archived')({}, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(res.status, 200, 'prune HTTP 200');
+    assert.strictEqual(body.ok, true, 'prune ok');
+
+    assert.ok((await stat(join(snapRoot, ARCHIVED)).catch(() => null)) === null, 'archived residue pruned');
+    assert.ok((await stat(join(snapRoot, ARENA)).catch(() => null)) === null, 'non-standard snapshot dir reclaimed');
+    assert.ok((await stat(join(snapRoot, ORPHAN)).catch(() => null)) === null, 'old orphan reclaimed');
+    assert.ok((await stat(join(snapRoot, FRESH)).catch(() => null)) !== null, 'fresh orphan kept (grace)');
+    assert.ok((await stat(join(snapRoot, PLAIN)).catch(() => null)) !== null, 'non-snapshot dir kept (content guard)');
+    assert.ok((await stat(join(snapRoot, LIVE)).catch(() => null)) !== null, 'live session kept');
+
+    assert.ok(body.pruned.includes(ARCHIVED), 'pruned lists archived residue');
+    assert.ok(body.pruned.includes(ARENA), 'pruned lists non-standard dir');
+    assert.ok(body.orphaned.includes(ORPHAN), 'orphaned lists the old orphan');
+    assert.ok(!body.pruned.includes(FRESH) && !body.orphaned.includes(FRESH), 'fresh orphan not listed');
+    assert.ok(!body.pruned.includes(LIVE) && !body.orphaned.includes(LIVE), 'live session not listed');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// P: the periodic prune timer reclaims archived residue without any rollback —
+// closing the gap where a manually archived session's snapshots waited forever
+// for the next rollback to lazily clean them.
+test('P: periodic prune — timer reclaims archived residue automatically', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-timer-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-timer-snap-'));
+  let dispose;
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([{ turn: 1, user: 'do X', assistant: 'done X' }]);
+    const LIVE = 'session-tlive';
+    const { ctx, handlers, archived } = makeCtx(workspace, snapRoot, { [LIVE]: events });
+    dispose = plugin.apply(ctx, { snapshotDir: snapRoot, pruneIntervalMs: 60 });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(LIVE), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, LIVE, 'turn-1.tar.zst')).catch(() => null)) !== null), 'live snapshot exists');
+    // archive the live session: its snapshot dir becomes reclaimable residue
+    archived.push(LIVE);
+    assert.ok(
+      await waitFor(async () => (await stat(join(snapRoot, LIVE)).catch(() => null)) === null, 5000),
+      'archived residue auto-pruned by periodic timer'
+    );
+  } finally {
+    dispose?.();
     await rm(workspace, { recursive: true, force: true });
     await rm(snapRoot, { recursive: true, force: true });
   }

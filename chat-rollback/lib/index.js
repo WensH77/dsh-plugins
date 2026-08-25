@@ -34,7 +34,12 @@ const Config = z.object({
   // Paths excluded from snapshots (matched against tar --exclude semantics).
   excludes: z.array(z.string()),
   // Set false to disable turn-level snapshotting entirely.
-  snapshotEnabled: z.boolean()
+  snapshotEnabled: z.boolean(),
+  // Periodic cleanup interval in ms (default 1h; 0 disables the timer). Reclaims
+  // snapshots of archived sessions, non-standard sessions (arena/legacy ids that
+  // no longer write snapshots), and orphaned dirs. The manual endpoint
+  // POST /chat-rollback/prune-archived always works regardless.
+  pruneIntervalMs: z.number()
 });
 
 const DEFAULT_EXCLUDES = ['.git', 'node_modules'];
@@ -301,31 +306,102 @@ async function inheritSnapshots(env, sourceId, childId, maxTurn) {
   }
 }
 
-/** Delete snapshots (and recovery backups) of sessions that have been archived.
- * Runs lazily from handleRollback and via POST /chat-rollback/prune-archived. */
-async function pruneArchivedSnapshots(env, sessionIdHint) {
+/** 孤儿回收缓冲：session- 前缀但 registry 无记录的目录，需停止活动超过该时长
+ * 才回收——给「会话刚创建、workspace attach 尚未完成」的竞态留缓冲，避免误删
+ * 活跃会话的快照。 */
+const ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/** 快照根下的顶层目录（跳过符号链接与文件）。 */
+async function listSnapshotDirs(snapRoot) {
+  let entries;
+  try {
+    entries = await fs.readdir(snapRoot);
+  } catch {
+    return [];
+  }
+  const dirs = [];
+  for (const entry of entries) {
+    try {
+      const st = await fs.lstat(join(snapRoot, entry));
+      if (st.isDirectory() && !st.isSymbolicLink()) dirs.push(entry);
+    } catch {}
+  }
+  return dirs;
+}
+
+/** 目录内容是否像本插件的快照目录（含 turn-N.tar.zst / files.json / recovery-*）。
+ * 回收非标准前缀目录前用此守卫：即使 snapshotDir 被指向别的目录树，也只回收
+ * 确实由本插件产出的子目录，绝不碰无关用户数据。 */
+async function looksLikeSnapshotDir(dir) {
+  try {
+    const entries = await fs.readdir(dir);
+    return entries.some((entry) => /^turn-\d+\.(?:tar\.zst|files\.json)$/.test(entry) || entry.startsWith('recovery-'));
+  } catch {
+    return false;
+  }
+}
+
+/** 当前"活着"的会话 id：sessions registry（所有 live 会话）+ workspace 记账的
+ * sessionIds（含归档后保留席位但 sessions 里已下线的）。孤儿判定基于该集合。 */
+function liveSessionIds(env) {
+  const ids = new Set();
+  try {
+    for (const session of env.ctx.sessions?.list?.() ?? []) {
+      if (session && typeof session.id === 'string') ids.add(session.id);
+    }
+  } catch {}
+  try {
+    for (const workspace of env.ctx.workspaceRegistry?.list?.() ?? []) {
+      for (const id of workspace?.sessionIds ?? []) ids.add(id);
+    }
+  } catch {}
+  return ids;
+}
+
+/** 统一快照清理。回收三类目录：
+ *  - archived：已归档会话（回滚或手动归档）——清理即回收（后代硬链接除外，
+ *    空间随链路末端清理释放，属硬链接的正常语义）；
+ *  - non-standard：非 session- 前缀的目录（arena 对局会话、旧格式 UUID）——
+ *    写侧已停（见 onSessionEvent），无 rollback 语义，存量一次性回收；
+ *  - orphan：session- 前缀但 sessions/workspace 均无记录、且停止活动超过
+ *    ORPHAN_GRACE_MS（会话已删除或从未注册）——避免 attach 竞态误删。
+ * 非 archived 目录回收前都过 looksLikeSnapshotDir 守卫，防 snapshotDir 被指向
+ * 无关目录树时误删用户数据。
+ * Runs lazily from handleRollback, on a periodic timer (apply), and via
+ * POST /chat-rollback/prune-archived. */
+async function pruneSnapshots(env, sessionIdHint) {
   try {
     const archived = new Set(env.ctx.workspaceRegistry?.archivedSessionIds ?? []);
-    if (sessionIdHint !== undefined && !archived.has(sessionIdHint)) return { ok: true, pruned: [] };
-    let entries;
-    try {
-      entries = await fs.readdir(env.snapRoot);
-    } catch {
-      return { ok: true, pruned: [] };
-    }
+    if (sessionIdHint !== undefined && !archived.has(sessionIdHint)) return { ok: true, pruned: [], orphaned: [] };
+    const live = liveSessionIds(env);
+    const dirs = await listSnapshotDirs(env.snapRoot);
     const pruned = [];
-    for (const entry of entries) {
-      if (!entry.startsWith('session-')) continue;
+    const orphaned = [];
+    const now = Date.now();
+    for (const entry of dirs) {
       if (sessionIdHint !== undefined && entry !== sessionIdHint) continue;
-      if (sessionIdHint === undefined && !archived.has(entry)) continue;
+      let reason = null;
+      if (archived.has(entry)) {
+        reason = 'archived';
+      } else if (!entry.startsWith('session-')) {
+        // 非标准前缀目录：确认是本插件产物（防误删），且写侧已停不再增长
+        if (await looksLikeSnapshotDir(join(env.snapRoot, entry))) reason = 'non-standard';
+      } else if (!live.has(entry)) {
+        // session- 前缀孤儿：registry 无记录，且停止活动超过缓冲期
+        try {
+          const st = await fs.stat(join(env.snapRoot, entry));
+          if (now - st.mtimeMs > ORPHAN_GRACE_MS && (await looksLikeSnapshotDir(join(env.snapRoot, entry)))) reason = 'orphan';
+        } catch {}
+      }
+      if (reason === null) continue;
       try {
         await fs.rm(join(env.snapRoot, entry), { recursive: true, force: true });
-        pruned.push(entry);
+        (reason === 'orphan' ? orphaned : pruned).push(entry);
       } catch (error) {
         env.ctx.logger?.warn?.('chat-rollback: prune failed for ' + entry + ': ' + String(error));
       }
     }
-    return { ok: true, pruned };
+    return { ok: true, pruned, orphaned };
   } catch (error) {
     return { ok: false, message: String(error?.message ?? error) };
   }
@@ -584,8 +660,9 @@ async function handlePreflight(req, res, env) {
 
 async function handleRollback(req, res, env) {
   try {
-    // Lazy cleanup: snapshots of archived sessions are deleted on rollback.
-    pruneArchivedSnapshots(env).catch(() => {});
+    // Lazy cleanup: snapshots of archived sessions (and orphaned/non-standard
+    // dirs) are reclaimed on rollback.
+    pruneSnapshots(env).catch(() => {});
     const url = new URL(req.url ?? '/', 'http://x');
     const sessionId = url.searchParams.get('session') ?? '';
     const seqParam = url.searchParams.get('seq') ?? '';
@@ -728,7 +805,7 @@ async function handleRollback(req, res, env) {
       if (env.ctx.workspaceRegistry !== undefined && canArchive) {
         await env.ctx.workspaceRegistry.archiveSession(source.id);
         archivedSource = true;
-        await pruneArchivedSnapshots(env, source.id);
+        await pruneSnapshots(env, source.id);
       } else if (!canArchive) {
         archiveNote = 'archive deferred: workspace restore failed, source kept for retry';
       }
@@ -793,6 +870,10 @@ function apply(ctx, config = {}) {
       const turn = event.data?.turn;
       const cwd = session?.header?.cwd;
       if (typeof turn !== 'number' || typeof cwd !== 'string' || cwd === '') return;
+      // 只给标准 dsh 会话（session-<uuid>）写快照：arena 对局会话、旧格式 id
+      // 不是回滚目标，快照只会白占磁盘，且清理侧也只认 session- 前缀——写侧
+      // 与清理侧保持同一前缀，杜绝"写了清不掉"的不对称（arena 曾累积 400MB+）。
+      if (!session.id.startsWith('session-')) return;
       // Archived sessions are hidden and their snapshot dirs are pruned on
       // archive — skip, so a still-running archived session does not keep
       // re-creating snapshot files.
@@ -884,10 +965,32 @@ function apply(ctx, config = {}) {
     kind: 'exact',
     path: '/chat-rollback/prune-archived',
     handler: async (req, res) => {
-      const result = await pruneArchivedSnapshots(env);
+      // 手动存量清理入口：回收已归档 + 非标准前缀 + 孤儿快照目录。
+      // 响应含 pruned（已归档/非标准）与 orphaned（registry 无记录的孤儿）。
+      const result = await pruneSnapshots(env);
       sendJson(res, result.ok ? 200 : 500, result);
     }
   }));
+
+  // 定时兜底清理：workspaceRegistry 无归档事件可监听（只有 setState），手动
+  // 归档的会话快照此前只能等下次 rollback 才被惰性清理——加周期扫描，让
+  // 磁盘占用只涨不落的情况自动收敛。pruneIntervalMs 为 0 时禁用（仍可手动
+  // 调端点）。清理失败仅告警，不阻断对话。
+  if (config.pruneIntervalMs !== 0) {
+    const interval = config.pruneIntervalMs ?? 60 * 60 * 1000;
+    const timer = setInterval(() => {
+      pruneSnapshots(env)
+        .then((result) => {
+          const reclaimed = (result?.pruned?.length ?? 0) + (result?.orphaned?.length ?? 0);
+          if (reclaimed > 0) {
+            ctx.logger.info('chat-rollback: periodic prune reclaimed ' + reclaimed + ' snapshot dir(s)');
+          }
+        })
+        .catch((error) => ctx.logger.warn('chat-rollback: periodic prune failed: ' + String(error)));
+    }, interval);
+    timer.unref?.();
+    disposers.push(() => clearInterval(timer));
+  }
 
   return () => {
     for (const dispose of disposers) dispose();
