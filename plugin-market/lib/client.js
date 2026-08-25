@@ -192,6 +192,7 @@ window.__ModuleLoader__.load({
 			toggleNeedsRestart: "补丁已写入，但运行中的 dsh web 未应用该变更——需重启 dsh web 后生效",
 			gitUpToDate: "git 已是最新（远端 HEAD 与本地一致）",
 			gitHasUpdate: "git 有更新：远端 HEAD {head}…",
+			gitAdopt: "未从 git 安装（无锁定 commit）：点「更新」将转为 git 通道安装远端最新版（HEAD {head}…）",
 			gitUnknown: "git 无法对比（本地非 git 安装，无锁定 commit）",
 			unknown: "未知",
 			loading: "读取中…",
@@ -288,6 +289,7 @@ window.__ModuleLoader__.load({
 			toggleNeedsRestart: "Patch written, but the running dsh web did not apply it — restart dsh web for it to take effect",
 			gitUpToDate: "git up to date (remote HEAD matches local lock)",
 			gitHasUpdate: "git update available: remote HEAD {head}…",
+			gitAdopt: "Not installed from git (no locked commit): Update will install the latest remote HEAD {head}… via the git channel",
 			gitUnknown: "git check unavailable (not installed from git, no locked commit)",
 			unknown: "Unknown",
 			loading: "Loading…",
@@ -819,13 +821,16 @@ window.__ModuleLoader__.load({
 								entry.localPath ? h("span", { className: "pm-repo pm-repoPath" }, t("localPath") + ": " + entry.localPath) : null
 							),
 							check !== undefined && check.git !== null
-								? (check.git.unknown
-									? h("p", { className: "pm-message" }, t("gitUnknown"))
-									: (check.git.hasUpdate
-										? h("div", { className: "pm-updateRow" },
-											h("p", { className: "pm-message", "data-error": "true" }, tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })),
-											h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doUpdateFromCheck(entry, check); } }, t("update")))
-										: h("p", { className: "pm-message", "data-ok": "true" }, t("gitUpToDate"))))
+								? (check.git.hasUpdate
+									? h("div", { className: "pm-updateRow" },
+										h("p", { className: "pm-message", "data-error": "true" },
+											check.git.unknown
+												? tpl(t("gitAdopt"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })
+												: tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })),
+										h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doUpdateFromCheck(entry, check); } }, t("update")))
+									: check.git.unknown
+										? h("p", { className: "pm-message" }, t("gitUnknown"))
+										: h("p", { className: "pm-message", "data-ok": "true" }, t("gitUpToDate")))
 								: check !== undefined && check.git === null
 									? h("p", { className: "pm-message" }, t("gitNoRepo"))
 									: null,

@@ -2582,14 +2582,20 @@ async function handle(ctx, req, res) {
         gitRemoteHead(repo.owner, repo.name),
         gitLocalCommit(profileDir, repo.owner, repo.name),
       ])
+      // 本地 link/file 安装（开发工作流）不可经 git 通道转换，保持 unknown 不可更新
+      const localDep = isLocalDependency(profileDir, packageName)
+      const comparable = localCommit !== null
       git = {
         owner: repo.owner,
         name: repo.name,
         remoteHead,
         localCommit,
-        hasUpdate: remoteHead !== null && localCommit !== null && remoteHead !== localCommit,
-        // localCommit 为 null（link 依赖/本地安装）时无法对比，标注 unknown
-        unknown: localCommit === null,
+        // 已从 git 安装：对比远端 HEAD 与本地锁定 commit；
+        // 未从 git 安装（手动拷贝/registry，无锁定 commit）但仓库可达且非本地安装：
+        // 视为可更新——点「更新」将转为 git 通道安装远端最新版（一次到位）
+        hasUpdate: remoteHead !== null && (comparable ? remoteHead !== localCommit : !localDep),
+        // localCommit 为 null 时无法对比，标注 unknown（可更新时由客户端展示转换提示）
+        unknown: !comparable,
       }
     }
     // 安全审查：开启且检测到更新时，拉取新版本到隔离目录，与已装代码做文件级 diff，
