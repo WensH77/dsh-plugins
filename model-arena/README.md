@@ -3,6 +3,7 @@
 dsh web 模型竞技场插件（挑战模式）：**按场景分流——「知识沉淀」场景走 review 循环（主模型产出结构化方案，挑战者作为审查者给出 `Overall Verdict` READY / NEEDS_REVISION；不认可则修正后终审，循环直到认可或累计 3 次不认可，随后审查循环结束）；「业务探索」「测试用例」场景保持原有挑战流程（模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评）**。模型2 的输出以用户消息注入主会话原生对话流（竞技场 tab 保持现状，仅作模型2 后台输出）。
 
 - **仅空会话（hero）配置**：空会话时，在「文件夹 + agent 模式」选择旁出现「竞技场」toggle（默认关闭）；开启后出现与输入框同源的两级菜单，选择竞技场模型 + 推理等级（输入框当前模型被排除）；**目录仅两个模型时自动选择另一个**（无需手动选择），并在 composer 切换模型时联动切换（竞技场会话创建后模型冻结）
+- **斜杠命令 `/arena`（任意会话可用，父子级联选择）**：输入框输入 `/arena`（或从 `/` 菜单选中）分两步配置——**第 1 步原生弹窗选场景**（业务探索 / 知识沉淀 / 测试用例，含场景说明）；**第 2-3 步自绘级联面板选「挑战者模型 → 推理等级」**（模型按提供方分组、输入框当前模型被排除；推理等级是该模型自己的 efforts；无推理等级的模型点选即用默认等级）。每步一个维度、逐步收窄，**三要素在一次完整选择中齐备且全部有效**；Esc / 点外部 / ✕ 取消则什么都不改。弹窗/面板浮于 composer 上方，支持 ↑↓/回车/Esc 键盘操作（回车须先 ↑/↓ 高亮，防止残留按键误选）。**选择完成后 composer 上方出现确认条（场景 · 模型 · 推理等级 + 撤销按钮）**：撤销即恢复到选择前的竞技场状态（未启用则回到关闭），发送首条消息后配置提交、确认条消失。消息会话（非空会话）也能用 `/arena` 启用竞技场（hero 面板只在空会话出现，斜杠命令是其唯一入口）
 - **未配置时发送被阻止**：竞技场开启但未选模型时，composer 被平台「会话阻塞」机制禁用（占位符提示先选模型），避免静默退出竞技场变成普通会话；两模型自动模式下目录一解析即就绪、不会被阻塞
 - **真实竞技场（v3，tab 形态）**：配置好后发送首条消息 → 创建第二会话（竞技场模型，**与当前会话同一 workspace**，权限跟随当前会话的权限预设）；会话 header 出现原生 **【对话 | 竞技场】** tab（注册 `conversation.view` 槽位，跟随联动状态动态注册/注销），「竞技场」tab 内渲染竞技场模型对话（提示词 + 推理 + 回复 + 工具调用/工具结果/图片，随流式更新）；两个 agent 并行回复；后续每条消息自动镜像到竞技场会话
 - 竞技场会话**不出现在侧边栏**（竞争者隐身：`.YDXeBa_title` 精确匹配「竞技场」/「Arena」的列表行 `display:none`，且切换守卫会把任何切入竞技场会话的选择弹回其联动主会话，防止与模型2私聊扰乱上下文）；「竞技场」tab 是竞技场会话的唯一界面；切换会话/关闭竞技场时 tab 与联动一并还原；**归档主会话时联动归档竞技场会话**（订阅 workspaces 列表快照的 archivedSessionIds，检测到主会话新归档即调用 archiveSession 归档其联动会话）
@@ -16,7 +17,7 @@ dsh web 模型竞技场插件（挑战模式）：**按场景分流——「知�
 | 文件 | 角色 |
 |---|---|
 | lib/index.js | Node 端：settings 注册（links + **challenges 持久化** + persona 映射 + workspaceSkills），`system-prompt/assemble` 注入挑战角色（仅 persona 映射中的会话）；知识沉淀场景轮询 `openspec/` 检测 `propose.completed` 并经 `arena.reviewRequest` 回写浏览器端 |
-| lib/client.js | 浏览器端：hero toggle + 两级菜单选择 + 两模型自动联动（autoArenaModel）+ 竞技场运行时（镜像、`conversation.view`「竞技场」tab 注册、tab 内渲染）+ review 循环编排（`reviewRequest` 驱动）+ **challenge 持久化与恢复**（persistChallenge、alignChallengeAfterRestore：刷新/重启后按实时快照三态对齐——主模型轮 running/已完成自动推进、真 idle 等「继续」，挑战者轮未回复立即重注入）；纯函数（buildModelOptions、buildEffortChoices、conflictsWithInput、findArenaModel、autoArenaModel、totalModelsOf、textOfContent、assistantRows、buildRoundPrompt、parseReviewVerdict、roundLabelOf、formatToolTrail、toolArgsSummary、buildRoleSeed、buildMainRoleSeed、buildReviseMessage、pathBasename、stripMarkdown、toPersistedChallenge、fromPersistedChallenge、isResumableChallenge、isMainModelPhase、isChallengerPhase、isTerminalPhase、resolveMainResume、resolveChallengerResume）独立导出供测试 |
+| lib/client.js | 浏览器端：hero toggle + 两级菜单选择 + 两模型自动联动（autoArenaModel）+ **`/arena` 父子级联命令**（`commandUi.register` contribution：原生弹窗选场景 → 自绘 `conversation.input.overlay` 级联面板选模型/推理等级，`buildArenaModel`/`applyArenaSelection`）+ 竞技场运行时（镜像、`conversation.view`「竞技场」tab 注册、tab 内渲染）+ review 循环编排（`reviewRequest` 驱动）+ **challenge 持久化与恢复**（persistChallenge、alignChallengeAfterRestore：刷新/重启后按实时快照三态对齐——主模型轮 running/已完成自动推进、真 idle 等「继续」，挑战者轮未回复立即重注入）；纯函数（buildModelOptions、buildEffortChoices、buildArenaModel、applyArenaSelection、conflictsWithInput、findArenaModel、autoArenaModel、totalModelsOf、textOfContent、assistantRows、buildRoundPrompt、parseReviewVerdict、roundLabelOf、formatToolTrail、toolArgsSummary、buildRoleSeed、buildMainRoleSeed、buildReviseMessage、pathBasename、stripMarkdown、toPersistedChallenge、fromPersistedChallenge、isResumableChallenge、isMainModelPhase、isChallengerPhase、isTerminalPhase、resolveMainResume、resolveChallengerResume）独立导出供测试 |
 
 数据流：
 
@@ -24,12 +25,16 @@ dsh web 模型竞技场插件（挑战模式）：**按场景分流——「知�
       --> 用户首问 --> 创建竞技场会话（同 workspace，不镜像首问）--> 输入框锁定
       --> 场景分流：知识沉淀走 review 循环；业务探索/测试用例走原有挑战流程
       --> [review] 主模型(intranet-aio, workflow) 自动 explore→propose 产出 proposal/design/tasks
-             并 record propose.completed → node 半段检测 → 挑战者按注入的挑战者技能读文件审查
+             并 record propose.completed（persona：随后停止本回合、等待挑战者会话审查）
+             → node 半段检测 propose.completed → 挑战者按注入的挑战者技能读文件审查
              写 review.md（含 Action Items）+ 返回一行 Overall Verdict READY/NEEDS_REVISION
-             NEEDS_REVISION → 注入「先 record review.completed NEEDS_REVISION 回到 propose
-             → 读 review.md 的 Action Items 改文件 → record propose.completed 重新送审」
-             累计 3 次不认可 → 不发消息给主模型，node 半段直接写 Theseus 状态机退回 propose
-             （review.completed NEEDS_REVISION），主模型自然停等人工；READY → record review.completed READY，model-arena 放手，主模型继续 readiness→apply
+             主模型收到注入的简洁「审查结论：不认可」→ 按 persona 读 review.md 的 Action Items
+             改文件 → 重新 record propose.completed 送审（循环；累计 3 次不认可 → node 半段
+             直接写 Theseus 状态机退回 propose，主模型自然停等人工）；READY → 注入简洁
+             「审查结论：认可」，主模型按 persona 先汇报审查结论、调用 ask_user_question 询问
+             确认（回答后继续本回合）后再 record review.completed READY，model-arena 放手，
+             主模型继续 readiness→apply（readiness/apply/archive 每环节同样 ask_user_question
+             询问、回答后继续本回合；唯一回合停止点是 propose 后等待挑战者审查）
       --> [challenge] 模型1 回答 --> 模型2 质疑（注入）--> 模型1 修正 --> 模型2 终评（注入）
       --> 结束解锁（后续环节由宿主流程接管，本插件不改动）
       --> 每轮 phase 转换经 persistChallenge 写入 settings `challenges`
@@ -61,15 +66,32 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 2. 在文件夹、agent 模式选择旁点击「竞技场」toggle（默认关闭）
 3. 开启后面板出现场景选择（默认「业务探索」，另有「知识沉淀 / 测试用例」）+**「挑战者技能」**（可选，点开后可用系统文件夹选择器选文件夹，或手动输入文件/文件夹路径；可为空；**按「工作区 × 场景」记忆**——每个场景独立记住自己的 skill，切换场景自动加载该场景的 skill）+「竞技场模型」两级菜单（输入框当前模型不在列表中）；**目录仅两个模型时自动选中另一个**，且在 composer 切换模型时联动切换（竞技场会话创建后冻结）
 4. 发送首条消息（你的问题）→ 输入框锁定，按场景分流：
-   - **知识沉淀**：主模型产出结构化方案 → 挑战者作为审查者输出 `**Overall Verdict**: READY`（认可）或 `NEEDS_REVISION`（不认可）+ Action Items；不认可 → 审查意见以**用户消息**注入主对话 → 主模型修正 → 挑战者终审，循环直到认可或累计 3 次不认可，随后审查循环结束、解锁输入框（后续环节由宿主流程接管，本插件不改动）
+   - **知识沉淀**：主模型产出结构化方案 → 挑战者作为审查者输出 `**Overall Verdict**: READY`（认可）或 `NEEDS_REVISION`（不认可）+ Action Items；不认可 → 审查结论以**用户消息**（简洁「审查结论：不认可」）注入主对话 → 主模型按 persona 读 review.md 的 Action Items 修正 → 重新送审，循环直到认可或累计 3 次不认可，随后审查循环结束、解锁输入框；认可 → 注入简洁「审查结论：认可」，主模型按 persona 职责（见 `buildMainRoleSeed`：explore/propose + propose 后停止本回合、等待挑战者会话审查 + 收到注入 verdict 后先汇报、调用 `ask_user_question` 询问用户确认后再 record review.completed READY 并继续 user-readiness-review → apply → archive）推进后续阶段，无指令性注入（后续环节由宿主流程接管，本插件不改动）。**所有确认节点（explore/propose/修正确认/READY/readiness/apply/archive 各环节）一律调用 `ask_user_question` 提问、用户回答后在同一回合内继续推进，不因询问而停止回合或结束会话；唯一回合停止点是 record propose.completed 后等待挑战者审查（v8 的 `hasPendingInteraction` 守卫保证提问不中断流程）**
    - **业务探索 / 测试用例**（原有逻辑）：模型1 回答 → 模型2 质疑（用户消息注入）→ 模型1 修正 → 模型2 终评（用户消息收尾）
 5. 流程结束解锁输入框，可提新一轮问题
+
+### 斜杠命令 `/arena`（父子级联选择，任意会话可用）
+
+1. 输入框输入 `/arena`（或从 `+` / `/` 命令菜单选中）——**无需、也不支持手输参数**
+2. **第 1 步（原生弹窗）选场景**：业务探索 / 知识沉淀 / 测试用例三行，附场景说明
+3. **第 2 步（级联面板）选挑战者模型**：按提供方分组，输入框当前模型被排除；无推理等级的模型点选即完成
+4. **第 3 步（级联面板）选推理等级**：所选模型自己的推理等级（Default / Low / High…），点选即生效——竞技场启用、场景切换、按「工作区 × 场景」记忆加载该场景的挑战者技能
+5. **选择结果填入 composer 区域并带撤销**：composer 上方出现确认条「⚔ 场景 · 模型 · 推理等级 [撤销]」——点撤销立即恢复到选择前的竞技场状态（原本未启用则回到关闭）；发送首条消息后配置正式提交（确认条消失，竞技场会话创建后模型冻结）
+6. Esc / 点外部 / ✕ 随时取消向导，不产生任何变更；发送首条消息后按所选场景进入既有挑战流程
+
+### 对话结束后重开（显式，非自动）
+
+- **任何场景**的任何一轮挑战结束后（done / aborted），挑战者都**保持休眠、不会自动重武装**——后续用户消息只走主模型，绝不会因为输入而重开竞技场（此前 business/qa 的「可重复轮次」自动重开已改为休眠；知识沉淀本就 one-shot）
+- **唯一的重开方式是显式 `/arena`**：结束后 `/arena` 不再被「模型已冻结」拦截（冻结只对进行中的挑战生效），弹窗**直接显示当前配置**（场景 · 模型 · 推理等级）作为唯一选项——**不可修改**（这也从构造上杜绝了换模型问题：旧竞技场会话模型已冻结，复用必然同模型）；确认后下一条消息启动**新的一轮**，**复用原竞技场会话**（对抗模型继承原会话与上下文——旧轮次提示词/回复仍在会话历史里，新轮锚点从其尾部开始，旧内容不会被误判为新回合）；撤销栏 ✕ 可退回「已结束」休眠态
+- 知识沉淀重开时会重新武装 Theseus 桥（新 review 循环仍需主模型重新跑 workflow 产出 `propose.completed` 才会推进审查）
+
+> 设计说明：dsh 原生命令弹窗（popupSelect）是单层结构（选项行无嵌套字段、每次打开只取一次选项、选中即关闭），装不下父子级联，所以第 1 步用原生弹窗（场景不依赖模型，且原生壳会自动消费掉输入框里的 `/arena` token），第 2-3 步用自绘级联面板（注册在 `conversation.input.overlay` 槽位，与原生弹窗共存）——交互与 hero 面板的「模型 → 推理等级」两级菜单一致。
 
 ## 测试
 
     npm test   # = node test/smoke.mjs && node test/client-smoke.mjs
 
-覆盖：hero 开关/菜单/阻塞；两模型自动联动（纯函数 + hero 集成：自动选补集、不阻塞、切换跟随）；竞技场运行时（会话创建、模型选择、open 窗口、提示词镜像、view-ring tab 注册、tab 渲染、问题/审批交互、重入不重发历史、关闭还原）；tab 原生渲染（经 `require` seed 原语加载 MarkdownText/DisclosureRow/复制按钮，而非纯文本兜底 + `.ma-questionOpt` 基础规则回归守卫）；轮次分割线（`roundLabelOf` 关键词判定 + 分割线渲染）；权限预设应用；链接持久化（保存/恢复/卸载）；场景分流（business/knowledge/qa 的 review 标志）；review 循环编排（`reviewRequest` 驱动 propose/revise→review、文件路径传审查、Overall Verdict 解析、不认可计数与 3 次上限、停止/中止、`stopArenaWatch` 清理）；原有挑战流程（业务探索场景 answer→challenge→revise→final）；挑战者技能（选择/清除持久化到工作区×场景、场景切换加载各场景自己的 skill、文件夹选择守卫）；**对抗进度跨断网存活**（`toPersistedChallenge`/`fromPersistedChallenge` 往返与字段白名单/截断、`resolveMainResume`/`resolveChallengerResume` 三态判定、主模型轮 waiting 恢复不锁输入框 + 「继续」不重置进度并推进到挑战者轮、挑战者轮已回复 catch-up 不重复 prompt、未回复恢复时立即注入一次且 sync 不重复、aborted 终止态恢复不复活且不重武装 Theseus 桥）；纯函数（排除规则、模型挂钩等级、文本/块提取、工具/图片行、工具操作记录格式化、审查 prompt 与 challenge/final prompt 判定解析、轮次标签、`buildMainRoleSeed` 停在 propose 约束、`buildReviseMessage` 打回格式、`pathBasename`）。
+覆盖：hero 开关/菜单/阻塞；两模型自动联动（纯函数 + hero 集成：自动选补集、不阻塞、切换跟随）；**`/arena` 父子级联命令**（contribution 注册、场景弹窗三行、`buildArenaModel` 推理等级归一化、`applyArenaSelection` 同步应用、级联面板模型步排除输入框模型/按提供方分组、推理等级步列出模型自己的 levels、Esc 取消不生效、冻结态拒绝、onSelect 后首问按所选模型+推理等级+场景启动挑战）；竞技场运行时（会话创建、模型选择、open 窗口、提示词镜像、view-ring tab 注册、tab 渲染、问题/审批交互、重入不重发历史、关闭还原）；tab 原生渲染（经 `require` seed 原语加载 MarkdownText/DisclosureRow/复制按钮，而非纯文本兜底 + `.ma-questionOpt` 基础规则回归守卫）；轮次分割线（`roundLabelOf` 关键词判定 + 分割线渲染）；权限预设应用；链接持久化（保存/恢复/卸载）；场景分流（business/knowledge/qa 的 review 标志）；review 循环编排（`reviewRequest` 驱动 propose/revise→review、文件路径传审查、Overall Verdict 解析、不认可计数与 3 次上限、停止/中止、`stopArenaWatch` 清理）；原有挑战流程（业务探索场景 answer→challenge→revise→final）；挑战者技能（选择/清除持久化到工作区×场景、场景切换加载各场景自己的 skill、文件夹选择守卫）；**对抗进度跨断网存活**（`toPersistedChallenge`/`fromPersistedChallenge` 往返与字段白名单/截断、`resolveMainResume`/`resolveChallengerResume` 三态判定、主模型轮 waiting 恢复不锁输入框 + 「继续」不重置进度并推进到挑战者轮、挑战者轮已回复 catch-up 不重复 prompt、未回复恢复时立即注入一次且 sync 不重复、aborted 终止态恢复不复活且不重武装 Theseus 桥）；纯函数（排除规则、模型挂钩等级、文本/块提取、工具/图片行、工具操作记录格式化、审查 prompt 与 challenge/final prompt 判定解析、轮次标签、`buildMainRoleSeed` 写明负责 step（explore/propose + propose 后停止本回合、等待挑战者会话审查 + 收到注入 verdict 三条分支（NEEDS_REVISION/NOT_READY 修正重审、READY 先汇报、调用 ask_user_question 询问用户确认后再 record review.completed READY 并继续；无指令性注入）+ 所有确认节点 ask_user_question 提问、回答后继续本回合、唯一停止点是 propose 后等待挑战者审查）、`buildReviseMessage` 打回格式、`pathBasename`）。
 
 ## 已知限制
 
@@ -79,6 +101,7 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 - **推断恢复的边界（v20 修复）**：`inferRestoredChallenge` 仅在「link 存在 + 主会话有首问 + 无 done 信号（link.done / Theseus past review）」时把刷新后的 idle 兜底升级为进行中（propose/answer）；旧版本 aborted 会话（无持久化、无 done 信号）可能短暂恢复 header，由 120s 停滞看门狗兜底中止——优于流程静默；已结束会话（done/aborted 有持久化或 watch past review）不会被推断复活
 - **tab 渲染与原生同款（无气泡）**：完整复刻左侧聊天渲染，**按原生语义分组**（user 气泡+时间戳一组、context 独立块、assistant 的 think+工具+正文一组、turn-tail 独立行；块间 gap 16px、块内对齐原生 userStack 8px / asstBlock 16px）——**context 节点**（原生「上下文注入」折叠行：IconBrowseOutline16 图标 + 标题 + **来源 label**（contextSourceLabel：plugin id / skill 名，与原生 contextProvenance 一致）+ 折叠摘要，点击整行/文字展开显示注入内容）、**Think 折叠行**（原生 IconThinkOutline16 图标 + "Think" 标题 + **原生 QWLzlG_separator 分隔符 + 折叠摘要露出**，点击整行展开 thinkBody）、**工具调用折叠行**（原生 IconCodeOutline16 图标 + **原生工具显示名**（TOOL_VARIANTS 映射：run_code→Code 等）+ **分隔符 + 摘要**，点击整行展开**code 值代码块**（原生 deriveBody：code variant 显示 argsRaw.code 实际代码，其他 variant 显示格式化 JSON））、**turn-tail 统计行**（HH:MM · 用时 · 首 token · tok/s）、markdown 正文经平台原生 MarkdownText 渲染；所有折叠行均 `expandOnRowClick`（点击文字即可展开），展开状态跨流式 repaint 保持；**复制按钮与原生一致**：仅 user 消息 + 回合末尾（turn-tail 对应位置）各一个（不在工具步骤/assistant 块内），原生 IconCopyOutline16→IconCheckOutline16 切换 + Tooltip hover 文案；**turn 复制仅含正文 text（不含 thinking/reasoning）**；对话 tab 保持原生时间戳行为（hover 显示）；权限 command 节点隐藏；**编排器注入的轮次提示词（user 节点）渲染为带标签的分割线**（质疑轮/终评轮/审查轮，横贯线 + 居中标签，见 v16）；镜像经 prompt 携带文本（图片附件仅左侧展示）
 - **锚点依赖 bundle 结构**：hero 行类锚点为当前 bundle 结构，平台升级可能需调整
-- **竞技场模型 ≠ 输入框模型**：hero 选择排除输入框当前模型；若选择发生在目录加载前，创建时会复核并跳过（提示冲突）；**仅两个模型时自动选补集并随输入框切换联动**（`autoArenaModel`），竞技场会话创建后模型冻结（`arenaLocked`），此后 composer 切换不再改竞技场模型
+- **竞技场模型 ≠ 输入框模型**：hero 选择与 `/arena` 弹窗都排除输入框当前模型；若选择发生在目录加载前，创建时会复核并跳过（提示冲突）；**仅两个模型时自动选补集并随输入框切换联动**（`autoArenaModel`），竞技场会话创建后模型冻结（`arenaLocked`），此后 composer 切换与 `/arena` 重选都不再改竞技场模型（弹窗会拒绝并提示）
+- **`/arena` 是纯浏览器端 contribution**：只做场景弹窗 + 级联面板、同步应用，不产生 command flow 节点，也不写 settings；命令可用性由 dsh 命令菜单决定（被 command-setting 隐藏后不再出现）；`/arena` 后跟多余文字会回退为普通用户消息（命令不需要参数）；级联面板注册在 `conversation.input.overlay` 槽位（list 型，与原生命令弹窗共存），面板定位与键盘/关闭交互为自绘实现，平台升级可能需微调
 - **镜像略有滞后**：竞技场在消息落地后启动（数百 ms）；两 agent 并行但非严格同时
 - **错误重试**：竞技场会话创建/镜像失败时，tab 内显示错误条 + 重试按钮；重试成功自动恢复联动与渲染

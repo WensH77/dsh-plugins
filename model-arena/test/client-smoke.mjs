@@ -81,6 +81,11 @@ class FakeElement {
   addEventListener(type, fn) {
     (this._handlers[type] ??= []).push(fn);
   }
+  // Real HTMLButtonElement.click() semantics: fire the first click handler.
+  click() {
+    const fn = this._handlers?.click?.[0];
+    if (typeof fn === "function") fn();
+  }
   removeEventListener() {}
   contains() {
     return false;
@@ -204,8 +209,23 @@ const documentStub = {
     }
   },
   body: bodyRoot,
-  addEventListener() {},
-  removeEventListener() {}
+  addEventListener(type, fn) {
+    if (!docHandlers.has(type)) docHandlers.set(type, new Set());
+    docHandlers.get(type).add(fn);
+  },
+  removeEventListener(type, fn) {
+    docHandlers.get(type)?.delete(fn);
+  }
+};
+// Captured document listeners (keydown/mousedown) so tests can drive the
+// slash wizard's keyboard/dismiss paths, which register on document.
+const docHandlers = new Map();
+const dispatchDoc = (type, event) => {
+  for (const fn of [...(docHandlers.get(type) ?? [])]) {
+    try {
+      fn(event);
+    } catch {}
+  }
 };
 
 let loaded = null;
@@ -285,8 +305,8 @@ function check(label, cond, detail) {
 }
 
 check("apply exported", typeof loaded.apply === "function");
-check("inject exported", Array.isArray(loaded.inject) && loaded.inject.join(",") === "locale,sessions,modelDirectories,remote,slots");
-check("helpers exported", ["buildModelOptions", "buildEffortChoices", "conflictsWithInput", "findArenaModel"].every((k) => typeof loaded[k] === "function"));
+check("inject exported", Array.isArray(loaded.inject) && loaded.inject.join(",") === "locale,sessions,modelDirectories,remote,slots,commandUi");
+check("helpers exported", ["buildModelOptions", "buildEffortChoices", "buildArenaModel", "applyArenaSelection", "conflictsWithInput", "findArenaModel"].every((k) => typeof loaded[k] === "function"));
 check("arena stylesheet injected", headStyles.length === 1 && headStyles[0].dataset.pluginCss === "dsh-plugin-model-arena/arena.css");
 check("question option base rule present (regression guard)", headStyles.length === 1 && headStyles[0].textContent.includes(".ma-questionOpt{"));
 
@@ -319,6 +339,17 @@ check("conflict true", loaded.conflictsWithInput({ provider: "p1", model: "m1" }
 check("conflict false", loaded.conflictsWithInput({ provider: "p1", model: "m2" }, directory) === false);
 check("findArenaModel resolves", loaded.findArenaModel(directory, { provider: "p1", model: "m2" })?.name === "M2");
 check("findArenaModel missing", loaded.findArenaModel(directory, { provider: "p9", model: "x" }) === void 0);
+
+// ── /arena cascade: arena-model normalization + selection apply ─────────────
+const arenaModelHigh = loaded.buildArenaModel("p1", "m2", "M2", reasoningA, "high");
+check("arena model: explicit effort wins", arenaModelHigh.provider === "p1" && arenaModelHigh.model === "m2" && arenaModelHigh.name === "M2" && arenaModelHigh.reasoningEffort === "high");
+const arenaModelDefault = loaded.buildArenaModel("p2", "m3", "M3", reasoningB, void 0);
+check("arena model: unset effort falls back to the model's defaultEffort", arenaModelDefault.reasoningEffort === "fast");
+const arenaModelNone = loaded.buildArenaModel("p1", "m2", "M2", reasoningA, void 0);
+check("arena model: no defaultEffort → effort omitted", arenaModelNone.reasoningEffort === void 0);
+const arenaState = { enabled: false, model: null, scene: "business", skill: void 0, challenge: null };
+loaded.applyArenaSelection(arenaState, "knowledge", arenaModelHigh);
+check("arena selection: enables + sets scene/model/effort", arenaState.enabled === true && arenaState.scene === "knowledge" && arenaState.model.provider === "p1" && arenaState.model.model === "m2" && arenaState.model.name === "M2" && arenaState.model.reasoningEffort === "high");
 
 // ── temperature input validation (0..2, at most 2 decimal places) ──────────
 const nt = loaded.normalizeTemperatureInput;
@@ -408,6 +439,7 @@ const openCalls = [];
 const cancelCalls = [];
 const settingsMutateCalls = [];
 const slotRegisterCalls = [];
+const commandUiContributions = [];
 let settingsNamespaces = [];
 let settingsUpdatedHandler = null;
 let listSub = null;
@@ -585,10 +617,20 @@ const mockCtx = {
     },
     rename: async (payload) => {
       renameCalls.push(payload);
-    }
+    },
+    subagentAddress: () => void 0
   },
   inject: (names, cb) => {
     cb({ modelDirectories: { directoryFor: () => fakeDirectory } });
+  },
+  commandUi: {
+    register: (contribution) => {
+      commandUiContributions.push(contribution);
+      return () => {
+        const at = commandUiContributions.indexOf(contribution);
+        if (at >= 0) commandUiContributions.splice(at, 1);
+      };
+    }
   }
 };
 
@@ -609,12 +651,12 @@ check("header predicate + STALL_MS exported", typeof loaded.shouldShowChallengeH
 check("header hidden for null / fresh / terminal states", loaded.shouldShowChallengeHeader(null) === false && loaded.shouldShowChallengeHeader({ active: false, phase: "idle" }) === false && loaded.shouldShowChallengeHeader({ active: true, phase: "done" }) === false && loaded.shouldShowChallengeHeader({ active: true, phase: "aborted" }) === false && loaded.shouldShowChallengeHeader({ active: false, phase: "answer" }) === false);
 check("header shown only for in-flight phases", ["answer", "challenge", "revise", "final", "propose", "review"].every((p) => loaded.shouldShowChallengeHeader({ active: true, phase: p }) === true));
 check("re-arm predicate exported", typeof loaded.shouldReArmChallenge === "function" && typeof loaded.isPastReviewStage === "function");
-check("re-arm: fresh / aborted / null re-arm", loaded.shouldReArmChallenge(null) === true && loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }) === true && loaded.shouldReArmChallenge({ phase: "aborted", scene: "knowledge" }) === true);
+check("re-arm: fresh / idle re-arm, terminal (done/aborted) never", loaded.shouldReArmChallenge(null) === true && loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }) === true && loaded.shouldReArmChallenge({ phase: "aborted", scene: "knowledge" }) === false && loaded.shouldReArmChallenge({ phase: "aborted", scene: "business" }) === false);
 check("re-arm: done review scene is one-shot (blocked)", loaded.shouldReArmChallenge({ phase: "done", scene: "knowledge" }) === false);
-check("re-arm: done business/qa still re-arm", loaded.shouldReArmChallenge({ phase: "done", scene: "business" }) === true && loaded.shouldReArmChallenge({ phase: "done", scene: "qa" }) === true);
+check("re-arm: done business/qa also dormant (only /arena reopens)", loaded.shouldReArmChallenge({ phase: "done", scene: "business" }) === false && loaded.shouldReArmChallenge({ phase: "done", scene: "qa" }) === false);
 check("re-arm: persisted link.done blocks after reload (phase reset to idle)", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, { done: true }) === false);
 check("re-arm: link without done still re-arms", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, {}) === true);
-check("re-arm: link.done ignored for non-review scene", loaded.shouldReArmChallenge({ phase: "idle", scene: "business" }, { done: true }) === true);
+check("re-arm: link.done blocks every scene (only /arena reopens)", loaded.shouldReArmChallenge({ phase: "idle", scene: "business" }, { done: true }) === false && loaded.shouldReArmChallenge({ phase: "idle", scene: "qa" }, { done: true }) === false);
 check("isPastReviewStage recognizes apply/archive/done", loaded.isPastReviewStage("apply") === true && loaded.isPastReviewStage("archive") === true && loaded.isPastReviewStage("done") === true && loaded.isPastReviewStage("user-readiness-review") === true);
 check("isPastReviewStage rejects pre-review stages", loaded.isPastReviewStage("review") === false && loaded.isPastReviewStage("propose") === false && loaded.isPastReviewStage("explore") === false && loaded.isPastReviewStage("") === false);
 check("re-arm: watch.stage past review blocks (reload of a completed loop)", loaded.shouldReArmChallenge({ phase: "idle", scene: "knowledge" }, null, { stage: "apply" }) === false);
@@ -643,8 +685,24 @@ check("stripMarkdown removes emphasis and code", loaded.stripMarkdown("**bold** 
 check("stripMarkdown keeps paragraphs", loaded.stripMarkdown("line1\n\n\n\nline2") === "line1\n\nline2");
 const reviseMd = loaded.buildReviseMessage("**核心问题**：方案有缺陷", { ...chCtx, scene: "business" }, realT);
 check("revise message strips markdown before injection", reviseMd.includes("核心问题：方案有缺陷") && !reviseMd.includes("**"));
-const qaPrompt = loaded.buildRoundPrompt("review", { ...chCtx, scene: "qa" }, realT);
+const qaPrompt = loaded.buildRoundPrompt("challenge", { ...chCtx, scene: "qa" }, realT);
 check("qa scene role", qaPrompt.includes("QA Expert"));
+// ── qa 协作者化断言（v31）：用户视角平行协作者，验收用例质量 ──
+const qaSeed = loaded.buildRoleSeed({ scene: "qa" }, realT);
+check("qa: 角色种子不含「身份高于」等级框架", !qaSeed.includes("身份高于"), qaSeed);
+check("qa: 角色种子是用户视角平行协作者（验收）", qaSeed.includes("最终用户") && qaSeed.includes("用户视角") && qaSeed.includes("验收") && qaSeed.includes("平行"));
+const bizSeed = loaded.buildRoleSeed({ scene: "business" }, realT);
+check("business: 角色种子保留「身份高于」等级框架", bizSeed.includes("身份高于"));
+const qaMainSeed = loaded.buildMainRoleSeed({ scene: "qa" }, realT);
+check("qa: 主模型角色含 openspec/jira 产出指令", qaMainSeed.includes("openspec") && qaMainSeed.includes("测试用例") && qaMainSeed.includes("预期结果"));
+check("business: 主模型角色不含 openspec 产出指令", !loaded.buildMainRoleSeed({ scene: "business" }, realT).includes("openspec"));
+const qaChallengePrompt = loaded.buildRoundPrompt("challenge", { scene: "qa", userQuestion: "Q", lastMainText: "用例" }, realT);
+check("qa: 验收轮 prompt 为逐条验收语义", qaChallengePrompt.includes("逐条验收") && qaChallengePrompt.includes("边界") && qaChallengePrompt.includes("可执行") && qaChallengePrompt.includes("可断言") && !qaChallengePrompt.includes("逐条质疑"));
+const qaFinalPrompt = loaded.buildRoundPrompt("final", { scene: "qa", lastMainText: "修正后用例" }, realT);
+check("qa: 终验轮 prompt 核对验收意见 + 验收结论", qaFinalPrompt.includes("验收意见") && qaFinalPrompt.includes("逐条核对") && qaFinalPrompt.includes("通过") && qaFinalPrompt.includes("仍需修改") && !qaFinalPrompt.includes("最终评审结论"));
+check("qa: 终验轮仍禁止新质疑", qaFinalPrompt.includes("不要提出新的质疑"));
+check("qa: roundLabelOf 验收轮标签", loaded.roundLabelOf(qaChallengePrompt, realT) === "验收轮" && loaded.roundLabelOf(qaFinalPrompt, realT) === "验收轮");
+check("qa: desc 与验收语义一致（无漂移）", dicts.zh["settings.scene.qa.desc"].includes("验收") && dicts.zh["settings.scene.qa.desc"].includes("协作者"));
 const challengePrompt = loaded.buildRoundPrompt("challenge", chCtx, realT);
 check("challenge prompt (original flow): question + answer", challengePrompt.includes("用户问题") && challengePrompt.includes("质疑") && challengePrompt.includes("docs/plan.md"));
 check("challenge prompt has no review verdict", !challengePrompt.includes("Overall Verdict") && !challengePrompt.includes("结构化方案"));
@@ -685,7 +743,23 @@ check("nonMdSig unchanged for text-only streaming", loaded.nonMdSig([{ kind: "te
 const seed = loaded.buildRoleSeed({ scene: "knowledge" }, realT);
 check("role seed carries reviewer rank + no-debate", seed.includes("Challenger") && seed.includes("身份高于") && seed.includes("审查者") && seed.includes("Knowledge Expert") && seed.includes("禁止辩论") && seed.includes("Overall Verdict"));
 const mainSeed = loaded.buildMainRoleSeed({ scene: "knowledge" }, realT);
-check("knowledge main seed places workflow trigger after the role setting", mainSeed.includes("Knowledge Expert") && mainSeed.includes("进行知识沉淀") && mainSeed.indexOf("你是") !== -1 && mainSeed.indexOf("你是") < mainSeed.indexOf("启动workflow") && mainSeed.endsWith("启动workflow，进行知识沉淀。"));
+check("knowledge main seed places workflow trigger after the role setting", mainSeed.includes("Knowledge Expert") && mainSeed.includes("进行知识沉淀") && mainSeed.indexOf("你是") !== -1 && mainSeed.indexOf("你是") < mainSeed.indexOf("启用workflow") && mainSeed.endsWith("启用workflow，进行知识沉淀。"));
+// v33: persona 改为双会话版——propose 后主回合停止、等待竞技场挑战者会话审查，
+// verdict 以用户消息注入（「审查结论：不认可/认可」）后按三条分支处理
+// （NEEDS_REVISION / NOT_READY / READY），READY 先汇报询问用户再 record；
+// 不照搬竞技场 V2 的 arena_review 工具派遣机制（无工具可调、无 fixSummary）。
+check("knowledge main seed: 不再使用「最高优先级强制约束」框架", !mainSeed.includes("最高优先级强制约束"));
+check("knowledge main seed: 写明负责 step（record review.completed READY + 继续后续阶段）", mainSeed.includes("record review.completed READY") && mainSeed.includes("user-readiness-review") && mainSeed.includes("apply") && mainSeed.includes("archive"));
+check("knowledge main seed: 认识简洁注入「审查结论：认可/不认可」并映射为三条分支", mainSeed.includes("审查结论：认可") && mainSeed.includes("审查结论：不认可") && mainSeed.includes("NOT_READY"));
+check("knowledge main seed: propose 后停止、等待挑战者会话审查（双会话，verdict 以用户消息注入）", mainSeed.includes("随后停止本回合") && mainSeed.includes("竞技场挑战者会话") && mainSeed.includes("用户消息注入") && mainSeed.includes("Overall Verdict"));
+check("knowledge main seed: 不照搬 V2 的 arena_review 工具派遣机制", !mainSeed.includes("arena_review") && !mainSeed.includes("fixSummary") && !mainSeed.includes("随后不要停止会话"));
+check("knowledge main seed: READY 先汇报并询问用户再 record review.completed READY", mainSeed.includes("询问是否记录 review.completed READY 并继续后续阶段") && mainSeed.includes("用户确认后继续本回合，record review.completed READY"));
+check("knowledge main seed: 修正重审、3 次上限与 NOT_READY 处理", mainSeed.includes("最多 3 次") && mainSeed.includes("累计 3 次不认可") && mainSeed.includes("record review.completed NOT_READY") && mainSeed.includes("计入 3 次上限"));
+const askCount = mainSeed.split("ask_user_question").length - 1;
+check("knowledge main seed: 所有确认节点均调用 ask_user_question 且回答后继续本回合", askCount >= 6 && mainSeed.includes("继续本回合"), "askCount=" + askCount);
+check("knowledge main seed: 唯一回合停止点是第 2 条 propose 后等待挑战者审查", mainSeed.includes("唯一需要停止本回合的节点是第 2 条 record propose.completed 后等待挑战者审查") && mainSeed.includes("绝不因询问而结束回合或结束会话"));
+check("knowledge main seed: 第 4 条后续阶段每环节询问确认后再继续、第 5 条无职责收口", mainSeed.includes("每个环节完成时先向用户汇报") && mainSeed.includes("询问确认后再继续") && !mainSeed.includes("由 Theseus 流程自身负责") && !mainSeed.includes("你只负责"));
+check("knowledge main seed: 保留 explore/propose 用户确认与挑战者独占审查", mainSeed.includes("询问是否确认探索结果并进入 propose") && mainSeed.includes("询问是否记录 propose.completed") && mainSeed.includes("绝对禁止 auto-advance 到 review") && mainSeed.includes("绝对禁止执行 theseus-review-spec"));
 
 const toggle = heroRow.children.find((child) => child.dataset.arenaToggle !== void 0);
 check("toggle mounted in hero row", toggle !== void 0);
@@ -1191,9 +1265,14 @@ check("done review challenge header stays hidden", loaded.shouldShowChallengeHea
 const resetChallengeForTest = (lastSeenSeq) => {
   const m = internals.getArenaMount();
   if (m === null) return;
+  // Seed the arena anchor to the REUSED arena session's current tail (the old
+  // rounds' content is pre-existing) — a null anchor would make the challenger
+  // phase treat the old assistant nodes as a completed turn and skip the round.
+  const arenaOrder = sessionStores.get("arena-1")?.snapshot?.chat?.order ?? [];
+  const arenaTail = arenaOrder.length > 0 ? arenaOrder[arenaOrder.length - 1] : null;
   Object.assign(m.challenge, {
     active: false, phase: "idle", rejectCount: 0, verdict: "", round: 0,
-    stallSince: 0, lastReviewSeq: -1, mainAnchor: null, arenaAnchor: null,
+    stallSince: 0, lastReviewSeq: -1, mainAnchor: null, arenaAnchor: arenaTail,
     pendingAnchor: false, lastInjectedText: "", mainWasRunning: false, arenaWasRunning: false
   });
   m.lastSeenSeq = lastSeenSeq;
@@ -1241,10 +1320,12 @@ check("stop cancels BOTH sessions (main like native stop + challenger)", cancelC
 check("composer unlocked after stop", blockCalls[blockCalls.length - 1].block === void 0);
 
 // ── 3 rejections end the loop without messaging the main model ──────────────
-// start a fresh round (after the abort above, a new message re-arms), reject
+// Start a fresh round — an aborted duel stays dormant (only the explicit
+// /arena reopen re-arms), so reset the challenge to idle first — then reject
 // three times; on the 3rd the browser asks the node half (arena.returnToPropose)
 // to write Theseus back to propose, and must NOT promptSession the main model
 // (which would start a fresh turn).
+resetChallengeForTest(7); // "u3" (anchorSeq 7) already consumed above
 mainStore._set({
   chat: {
     order: ["u1", "a1", "inj1", "r1", "v1", "u2", "u3", "u4"],
@@ -1343,7 +1424,10 @@ check("switching into the arena session bounces back to the main session", curre
 const panelEl = heroRoot.children.find((child) => child.dataset.arenaPanel !== void 0);
 const sceneBtns = collectByClass(panelEl, "ma-sceneBtn");
 click(sceneBtns[0]); // business
-// A fresh question in the main session must start the ORIGINAL challenge flow.
+// A concluded duel stays dormant — reset the challenge to idle first (the
+// explicit /arena reopen is the only re-arm in production), then a fresh
+// question in the main session starts the ORIGINAL challenge flow.
+resetChallengeForTest(8); // "u4" (anchorSeq 8) already consumed above
 mainStore._set({
   chat: {
     order: [...mainStore.snapshot.chat.order, "bq1"],
@@ -1438,7 +1522,9 @@ await sleep(120);
 check("clicking the competitor session bounces back to the main session", currentSession === "s1");
 check("clicking the competitor session restores the main runtime", internals.getArenaMount() !== null && internals.getArenaMount().sessionId === "s1");
 check("ended challenge header stays hidden after the competitor click", internals.getArenaMount() !== null && loaded.shouldShowChallengeHeader(internals.getArenaMount().challenge) === false);
-// a new question starts a fresh business round
+// a new question starts a fresh business round (the concluded duel is dormant —
+// reset first, mirroring the explicit /arena reopen in production)
+resetChallengeForTest(80); // "inj-c" (anchorSeq 80) already consumed above
 mainStore._set({
   chat: {
     order: [...mainStore.snapshot.chat.order, "q3"],
@@ -2226,6 +2312,85 @@ const rcheck = (label, cond, detail) => {
   }
 }
 
+// ── qa 协作者化流程级测试（v31）：产出 → 验收 → 修正 → 终验 ──
+// 恢复路径 fixture（同 s19/s20 模式）：persist active challenge + link，主模型
+// 产出 → 协作者验收轮 → 验收意见注入 → 修正 → 终验轮（核对+验收结论）→ done。
+{
+  const origSnap = snap;
+  try {
+    snap = twoModelDir;
+    let ns = settingsNamespaces.find((n) => n.ns === "model-arena");
+    if (ns === void 0) { ns = { ns: "model-arena", value: {} }; settingsNamespaces.push(ns); }
+    ns.value = { ...(ns.value ?? {}),
+      links: { ...(ns.value?.links ?? {}), s21: { sessionId: "arena-21", provider: "p1", model: "m2", scene: "qa" } },
+      challenges: { ...(ns.value?.challenges ?? {}), s21: { active: true, phase: "answer", scene: "qa", skill: "", userQuestion: "为登录功能设计测试用例", mainAnchor: "", arenaAnchor: "", rejectCount: 0, verdict: "", round: 0, pendingAnchor: false, lastPromptSent: "", lastInjectedText: "", lastReviewSeq: -1, proposalPath: "", designPath: "", tasksPath: "", reviewPath: "", updatedAt: Date.now() } }
+    };
+    settingsUpdatedHandler?.("model-arena");
+    currentSession = "s21";
+    listSub();
+    await sleep(120);
+    const s21Store = sessionStores.get("s21") ?? makeSessionStore("s21", { chat: { order: [], nodes: new Map() } });
+    const arena21Store = sessionStores.get("arena-21") ?? makeSessionStore("arena-21", { chat: { order: [], nodes: new Map() } });
+    // ① 主模型产出测试用例 → 协作者验收轮 prompt
+    s21Store._set({
+      chat: {
+        order: ["qu1", "qa1"],
+        nodes: new Map([
+          ["qu1", { key: "qu1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "为登录功能设计测试用例" }] } }],
+          ["qa1", { key: "qa1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "测试用例清单" }] } }]
+        ])
+      },
+      running: false
+    });
+    await sleep(40);
+    const s21Accept = promptCalls.filter((c) => c.sessionId === "arena-21" && c.content[0].text.includes("验收"));
+    check("qa流程: 主模型产出后 → 协作者验收轮（验收语义）", s21Accept.length === 1 && s21Accept[0].content[0].text.includes("逐条验收") && s21Accept[0].content[0].text.includes("测试用例"), "prompt=" + (s21Accept[0]?.content?.[0]?.text ?? "").slice(0, 60));
+    check("qa流程: 验收轮 phase=challenge", internals.getArenaMount()?.challenge?.phase === "challenge", "phase=" + internals.getArenaMount()?.challenge?.phase);
+    // ② 协作者验收意见 → 注入主会话 → revise
+    arena21Store._set({
+      chat: {
+        order: ["ac1"],
+        nodes: new Map([["ac1", { key: "ac1", kind: "assistant-step", anchorSeq: 1, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "验收：缺少边界用例" }] } }]])
+      },
+      running: false
+    });
+    await sleep(40);
+    check("qa流程: 验收意见注入主会话 → revise", internals.getArenaMount()?.challenge?.phase === "revise" && promptCalls.some((c) => c.sessionId === "s21" && c.content[0].text.includes("验收")), "phase=" + internals.getArenaMount()?.challenge?.phase);
+    // ③ 主模型修正 → 终验轮 prompt（核对验收意见 + 验收结论）
+    s21Store._set({
+      chat: {
+        order: ["qu1", "qa1", "qinj", "qm2"],
+        nodes: new Map([
+          ["qu1", { key: "qu1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "为登录功能设计测试用例" }] } }],
+          ["qa1", { key: "qa1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 1, step: 1, blocks: [{ kind: "text", text: "测试用例清单" }] } }],
+          ["qinj", { key: "qinj", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "验收：缺少边界用例" }] } }],
+          ["qm2", { key: "qm2", kind: "assistant-step", anchorSeq: 4, data: { status: "settled", turn: 2, step: 1, blocks: [{ kind: "text", text: "修正后的用例" }] } }]
+        ])
+      },
+      running: false
+    });
+    await sleep(40);
+    const s21Final = promptCalls.filter((c) => c.sessionId === "arena-21" && c.content[0].text.includes("仍需修改"));
+    check("qa流程: 修正后 → 终验轮（核对验收意见 + 通过/仍需修改）", s21Final.length === 1 && s21Final[0].content[0].text.includes("逐条核对") && s21Final[0].content[0].text.includes("通过"), "prompt=" + (s21Final[0]?.content?.[0]?.text ?? "").slice(0, 60));
+    check("qa流程: 终验轮 phase=final", internals.getArenaMount()?.challenge?.phase === "final", "phase=" + internals.getArenaMount()?.challenge?.phase);
+    // ④ 协作者终验 → done 解锁
+    arena21Store._set({
+      chat: {
+        order: ["ac1", "af1"],
+        nodes: new Map([...arena21Store.snapshot.chat.nodes, ["af1", { key: "af1", kind: "assistant-step", anchorSeq: 2, data: { status: "settled", turn: 2, step: 1, blocks: [{ kind: "text", text: "验收通过" }] } }]])
+      },
+      running: false
+    });
+    await sleep(40);
+    check("qa流程: 终验完成 → done 解锁", internals.getArenaMount()?.challenge?.active === false && internals.getArenaMount()?.challenge?.phase === "done", "active=" + internals.getArenaMount()?.challenge?.active + " phase=" + internals.getArenaMount()?.challenge?.phase);
+  } finally {
+    snap = origSnap;
+    currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
+}
+
 // ── REPRO: F（v19 重新播种边界）——挂载空快照 + 历史与新首问同批到达 ──
 // 已 link 的老会话刷新后，若挂载时快照为空（lastSeenSeq=0），随后「历史（旧轮）
 // 与新首问」在同一次快照更新中到达，detectUserMessages 开头的 v19 重新播种会把
@@ -2265,6 +2430,260 @@ const rcheck = (label, cond, detail) => {
   } finally {
     snap = origSnap;
     currentSession = "s1";
+    listSub();
+    await sleep(80);
+  }
+}
+
+// ── /arena slash-command: scene popup → cascade wizard (父子选择器) ──────────
+{
+  const origSnap = snap;
+  const origSession = currentSession;
+  try {
+    // Pin the live directory to the known fixture: earlier sections leave `snap`
+    // on arbitrary values, and the slash options read the SHARED snapshot.
+    snap = {
+      current: { provider: "p1", model: "m1", reasoningEffort: "low" },
+      routable: true,
+      groups: [
+        { id: "p1", name: "P1", models: [{ id: "m1", name: "M1", reasoning: reasoningA }, { id: "m2", name: "M2", reasoning: reasoningA }] },
+        { id: "p2", name: "P2", models: [{ id: "m3", name: "M3", reasoning: reasoningB }] }
+      ],
+      failures: [],
+      status: "ready",
+      error: null
+    };
+    snapSub?.();
+    // Seed a workspace × scene challenger skill (as if picked in an earlier
+    // conversation of the same workspace) and let s-slash resolve that
+    // workspace — the slash flow must carry the skill for the same scene.
+    byIdMock["s-slash"] = { cwd: "/ws1", projectionValues: { permissions: { currentValue: "workspace-write" } } };
+    let slashNs = settingsNamespaces.find((n) => n.ns === "model-arena");
+    if (slashNs === void 0) { slashNs = { ns: "model-arena", value: {} }; settingsNamespaces.push(slashNs); }
+    slashNs.value = { ...(slashNs.value ?? {}), workspaceSkills: { "/ws1": { knowledge: "/ws/.github/skills/theseus-review-spec" } } };
+    settingsUpdatedHandler?.("model-arena");
+    await sleep(80); // loadLinks refresh → workspaceSkillsCache + skillsLoaded
+    check("slash: /arena contribution registered", commandUiContributions.length === 1 && commandUiContributions[0].name === "arena" && commandUiContributions[0].ui.kind === "popupSelect");
+    check("slash: contribution description localized", commandUiContributions[0].description === "L:command.description");
+    check("slash: available for a normal session", commandUiContributions[0].available({ sessionId: "s-slash" }) === true);
+
+    // Step 1 = the NATIVE popup: the three scenes (the model-independent parent).
+    const slashOptions = await commandUiContributions[0].ui.options({ sessionId: "s-slash" });
+    check("slash: scene-first popup (3 rows)", slashOptions.length === 3 && slashOptions.map((r) => r.id).join(",") === "business,knowledge,qa", "ids=" + slashOptions.map((r) => r.id).join(","));
+    check("slash: scene rows localized with descriptions", slashOptions[0].label === "L:scene.business" && typeof slashOptions[0].detail === "string" && slashOptions[0].detail !== "");
+    check("slash: scene popup detail does not repeat the scene name", slashOptions.every((r) => !r.detail.startsWith(r.label)));
+
+    currentSession = "s-slash";
+    listSub();
+    await sleep(80);
+
+    // Pick the knowledge scene → the native shell hands off to the wizard.
+    await commandUiContributions[0].ui.onSelect({ id: "knowledge" }, { sessionId: "s-slash" });
+    let wiz = internals.getSlashWizard();
+    check("slash: onSelect opens the wizard (scene kept)", wiz.open === true && wiz.sessionId === "s-slash" && wiz.scene === "knowledge" && wiz.step === "model");
+
+    // Step 2 = the wizard's model list (parent → child drill-down), input-box
+    // model excluded, grouped by provider.
+    const wizardRoot = new FakeElement("div");
+    const unmountWizard = internals.mountSlashWizard(wizardRoot, "s-slash");
+    let wizardOptions = collectByClass(wizardRoot, "ma-option");
+    check("slash: wizard model step excludes the composer model", wizardOptions.length === 2 && wizardOptions.every((o) => !hasDescendant(o, "ma-optionName", "M1")), "rows=" + wizardOptions.length);
+    check("slash: wizard groups by provider", collectByClass(wizardRoot, "ma-groupTitle").length === 2);
+
+    // Pick M2 → the wizard drills into that model's effort levels.
+    click(optionNamed(wizardOptions, "M2"));
+    wiz = internals.getSlashWizard();
+    check("slash: picking a model advances to the effort step", wiz.step === "effort" && wiz.pendingModel?.provider === "p1" && wiz.pendingModel?.model === "m2");
+    wizardOptions = collectByClass(wizardRoot, "ma-option");
+    check("slash: effort step lists the model's own levels", wizardOptions.length === 3 && wizardOptions.some((o) => hasDescendant(o, "ma-optionName", "L:effort.default")) && wizardOptions.some((o) => hasDescendant(o, "ma-optionName", "High")), "labels=" + wizardOptions.map((o) => o._text).join(","));
+
+    // Pick High → applied synchronously (scene+model+effort), wizard closed,
+    // composer unlocked.
+    const blocksBeforeApply = blockCalls.filter((c) => c.sessionId === "s-slash").length;
+    click(optionNamed(wizardOptions, "High"));
+    wiz = internals.getSlashWizard();
+    check("slash: apply closes the wizard", wiz.open === false);
+    check("slash: apply re-applies the composer gate (unlocked)", blockCalls.filter((c) => c.sessionId === "s-slash").length > blocksBeforeApply && blockCalls[blockCalls.length - 1].sessionId === "s-slash" && blockCalls[blockCalls.length - 1].block === void 0);
+    unmountWizard();
+
+    // Cancelling the wizard (Escape) discards without touching the session.
+    await commandUiContributions[0].ui.onSelect({ id: "business" }, { sessionId: "s-slash" });
+    check("slash: wizard reopens on a new scene", internals.getSlashWizard().open === true && internals.getSlashWizard().scene === "business");
+    const wizardRoot2 = new FakeElement("div");
+    const unmountWizard2 = internals.mountSlashWizard(wizardRoot2, "s-slash");
+
+    // REGRESSION (stray-Enter): keyboard lives on the CARD and Enter requires an
+    // explicit highlight — a leftover Enter from the scene pick (or key repeat)
+    // must NOT auto-select the first model and skip to the effort step.
+    const cardA = wizardRoot2.children[0];
+    cardA._handlers.keydown?.[0]?.({ key: "Enter", preventDefault() {} });
+    check("slash: stray Enter does not auto-select the first model", internals.getSlashWizard().open === true && internals.getSlashWizard().step === "model", "step=" + internals.getSlashWizard().step);
+    // ArrowDown highlights row 0, then Enter picks it → the effort step.
+    cardA._handlers.keydown?.[0]?.({ key: "ArrowDown", preventDefault() {} });
+    cardA._handlers.keydown?.[0]?.({ key: "Enter", preventDefault() {} });
+    check("slash: ArrowDown + Enter selects the first model", internals.getSlashWizard().step === "effort" && internals.getSlashWizard().pendingModel?.provider === "p1", "step=" + internals.getSlashWizard().step);
+    // Escape returns to the model step, a second Escape dismisses.
+    dispatchDoc("keydown", { key: "Escape", preventDefault() {} });
+    check("slash: Esc on the effort step returns to the model step", internals.getSlashWizard().step === "model");
+    dispatchDoc("keydown", { key: "Escape", preventDefault() {} });
+    check("slash: Escape dismisses without applying", internals.getSlashWizard().open === false && blockCalls[blockCalls.length - 1].block === void 0);
+    unmountWizard2();
+
+    // The arena runtime mounts on the next sync tick (state enabled + model set).
+    listSub();
+    await sleep(80);
+    // The mock create always returns "arena-1" — clear the stale arena store so
+    // the freshly started round reads an empty challenger session (no advance).
+    sessionStores.set("arena-1", makeSessionStore("arena-1", { chat: { order: [], nodes: new Map() } }));
+    // First message → startChallenge with the picked model + effort + scene.
+    const slashStore = sessionStores.get("s-slash");
+    slashStore._set({
+      chat: {
+        order: ["u1"],
+        nodes: new Map([["u1", { key: "u1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "from slash" }] } }]])
+      }
+    });
+    await sleep(40);
+    check("slash: challenge starts with the picked model + effort", selectCalls.some((c) => c.provider === "p1" && c.model === "m2" && c.reasoningEffort === "high"), "selects=" + selectCalls.length);
+    const slashMount = internals.getArenaMount();
+    check("slash: knowledge scene review flow started", slashMount !== null && slashMount.sessionId === "s-slash" && slashMount.challenge.active === true && slashMount.challenge.phase === "propose" && slashMount.challenge.scene === "knowledge", "phase=" + slashMount?.challenge?.phase + " scene=" + slashMount?.challenge?.scene);
+    check("slash: workspace × scene skill carried from an earlier conversation", slashMount?.challenge?.skill === "/ws/.github/skills/theseus-review-spec", "skill=" + slashMount?.challenge?.skill);
+
+    // Freeze rule: once the arena session exists a reconfiguration is rejected.
+    let slashFrozenThrew = null;
+    try {
+      await commandUiContributions[0].ui.onSelect({ id: "business" }, { sessionId: "s-slash" });
+    } catch (error) {
+      slashFrozenThrew = error;
+    }
+    check("slash: frozen once the arena session exists (rejected)", slashFrozenThrew !== null && String(slashFrozenThrew?.message).includes("L:slash.frozen"), "err=" + slashFrozenThrew?.message);
+
+    // Undo arm (composer-dock strip): apply → armed with label + pre-arena
+    // snapshot; ✕ undo restores; re-apply arms again. Fresh session so the
+    // snapshot is "arena off".
+    await commandUiContributions[0].ui.onSelect({ id: "knowledge" }, { sessionId: "s-slash2" });
+    const wizardRoot3 = new FakeElement("div");
+    const unmountWizard3 = internals.mountSlashWizard(wizardRoot3, "s-slash2");
+    let opts3 = collectByClass(wizardRoot3, "ma-option");
+    click(optionNamed(opts3, "M2"));
+    opts3 = collectByClass(wizardRoot3, "ma-option");
+    click(optionNamed(opts3, "High"));
+    const arm2 = internals.getSlashArm("s-slash2");
+    check("slash: apply arms the undo strip (label + pre-arena snapshot)", arm2 !== null && arm2.label.includes("L:scene.knowledge") && arm2.label.includes("M2") && arm2.label.includes("High") && arm2.snapshot?.enabled === false && arm2.snapshot?.model === null, "label=" + arm2?.label);
+    check("slash: undo strip registered in the composer dock", slotRegisterCalls.some((c) => c.name === "conversation.input.dock" && c.id === "arena-pending"));
+    check("slash: undo restores the pre-arena state", internals.undoSlashArm("s-slash2") === true && internals.getSlashArm("s-slash2") === null);
+    // re-apply arms again (a second /arena replaces the pick, ✕ still restores the ORIGINAL pre-arena state)
+    await commandUiContributions[0].ui.onSelect({ id: "business" }, { sessionId: "s-slash2" });
+    const wizardRoot4 = new FakeElement("div");
+    const unmountWizard4 = internals.mountSlashWizard(wizardRoot4, "s-slash2");
+    let opts4 = collectByClass(wizardRoot4, "ma-option");
+    click(optionNamed(opts4, "M2"));
+    opts4 = collectByClass(wizardRoot4, "ma-option");
+    click(optionNamed(opts4, "High"));
+    check("slash: re-apply after undo arms again (snapshot kept)", internals.getSlashArm("s-slash2") !== null && internals.getSlashArm("s-slash2").snapshot?.enabled === false && internals.getSlashArm("s-slash2").label.includes("L:scene.business"));
+    unmountWizard4();
+    unmountWizard3();
+
+    // ── re-open after a concluded duel (knowledge one-shot, explicit /arena) ──
+    // First round via the wizard, then the duel concludes (done) → challenger
+    // stays dormant (NO auto re-arm) → /arena explicitly re-opens and the next
+    // message starts a NEW round REUSING the old arena session (context
+    // continuity); a different challenger model forces a FRESH session.
+    await commandUiContributions[0].ui.onSelect({ id: "knowledge" }, { sessionId: "s-reopen" });
+    const wizardRoot5 = new FakeElement("div");
+    const unmountWizard5 = internals.mountSlashWizard(wizardRoot5, "s-reopen");
+    let opts5 = collectByClass(wizardRoot5, "ma-option");
+    click(optionNamed(opts5, "M2"));
+    opts5 = collectByClass(wizardRoot5, "ma-option");
+    click(optionNamed(opts5, "High"));
+    unmountWizard5();
+    currentSession = "s-reopen";
+    listSub();
+    await sleep(80);
+    sessionStores.set("arena-1", makeSessionStore("arena-1", { chat: { order: [], nodes: new Map() } }));
+    const reopenStore = sessionStores.get("s-reopen");
+    reopenStore._set({
+      chat: {
+        order: ["rq1"],
+        nodes: new Map([["rq1", { key: "rq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "first round" }] } }]])
+      }
+    });
+    await sleep(40);
+    check("reopen: first round started", internals.getArenaMount() !== null && internals.getArenaMount().challenge.active === true && internals.getArenaMount().challenge.phase === "propose");
+    const createsBefore = createCalls.length;
+    const selectsBefore = selectCalls.length;
+    // Conclude the duel (done): a new message must NOT auto re-arm (knowledge one-shot).
+    Object.assign(internals.getArenaMount().challenge, { active: false, phase: "done" });
+    reopenStore._set({
+      chat: {
+        order: ["rq1", "rq2"],
+        nodes: new Map([
+          ["rq1", { key: "rq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "first round" }] } }],
+          ["rq2", { key: "rq2", kind: "user", anchorSeq: 2, data: { content: [{ type: "text", text: "after done" }] } }]
+        ])
+      }
+    });
+    await sleep(30);
+    check("reopen: NO auto re-arm after done (knowledge one-shot)", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+    // /arena after done: the popup shows the CURRENT config as a single
+    // READ-ONLY reopen row — no modification allowed (this also makes
+    // model-switching on the reused session impossible by construction).
+    const reopenOptions = await commandUiContributions[0].ui.options({ sessionId: "s-reopen" });
+    check("reopen: /arena shows the current config as a read-only reopen row", reopenOptions.length === 1 && reopenOptions[0].id === "reopen" && reopenOptions[0].label.includes("L:scene.knowledge") && reopenOptions[0].label.includes("M2") && reopenOptions[0].label.includes("High") && reopenOptions[0].detail === "L:slash.reopen.desc", "label=" + reopenOptions[0]?.label);
+    // Confirm the reopen → the concluded challenge resets (no wizard, no re-pick).
+    let reopenThrew = null;
+    try {
+      await commandUiContributions[0].ui.onSelect(reopenOptions[0], { sessionId: "s-reopen" });
+    } catch (error) {
+      reopenThrew = error;
+    }
+    check("reopen: confirming the reopen resets the concluded challenge (idle)", reopenThrew === null && internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "idle", "err=" + reopenThrew?.message);
+    // REGRESSION (header resurrection): before any new input, sync ticks must
+    // NOT re-infer an active challenge from the OLD round's history — the
+    // header would otherwise render on a reopened-but-idle arena.
+    listSub();
+    await sleep(60);
+    const idleMount = internals.getArenaMount();
+    check("reopen: header stays hidden before the next input (no re-inference)", idleMount !== null && idleMount.challenge.active === false && idleMount.challenge.phase === "idle" && loaded.shouldShowChallengeHeader(idleMount.challenge) === false, "phase=" + idleMount?.challenge?.phase);
+    // The next message starts a NEW round REUSING the old arena session.
+    reopenStore._set({
+      chat: {
+        order: ["rq1", "rq2", "rq3"],
+        nodes: new Map([
+          ["rq1", { key: "rq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "first round" }] } }],
+          ["rq2", { key: "rq2", kind: "user", anchorSeq: 2, data: { content: [{ type: "text", text: "after done" }] } }],
+          ["rq3", { key: "rq3", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "reopened round" }] } }]
+        ])
+      }
+    });
+    await sleep(40);
+    const reopenMount = internals.getArenaMount();
+    check("reopen: new round started after the explicit re-arm", reopenMount !== null && reopenMount.challenge.active === true && reopenMount.challenge.phase === "propose");
+    check("reopen: REUSES the old arena session (context continuity)", createCalls.length === createsBefore && selectCalls.length === selectsBefore, "creates=" + (createCalls.length - createsBefore) + " selects=" + (selectCalls.length - selectsBefore));
+    // The reopen arms the composer-dock undo strip (kind "reopen"); ✕ restores
+    // the CONCLUDED state — the challenger goes dormant again.
+    Object.assign(internals.getArenaMount().challenge, { active: false, phase: "done" });
+    const reopenOpts2 = await commandUiContributions[0].ui.options({ sessionId: "s-reopen" });
+    await commandUiContributions[0].ui.onSelect(reopenOpts2[0], { sessionId: "s-reopen" });
+    check("reopen: the undo strip is armed for the reopen", internals.getSlashArm("s-reopen")?.kind === "reopen" && internals.getSlashArm("s-reopen")?.label.includes("L:scene.knowledge"), "kind=" + internals.getSlashArm("s-reopen")?.kind);
+    check("reopen: undo restores the concluded state (dormant again)", internals.undoSlashArm("s-reopen") === true && internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+    // After the undo a new message does NOT re-arm (the concluded state is back).
+    reopenStore._set({
+      chat: {
+        order: ["rq1", "rq2", "rq3", "rq4"],
+        nodes: new Map([
+          ["rq1", { key: "rq1", kind: "user", anchorSeq: 1, data: { content: [{ type: "text", text: "first round" }] } }],
+          ["rq2", { key: "rq2", kind: "user", anchorSeq: 2, data: { content: [{ type: "text", text: "after done" }] } }],
+          ["rq3", { key: "rq3", kind: "user", anchorSeq: 3, data: { content: [{ type: "text", text: "reopened round" }] } }],
+          ["rq4", { key: "rq4", kind: "user", anchorSeq: 4, data: { content: [{ type: "text", text: "after undo" }] } }]
+        ])
+      }
+    });
+    await sleep(30);
+    check("reopen: after undo the challenger stays dormant", internals.getArenaMount().challenge.active === false && internals.getArenaMount().challenge.phase === "done");
+  } finally {
+    snap = origSnap;
+    currentSession = origSession;
     listSub();
     await sleep(80);
   }

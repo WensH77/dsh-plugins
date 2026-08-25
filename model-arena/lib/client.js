@@ -38,6 +38,15 @@ window.__ModuleLoader__.load({
 			"menu.empty": "没有可选的模型。",
 			"menu.error": "模型目录加载失败",
 			"menu.retry": "重试",
+			"command.description": "配置模型竞技场（选择挑战者模型、推理等级与场景）",
+			"slash.frozen": "竞技场会话已创建，模型已冻结；请先结束当前流程",
+			"slash.undo": "撤销",
+			"slash.reopen.desc": "重开竞技场（使用当前配置，模型 / 推理等级 / 场景不可修改）",
+			"wizard.title": "配置竞技场",
+			"wizard.back": "返回",
+			"wizard.cancel": "取消",
+			"wizard.model": "选择模型",
+			"wizard.effort": "选择推理等级",
 			"conflict": "与输入框已选模型相同，已清空竞技场选择",
 			"block.reason": "竞技场已开启：请先选择竞技场模型（或关闭竞技场后发送）",
 			"block.challenge": "流程进行中，请等待流程结束",
@@ -51,6 +60,9 @@ window.__ModuleLoader__.load({
 			"scene.business": "业务探索",
 			"scene.knowledge": "知识沉淀",
 			"scene.qa": "测试用例",
+			"scene.popup.business": "挑战式探讨：协作/对抗模型逐条质疑，主模型修正后终评",
+			"scene.popup.knowledge": "方案审查：产出结构化方案，审查者给出 READY 或打回意见",
+			"scene.popup.qa": "用例验收：以最终用户视角逐条验收测试用例，修正后终验",
 			"challenge.stop": "停止挑战",
 			"challenge.loading": "挑战者生成中…",
 			"view.arena": "竞技场",
@@ -60,6 +72,7 @@ window.__ModuleLoader__.load({
 			"arena.round.challenge": "质疑轮",
 			"arena.round.final": "终评轮",
 			"arena.round.review": "审查轮",
+			"arena.round.accept": "验收轮",
 			"arena.round.default": "回合",
 			"arena.question.header": "竞技场模型提问",
 			"arena.question.submit": "提交回答",
@@ -88,7 +101,7 @@ window.__ModuleLoader__.load({
 			"settings.flow.challenge": "挑战流程",
 			"settings.scene.business.desc": "业务探索：主模型直接回答，协作/对抗模型逐条质疑，主模型修正后协作/对抗模型终评。适合需求梳理、方案探讨、影响面分析。",
 			"settings.scene.knowledge.desc": "知识沉淀：主模型产出结构化方案，协作/对抗模型作为审查者给出 READY / NEEDS_REVISION 结论；不认可则主模型修正后终审，累计 3 次不认可结束。",
-			"settings.scene.qa.desc": "测试用例：主模型产出测试用例，协作/对抗模型以用户视角逐条质疑，主模型修正后终评。",
+			"settings.scene.qa.desc": "测试用例：主模型根据 openspec 与 jira 等需求上下文产出测试用例，协作者（最终用户视角）逐条验收用例质量，主模型修正后协作者终验。",
 			"settings.prompt.roles": "角色种子（system prompt persona 注入）",
 			"settings.prompt.roleMain": "【主模型角色】",
 			"settings.prompt.roleArena": "【协作/对抗模型角色】",
@@ -122,6 +135,15 @@ window.__ModuleLoader__.load({
 			"menu.empty": "No selectable models.",
 			"menu.error": "Failed to load the model catalog",
 			"menu.retry": "Retry",
+			"command.description": "Configure the model arena (pick the challenger model, reasoning effort and scene)",
+			"slash.frozen": "The arena session already exists — its model is frozen; finish the current flow first",
+			"slash.undo": "Undo",
+			"slash.reopen.desc": "Reopen the arena with the current configuration (model / effort / scene are fixed)",
+			"wizard.title": "Configure the arena",
+			"wizard.back": "Back",
+			"wizard.cancel": "Cancel",
+			"wizard.model": "Pick the challenger model",
+			"wizard.effort": "Pick the reasoning effort",
 			"conflict": "Same as the model selected in the input box — arena selection cleared",
 			"block.reason": "Arena is on: pick the arena model first (or turn the arena off)",
 			"block.challenge": "Flow in progress — please wait for it to finish",
@@ -135,6 +157,9 @@ window.__ModuleLoader__.load({
 			"scene.business": "Business Exploration",
 			"scene.knowledge": "Knowledge base",
 			"scene.qa": "Test cases",
+			"scene.popup.business": "Challenge-style debate: the collaborator questions point by point; the main model revises, then the collaborator gives the verdict",
+			"scene.popup.knowledge": "Proposal review: draft a structured proposal; the reviewer returns READY or revision notes",
+			"scene.popup.qa": "Test-case acceptance: verify each case from the end-user view; revise, then final acceptance",
 			"challenge.stop": "Stop challenge",
 			"challenge.loading": "Challenger generating…",
 			"view.arena": "Arena",
@@ -144,6 +169,7 @@ window.__ModuleLoader__.load({
 			"arena.round.challenge": "Challenge round",
 			"arena.round.final": "Final verdict",
 			"arena.round.review": "Review round",
+			"arena.round.accept": "Acceptance round",
 			"arena.round.default": "Round",
 			"arena.question.header": "The arena model asks",
 			"arena.question.submit": "Submit",
@@ -172,7 +198,7 @@ window.__ModuleLoader__.load({
 			"settings.flow.challenge": "Challenge flow",
 			"settings.scene.business.desc": "Business exploration: the main model answers directly, the collaborator/adversary model challenges point by point, the main model revises, then the collaborator/adversary model gives the final verdict. Good for requirement analysis, design discussion, and impact assessment.",
 			"settings.scene.knowledge.desc": "Knowledge distillation: the main model produces a structured proposal, the collaborator/adversary model reviews with a READY / NEEDS_REVISION verdict; on rejection the main model revises and the collaborator/adversary model re-reviews, ending after 3 rejections.",
-			"settings.scene.qa.desc": "Test cases: the main model produces test cases, the collaborator/adversary model challenges point by point from the user's perspective, the main model revises, then the final verdict.",
+			"settings.scene.qa.desc": "Test cases: the main model produces test cases from the openspec and jira requirement context, the collaborator (end-user view) verifies the test-case quality point by point, the main model revises, then the collaborator gives the final acceptance.",
 			"settings.prompt.roles": "Role seeds (injected via system-prompt persona)",
 			"settings.prompt.roleMain": "[Main-model role]",
 			"settings.prompt.roleArena": "[Collaborator/Adversary role]",
@@ -235,6 +261,52 @@ window.__ModuleLoader__.load({
 					...(effort.description === void 0 ? {} : { description: effort.description })
 				}))
 			];
+		}
+
+		// ── /arena slash-command (parent-child cascade) ───────────────────────
+		// The command is a popupSelect contribution whose FIRST step (the native
+		// shell) picks the SCENE — the only dimension that does not depend on the
+		// model — and the native shell consumes the "/arena" token on settle. The
+		// remaining steps (model → reasoning effort) run in a SELF-DRAWN floating
+		// wizard registered in the conversation.input.overlay slot, mirroring the
+		// hero panel's two-level menu (buildModelOptions → buildEffortChoices).
+		// The native popupSelect shell is single-level (SelectOption has no
+		// nesting/group field and options are fetched once per open), so a true
+		// cascading picker cannot live inside it — hence the hybrid.
+		const SLASH_SCENES = ["business", "knowledge", "qa"];
+
+		/**
+		* Normalize the arena state.model shape from a wizard pick: an explicit
+		* effort id wins; an unset effort falls back to the model's defaultEffort
+		* (mirrors the hero model-pick). Pure, exported for the smoke test.
+		*/
+		function buildArenaModel(provider, model, name, reasoning, effort) {
+			const resolved = effort === void 0
+				? (reasoning?.defaultEffort === void 0 ? void 0 : reasoning.defaultEffort)
+				: effort;
+			return {
+				provider,
+				model,
+				name,
+				...(resolved === void 0 ? {} : { reasoningEffort: resolved })
+			};
+		}
+
+		/**
+		* Apply one completed wizard selection to the session's arena state
+		* (synchronous, pure). The full trio — scene, model, effort — is present
+		* and valid by construction (the wizard never offers partial rows).
+		*/
+		function applyArenaSelection(state, scene, arenaModel) {
+			state.enabled = true;
+			state.scene = scene;
+			state.model = {
+				provider: arenaModel.provider,
+				model: arenaModel.model,
+				name: arenaModel.name,
+				...(arenaModel.reasoningEffort === void 0 ? {} : { reasoningEffort: arenaModel.reasoningEffort })
+			};
+			return state.model;
 		}
 
 		/**
@@ -373,11 +445,18 @@ window.__ModuleLoader__.load({
 		const SCENES = {
 			business: { main: "Technical Expert", arena: "Business Analyst", review: false },
 			knowledge: { main: "Knowledge Expert", arena: "Challenger", review: true },
-			qa: { main: "QA Expert", arena: "用户", review: false }
+			// qa: the second model is a USER-VIEW parallel collaborator (acceptor),
+			// NOT a higher-ranked challenger — it verifies the test-case quality the
+			// main model produced (v31). No "身份高于" hierarchy; no debate.
+			qa: { main: "QA Expert", arena: "用户", review: false, acceptor: true }
 		};
 		// The "knowledge" scene runs the review loop; the others keep the
 		// original challenge (question -> revise -> verdict) flow.
 		const isReviewScene = (challenge) => (SCENES[challenge?.scene] ?? SCENES.business).review === true;
+		// The "qa" scene's second model is a user-view parallel ACCEPTOR that
+		// verifies test-case quality (production -> verification -> revise ->
+		// final acceptance), unlike business' higher-ranked challenger.
+		const isAcceptorScene = (challenge) => (SCENES[challenge?.scene] ?? SCENES.business).acceptor === true;
 		// {placeholder} substitution (the locale binder does not interpolate).
 		const fmt = (template, vars) => typeof template === "string" ? template.replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m) : "";
 		const looksLikeFile = (path) => typeof path === "string" && path.length > 1 && (/\.[a-z0-9]{1,8}$/i.test(path) || path.includes("/"));
@@ -581,22 +660,23 @@ window.__ModuleLoader__.load({
 		const PAST_REVIEW_STAGES = new Set(["user-readiness-review", "apply", "archive", "done"]);
 		const isPastReviewStage = (stage) => typeof stage === "string" && PAST_REVIEW_STAGES.has(stage);
 		// Whether a fresh user message may re-arm (start) a new challenge round.
-		// The review (knowledge) scene is one-shot: once the loop concludes
-		// (done — READY hands off to Theseus apply/archive, or 3 rejections park
-		// at propose), the challenger must stay dormant and a new message goes to
-		// the main model normally. Re-arming here used to reset the phase to
-		// "propose" and resurrect the header "step" even though no
-		// propose.completed would ever arrive again to prompt the challenger.
-		// The in-memory `phase === "done"` is lost on a page reload, so three
-		// persistent signals cover the reload gap: the link's `done` flag
-		// (markReviewDone), and the node half's `watch.stage` heartbeat once the
+		// ANY concluded duel stays dormant — done (the review loop handed off to
+		// Theseus for knowledge, or the final verdict for business/qa) and
+		// aborted (user stop) alike, in every scene: the challenger only
+		// re-engages through the EXPLICIT /arena reopen. Re-arming from a plain
+		// message used to reset the phase and resurrect the header even though
+		// no propose.completed would ever arrive again to prompt the challenger.
+		// The in-memory terminal phase is lost on a page reload, so persistent
+		// signals cover the reload gap: the link's `done` flag (set when any
+		// duel concludes) and the node half's `watch.stage` heartbeat once the
 		// Theseus workflow has advanced past review.
 		const shouldReArmChallenge = (challenge, link, watch) => {
 			if (challenge === null || challenge === void 0) return true;
 			const done = challenge.phase === "done"
+				|| challenge.phase === "aborted"
 				|| (link !== null && link !== void 0 && link.done === true)
 				|| (watch !== null && watch !== void 0 && isPastReviewStage(watch.stage));
-			return !(done && isReviewScene(challenge));
+			return !done;
 		};
 		// Parse the challenger's review verdict from its `**Overall Verdict**` line.
 		// Returns "READY" | "NEEDS_REVISION" | "NOT_READY" | "" (unparseable).
@@ -613,6 +693,10 @@ window.__ModuleLoader__.load({
 		// label itself comes from the locale binder. Empty for non-round text.
 		const roundLabelOf = (text, t) => {
 			if (typeof text !== "string" || text === "") return "";
+			// qa acceptance rounds (v31): 逐条验收 / 最终验收结论 — checked first so
+			// the qa prompts (which never contain 逐条质疑/最终评审结论) are never
+			// mislabeled as challenge/final rounds.
+			if (text.includes("逐条验收") || text.includes("最终验收结论")) return t("arena.round.accept");
 			if (text.includes("逐条质疑")) return t("arena.round.challenge");
 			if (text.includes("最终评审结论")) return t("arena.round.final");
 			if (text.includes("逐条审查") || text.includes("Overall Verdict")) return t("arena.round.review");
@@ -650,8 +734,18 @@ window.__ModuleLoader__.load({
 					+ "\n\n请作为审查者用中文**逐条审查**上述结构化方案：逐点核对需求清晰度、设计合理性、风险、任务拆解、相关规格，指出每处问题；只输出审查结论：先一行 **Overall Verdict**: READY（认可）或 **Overall Verdict**: NEEDS_REVISION（不认可，需修正），再列出 Action Items（需修正的具体点）。禁止辩论，不要自我称呼角色名。";
 			}
 			if (kind === "final") {
+				if (scene.acceptor === true) {
+					// qa final: re-check the acceptance opinions (P0-2) + acceptance verdict.
+					return fmt("{mainRole}修正后的测试用例：「{mainText}」\n提到的文件：{files}", { mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
+						+ "\n\n修正已完成。请先**逐条核对**你上一轮提出的验收意见是否在修正后的用例中被逐一回应：逐点对照每条意见，确认已被解决或指出仍未解决的项；然后给出最终验收结论（通过 / 仍需修改）。禁止辩论，只输出你的结论，不要提出新的质疑。";
+				}
 				return fmt("{mainRole}修正后的回答：「{mainText}」\n提到的文件：{files}", { mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 					+ "\n\n修正已完成。请先**逐条核对**你上一轮提出的质疑是否在修正后的回答中被逐一回应：逐点对照每条质疑，确认已被解决或指出仍未解决的项；然后仅给出最终评审结论（认可或仍存疑）。禁止辩论，只输出你的结论，不要提出新的质疑。";
+			}
+			if (scene.acceptor === true) {
+				// qa challenge: user-view ACCEPTANCE of the produced test cases.
+				return fmt("用户问题：「{question}」\n{mainRole}产出的测试用例：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
+					+ "\n\n请以最终用户视角**逐条验收**上述测试用例：逐条核对每条用例是否覆盖真实用户场景、边界与异常路径；前置条件/步骤是否明确且可执行；预期结果是否具体、可断言；指出不合格的用例及原因。禁止辩论，只输出你的验收意见。";
 			}
 			return fmt("用户问题：「{question}」\n{mainRole}的回答：「{mainText}」\n提到的文件：{files}", { question: challenge?.userQuestion ?? "", mainRole, mainText: challenge?.lastMainText ?? "", files }) + toolsPart
 				+ "\n\n请用中文对上述回答**逐条质疑**：逐点审查回答中的每个观点、结论与依据，指出问题或漏洞；禁止辩论，只输出你的质疑（直接以质疑者口吻表达，不要自我称呼角色名）。";
@@ -697,7 +791,11 @@ window.__ModuleLoader__.load({
 			const arenaRole = scene.arena;
 			const base = scene.review === true
 				? fmt("你是{arenaRole}，身份高于{mainRole}。在审查流程中，你作为审查者负责审查{mainRole}产出的结构化方案，并给出 **Overall Verdict**: READY（认可）或 NEEDS_REVISION（不认可）的结论。禁止辩论，只按指示输出。", { arenaRole, mainRole })
-				: fmt("你是{arenaRole}，身份高于{mainRole}。接下来的挑战流程中，你将负责用中文质疑并给出终评。禁止辩论，只按指示输出。", { arenaRole, mainRole });
+				: scene.acceptor === true
+					// qa: user-view PARALLEL collaborator — no hierarchy, verifies
+					// test-case quality instead of challenging the main model.
+					? fmt("你是最终用户。你将作为与{mainRole}平行的协作者，以**用户视角**验收{mainRole}产出的测试用例质量：核对每条用例是否覆盖真实用户使用场景、边界与异常路径，前置条件/步骤是否明确可执行、预期结果是否可断言。禁止辩论，只按指示输出。", { arenaRole, mainRole })
+					: fmt("你是{arenaRole}，身份高于{mainRole}。接下来的挑战流程中，你将负责用中文质疑并给出终评。禁止辩论，只按指示输出。", { arenaRole, mainRole });
 			// Optional challenger skill (workspace-persisted, user-picked file or
 			// folder): the challenger reads the skill (SKILL.md for a folder) before
 			// every review/challenge round and follows it.
@@ -712,7 +810,12 @@ window.__ModuleLoader__.load({
 			const scene = SCENES[challenge?.scene] ?? SCENES.business;
 			const mainRole = scene.main;
 			if (scene.review === true) {
-				return fmt("【最高优先级强制约束】你是{mainRole}。在 Theseus workflow 中，你负责 explore 和 propose 两个阶段，方案的 review 由模型竞技场的挑战者会话独立执行。**每个阶段完成时都必须停下来向用户汇报并询问是否继续，绝对禁止不询问用户就自动推进**：\n1. explore 完成（exploration.md 就绪）后：先向用户汇报探索结论，询问是否确认探索结果并进入 propose；在用户明确同意之前，绝对禁止 record explore.completed、绝对禁止开始 propose。\n2. propose 完成（proposal/design/tasks/metadata-plan 就绪）后：先向用户汇报方案要点，询问是否记录 propose.completed 并提交挑战者审查；在用户明确同意之前，绝对禁止 record propose.completed、绝对禁止提交审查。\n3. 收到挑战者审查结论后：NEEDS_REVISION → 先读取 review.md 中的 Action Items，向用户汇报审查意见，询问是否按意见修正；用户确认后再修正，修正完成重新按第 2 条询问后再送审。READY → 先向用户汇报审查结论，询问是否继续后续阶段；用户确认后再 record review.completed READY 并按 Theseus 继续。\n4. 后续 readiness / apply / archive 每个阶段同样先询问用户，得到明确确认后才 record 该阶段完成并推进。\n5. 在用户明确确认之前，绝对禁止 record 任何 stage 完成事件，绝对禁止 auto-advance 到下一阶段。\n6. 只有在你已 record propose.completed（用户已确认）之后，本轮才立即结束：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正——方案的 review 由挑战者会话独立执行，你只能被动等待审查结论。\n禁止辩论，请用中文回答。\n\n启动workflow，进行知识沉淀。", { mainRole });
+				return fmt("你是 {mainRole}，是 Theseus workflow 的主执行者，但 review 阶段由挑战者独立执行。\n1. explore 完成（exploration.md 就绪）后：先向用户汇报探索结论，并调用 ask_user_question 工具询问是否确认探索结果并进入 propose；用户回答后继续本回合，确认后 record explore.completed 并开始 propose。\n2. propose 完成（proposal/design/tasks/metadata-plan 就绪）后：先向用户汇报方案要点，并调用 ask_user_question 工具询问是否记录 propose.completed 并提交挑战者审查；用户确认后 record propose.completed，随后停止本回合，等待竞技场挑战者会话（与你不同的模型、独立上下文）执行审查——挑战者会读取产物文件、按审查规范写出 review.md（含 Action Items）并返回一行 Overall Verdict，审查结论将以用户消息注入本会话。\n3. 收到挑战者审查结论（注入的「审查结论：不认可」/「审查结论：认可」等用户消息）后：先读取 review.md 核对 Action Items。\n   - NEEDS_REVISION（「审查结论：不认可」）：向用户汇报审查意见，调用 ask_user_question 询问是否按意见修正；用户确认后继续本回合并修正，修正完成再次调用 ask_user_question 按第 2 条询问后重新提交审查（再次 record propose.completed 送审）。最多 3 次；累计 3 次不认可后审查循环结束，停下向用户汇报，等待人工决定。\n   - NOT_READY（「审查未通过/不完整」）：向用户汇报，调用 ask_user_question 询问是否重新审查；用户确认后继续本回合，record review.completed NOT_READY（状态停留 review）并重新提交审查。计入 3 次上限。\n   - READY（「审查结论：认可」）：先向用户汇报审查结论，调用 ask_user_question 询问是否记录 review.completed READY 并继续后续阶段；用户确认后继续本回合，record review.completed READY 并按 Theseus workflow 继续。\n4. 后续 user-readiness-review / apply / archive 按 Theseus workflow 推进，每个环节完成时先向用户汇报，调用 ask_user_question 询问确认后再继续——询问用户不停止回合，回答后在同一回合内继续推进。\n5. 方案的 review 由挑战者会话独立执行：绝对禁止 auto-advance 到 review、绝对禁止执行 theseus-review-spec、绝对禁止自己写 review.md / 给出 Overall Verdict / 自我审查或修正。\n6. 回合停止规则：唯一需要停止本回合的节点是第 2 条 record propose.completed 后等待挑战者审查；其余所有询问用户（ask_user_question）的节点都不停止回合——用户回答后继续本回合推进，绝不因询问而结束回合或结束会话。\n禁止辩论，请用中文回答。\n\n启用workflow，进行知识沉淀。", { mainRole });
+			}
+			if (scene.acceptor === true) {
+				// qa: produce test cases from openspec / jira context BEFORE the
+				// collaborator (user view) verifies them.
+				return fmt("你是{mainRole}。接下来你将作为{mainRole}产出测试用例：先读取工作区 openspec 规格与可用的需求/缺陷上下文（jira 等），再产出结构化测试用例（覆盖正常/边界/异常路径，每条含前置条件、步骤、预期结果且可断言），随后针对协作者（最终用户视角）的验收意见修正用例。请用中文回答。禁止辩论。", { mainRole });
 			}
 			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
 		};
@@ -913,7 +1016,25 @@ window.__ModuleLoader__.load({
 			".ma-skillRow{align-items:center;gap:10px;min-width:0;padding-left:20px;display:flex}",
 			".ma-skillValue{max-width:280px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}",
 			".ma-skillPopover{z-index:30;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);width:min(320px,calc(100vw - 32px));box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);border-radius:12px;flex-direction:column;gap:8px;padding:10px;display:flex;position:absolute;top:calc(100% + 6px);left:0;animation:ma-menu-in .14s var(--ds-ease-in-out)}",
-			".ma-skillPath{color:var(--dsw-alias-label-tertiary);font:400 12px/18px var(--ds-font-family-code);word-break:break-all;margin:0}"
+			".ma-skillPath{color:var(--dsw-alias-label-tertiary);font:400 12px/18px var(--ds-font-family-code);word-break:break-all;margin:0}",
+			".ma-optionActive{background:var(--dsw-alias-interactive-bg-hover)}",
+			// /arena cascade wizard (self-drawn overlay; mirrors the hero menu)
+			".ma-slashWizard{z-index:120;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);width:min(280px,100vw - 32px);max-height:min(340px,50vh);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:12px;flex-direction:column;padding:4px;display:flex;position:absolute;bottom:calc(100% + 8px);left:0;overflow:hidden;outline:none;animation:ma-menu-in .14s var(--ds-ease-in-out)}",
+			".ma-slashWizardHead{align-items:center;gap:8px;padding:6px 8px 2px;display:flex}",
+			".ma-slashWizardTitle{text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px;overflow:hidden}",
+			".ma-slashWizardBreadcrumb{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;overflow:hidden}",
+			".ma-slashWizardClose{flex:none;width:20px;height:20px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:6px;padding:0;font-size:14px;line-height:20px}",
+			".ma-slashWizardClose:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+			".ma-slashWizardBody{flex-direction:column;min-height:0;overflow-y:auto;padding:2px 0 4px;display:flex}",
+			".ma-slashWizardFoot{color:var(--dsw-alias-label-caption);flex-direction:row;gap:10px;padding:4px 8px 6px;font-size:11px;line-height:16px;display:flex}",
+			".ma-wizardBack{flex:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:0;font:inherit;font-weight:600}",
+			".ma-wizardBack:hover{color:var(--dsw-alias-label-primary)}",
+			// /arena undo strip (composer dock: the config the user can review/undo)
+			".ma-arenaPending{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));background:var(--dsw-specific-tip);border:1px solid var(--dsw-alias-border-l1);border-radius:12px 12px 0 0;align-items:center;gap:8px;margin:0 auto;padding:6px 12px;display:flex;position:relative}",
+			".ma-arenaPendingIcon{color:var(--dsw-alias-state-business-primary);flex:none;font-size:13px;line-height:20px}",
+			".ma-arenaPendingText{text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;overflow:hidden}",
+			".ma-arenaPendingUndo{flex:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:1px 10px;font-size:12px;line-height:18px}",
+			".ma-arenaPendingUndo:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}"
 		].join("\n");
 		const tagId = "dsh-plugin-model-arena/arena.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
@@ -926,7 +1047,7 @@ window.__ModuleLoader__.load({
 		// ── plugin entry ──────────────────────────────────────────────────────
 		// The model directory service is a separately mounted service; the whole
 		// arena UI mounts inside its late-binding inject callback.
-		const inject = ["locale", "sessions", "modelDirectories", "remote", "slots"];
+		const inject = ["locale", "sessions", "modelDirectories", "remote", "slots", "commandUi"];
 
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "model-arena: dictionaries");
@@ -943,7 +1064,10 @@ window.__ModuleLoader__.load({
 					if (state === void 0) {
 						// skill starts undefined = "not seeded from the workspace yet";
 						// it becomes "" (explicitly none) or a path once resolved.
-						state = { enabled: false, model: null, scene: "business", skill: void 0, challenge: null };
+						// slashArm: non-null while the LAST /arena pick is still
+						// undoable — { snapshot, label } of the applied config; the
+						// composer-dock strip shows it and ✕ restores the snapshot.
+						state = { enabled: false, model: null, scene: "business", skill: void 0, challenge: null, slashArm: null };
 						stateBySession.set(sessionId, state);
 					}
 					return state;
@@ -2752,6 +2876,9 @@ window.__ModuleLoader__.load({
 					// The challenge state lives in the per-session state too, so a session
 					// switch (teardown) can restore it on the way back.
 					state.challenge = c;
+					// The /arena config is now committed: drop the undo arm (the
+					// composer-dock strip also hides once the arena session exists).
+					state.slashArm = null;
 					// ── anchor-first (synchronous): the challenge starts NOW, before
 					// the (async) arena-session creation — the creation can never lose
 					// the first question again. Placed AFTER the conflict check so a
@@ -2781,6 +2908,21 @@ window.__ModuleLoader__.load({
 					// Anchor to the node that was last when the question landed — i.e.
 					// the question node itself (or whatever precedes the answer).
 					c.mainAnchor = lastKeyOfSnapshot(sessionId);
+					// Knowledge: arm the node half's propose.completed detector. The
+					// create path arms on a FRESH arena session; a REUSED session (a
+					// round re-opened via /arena after a concluded duel) must arm
+					// here too — the review loop cannot advance without it.
+					// Idempotent: rewrites the same session id + cwd.
+					if (isReviewScene(c)) {
+						const arenaCwd = workspacePathOf(sessionId);
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [
+								{ op: "set", path: ["arena", "mainSessionId"], value: sessionId },
+								{ op: "set", path: ["arena", "cwd"], value: typeof arenaCwd === "string" ? arenaCwd : "" }
+							]
+						}).catch(() => {});
+					}
 					updateBlock(sessionId, state);
 					// The challenger session now exists: sync the persona map right away
 					// (main role + challenger role) instead of waiting for the next sync.
@@ -2816,6 +2958,10 @@ window.__ModuleLoader__.load({
 					}
 					c.active = false;
 					c.phase = "aborted";
+					// Mark the link concluded: an aborted duel stays dormant too
+					// (only the explicit /arena reopen re-arms it), and a reload
+					// cannot re-infer a mid-flight round.
+					markReviewDone(arenaMount.sessionId);
 					// Stop the node half's propose.completed polling for this challenge.
 					if (isReviewScene(c)) stopArenaWatch();
 					updateBlock(arenaMount.sessionId, stateFor(arenaMount.sessionId));
@@ -2928,6 +3074,11 @@ window.__ModuleLoader__.load({
 								c.lastInjectedText = stripMarkdown(c.lastArenaText);
 								updateBlock(mainId, stateFor(mainId));
 								arenaTick.bump();
+								// Mark the link concluded so a reload cannot re-infer a
+								// mid-flight challenge from the finished round's history
+								// (the challenger stays dormant; only the explicit
+								// /arena reopen re-arms it).
+								markReviewDone(mainId);
 							}
 							persistChallenge(mainId);
 						}
@@ -3661,9 +3812,11 @@ window.__ModuleLoader__.load({
 				};
 				// Persist the review loop's terminal state onto the link so a page
 				// reload (which drops the in-memory `phase === "done"`) still blocks
-				// re-arming the challenger for this session. `done` only ever means
-				// "the knowledge review loop concluded", so it is never set for the
-				// business/qa challenge flow.
+				// Mark the link as concluded: the challenger stays dormant and a
+				// reload cannot re-infer a mid-flight round. Set when a duel
+				// concludes — the knowledge review loop (READY / 3 rejections) and
+				// the business/qa final verdict alike. Cleared by the explicit
+				// /arena reopen.
 				const markReviewDone = (mainId) => {
 					const link = linksCache[mainId];
 					if (link !== null && typeof link === "object" && !Array.isArray(link)) {
@@ -3703,11 +3856,11 @@ window.__ModuleLoader__.load({
 				const inferRestoredChallenge = (sessionId, state) => {
 					const link = linksCache[sessionId];
 					if (link === void 0 || typeof link.sessionId !== "string" || link.sessionId === "") return null;
-					// done signals block inference. The watch is global and only
-					// counts for THIS session when the bridge is armed for it (a
-					// stale done-watch from a concluded other session must not block
-					// inferring this session's mid-flight round).
-					if (link.done === true) return null;
+					// done signals block inference. `reopened` marks a duel that was
+					// EXPLICITLY re-opened via /arena after concluding: the old
+					// round's history must not be re-inferred as a mid-flight round
+					// (the header would resurrect before any new input).
+					if (link.done === true || link.reopened === true) return null;
 					if (arenaWatchMainSessionId === sessionId && latestWatch !== null && isPastReviewStage(latestWatch.stage)) return null;
 					const snap = (() => {
 						try {
@@ -4075,6 +4228,7 @@ window.__ModuleLoader__.load({
 											name: row.name,
 											...(row.reasoning?.defaultEffort === void 0 ? {} : { reasoningEffort: row.reasoning.defaultEffort })
 										};
+										state.slashArm = null; // manual hero pick takes over
 										// Keep the popup open and advance to the effort
 										// pane: the user picks the reasoning level in the
 										// same interaction. Close only when the model
@@ -4085,6 +4239,7 @@ window.__ModuleLoader__.load({
 											closeMenu();
 										}
 										repaint();
+										arenaTick.bump();
 									});
 									g.appendChild(option);
 								}
@@ -4111,8 +4266,10 @@ window.__ModuleLoader__.load({
 										...state.model,
 										...(choice.effort === void 0 ? {} : { reasoningEffort: choice.effort })
 									};
+									state.slashArm = null; // manual hero pick takes over
 									closeMenu();
 									repaint();
+									arenaTick.bump();
 								});
 								list.appendChild(option);
 							}
@@ -4272,6 +4429,7 @@ window.__ModuleLoader__.load({
 						btn.addEventListener("click", () => {
 							if (state.scene === key) return;
 							state.scene = key;
+							state.slashArm = null; // manual hero change takes over
 							// Skill is bound to the scene: switching scenes loads that
 							// scene's remembered skill (empty = none).
 							const wsEntry = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""];
@@ -4281,6 +4439,7 @@ window.__ModuleLoader__.load({
 								arenaMount.challenge.skill = state.skill;
 							}
 							repaintPanel();
+							arenaTick.bump();
 							syncPersona();
 						});
 						sceneBtns[key] = btn;
@@ -4688,8 +4847,13 @@ window.__ModuleLoader__.load({
 					};
 					toggle.addEventListener("click", () => {
 						state.enabled = !state.enabled;
+						// A manual hero change takes over from any pending /arena
+						// undo arm (the composer-dock strip would otherwise show a
+						// stale label).
+						state.slashArm = null;
 						closeMenu();
 						repaint();
+						arenaTick.bump();
 					});
 
 					const panel = buildPanel(state, sessionId, directory);
@@ -4893,6 +5057,15 @@ window.__ModuleLoader__.load({
 					getArenaMount: () => arenaMount,
 					syncViewEntry,
 					advanceBackgroundDuels,
+					// deferred (arrow) accessors: the wizard consts are declared
+					// below this block — evaluate at call time, not definition time
+					mountSlashWizard: (root, sessionId) => mountSlashWizard(root, sessionId),
+					getSlashWizard: () => slashWizard.getSnapshot(),
+					getSlashArm: (sessionId) => {
+						const state = stateBySession.get(sessionId);
+						return state?.slashArm ?? null;
+					},
+					undoSlashArm: (sessionId) => undoSlashArm(sessionId),
 					clearReviewDone: (sessionId) => {
 						const link = linksCache[sessionId];
 						if (link !== null && typeof link === "object" && !Array.isArray(link)) {
@@ -4902,6 +5075,739 @@ window.__ModuleLoader__.load({
 						}
 					}
 				};
+
+				// ── /arena slash-command: scene popup + cascade wizard ───────────
+				// Step 1 (SCENE) runs in the NATIVE popupSelect shell — the one
+				// dimension independent of the model, and the native shell consumes
+				// the "/arena" token on settle (no residue in the composer). Steps
+				// 2-3 (model → reasoning effort) run in a SELF-DRAWN wizard mounted
+				// in the conversation.input.overlay slot, mirroring the hero
+				// panel's two-level menu. The native shell cannot host a cascading
+				// picker (single-level rows, options fetched once per open), hence
+				// the hybrid. The wizard applies ONLY on a completed pick; Escape /
+				// outside click / ✕ discard without touching the session state.
+				const slashWizard = (() => {
+					const listeners = new Set();
+					let state = { open: false, sessionId: void 0, scene: "", step: "model", pendingModel: null };
+					return {
+						subscribe(fn) {
+							listeners.add(fn);
+							return () => {
+								listeners.delete(fn);
+							};
+						},
+						getSnapshot() {
+							return state;
+						},
+						set(patch) {
+							state = { ...state, ...patch };
+							for (const fn of [...listeners]) {
+								try {
+									fn();
+								} catch {}
+							}
+						}
+					};
+				})();
+				const openSlashWizard = (sessionId, scene) => slashWizard.set({ open: true, sessionId, scene, step: "model", pendingModel: null });
+				const closeSlashWizard = () => slashWizard.set({ open: false });
+
+				// Imperative wizard card. Rebuilds per store change (small DOM);
+				// document-level keydown/outside-dismiss stay robust regardless of
+				// where focus landed (the native popup refocuses the composer when
+				// it closes). Returns an unmount disposer.
+				const mountSlashWizard = (root, sessionId) => {
+					let disposed = false;
+					let activeRow = -1;
+					let rows = [];
+					let cardEl = null;
+					const paintActive = () => {
+						for (let i = 0; i < rows.length; i++) {
+							try {
+								if (i === activeRow) rows[i].classList.add("ma-optionActive");
+								else rows[i].classList.remove("ma-optionActive");
+							} catch {}
+						}
+					};
+					// Card-level keyboard (the card takes focus on open): arrows move
+					// the highlight, Enter picks ONLY an explicitly highlighted row.
+					// Enter with no highlight is a no-op — a stray Enter from the
+					// scene pick (native popup confirms on Enter) or a key repeat
+					// must NEVER auto-select the first model (the "skips straight to
+					// the effort step" bug).
+					const onCardKeyDown = (event) => {
+						const s = slashWizard.getSnapshot();
+						if (s.open !== true || s.sessionId !== sessionId) return;
+						if (event.key === "Escape") {
+							event.preventDefault();
+							if (s.step === "effort") slashWizard.set({ step: "model" });
+							else closeSlashWizard();
+							return;
+						}
+						if (rows.length === 0) return;
+						if (event.key === "ArrowDown") {
+							event.preventDefault();
+							activeRow = (activeRow + 1) % rows.length;
+							paintActive();
+						} else if (event.key === "ArrowUp") {
+							event.preventDefault();
+							activeRow = (activeRow - 1 + rows.length) % rows.length;
+							paintActive();
+						} else if (event.key === "Enter") {
+							event.preventDefault();
+							if (activeRow < 0) return;
+							const row = rows[activeRow];
+							try {
+								row?.click?.();
+							} catch {}
+						}
+					};
+					// Document-level Escape fallback (dismiss works even when focus
+					// is outside the card, e.g. the composer). Idempotent with the
+					// card handler. Arrows/Enter stay card-only.
+					const onDocKeyDown = (event) => {
+						const s = slashWizard.getSnapshot();
+						if (s.open !== true || s.sessionId !== sessionId) return;
+						if (event.key !== "Escape") return;
+						event.preventDefault();
+						if (s.step === "effort") slashWizard.set({ step: "model" });
+						else closeSlashWizard();
+					};
+					const onPointerDown = (event) => {
+						const s = slashWizard.getSnapshot();
+						if (s.open !== true || s.sessionId !== sessionId) return;
+						if (typeof root.contains === "function" && root.contains(event.target)) return;
+						closeSlashWizard();
+					};
+					const focusCard = () => {
+						try {
+							if (cardEl !== null && typeof cardEl.focus === "function") cardEl.focus();
+						} catch {}
+					};
+					const applyWizard = (pending, effort) => {
+						// Freeze re-check: a challenge may have started while the
+						// wizard was open (same rule as the hero pick). Only an
+						// IN-FLIGHT challenge freezes — a concluded duel may be
+						// re-opened here.
+						if (arenaChallengeInFlight(sessionId)) {
+							closeSlashWizard();
+							return;
+						}
+						const state = stateFor(sessionId);
+						// Conflict re-check against the LIVE directory (the composer
+						// model may have switched mid-wizard): never apply a challenger
+						// that equals the input box's model.
+						let snap = null;
+						try {
+							snap = models.directoryFor(sessionId)?.store?.getSnapshot?.() ?? null;
+						} catch {
+							snap = null;
+						}
+						if (snap !== null && conflictsWithInput({ provider: pending.provider, model: pending.model }, snap)) {
+							closeSlashWizard();
+							return;
+						}
+						const scene = slashWizard.getSnapshot().scene;
+						const arenaModel = buildArenaModel(pending.provider, pending.model, pending.name, pending.reasoning, effort);
+						// Undo arm: keep the ORIGINAL pre-/arena config across repeated
+						// /arena runs (✕ in the composer-dock strip always restores the
+						// state before the FIRST pick of this arm).
+						let snapshot = state.slashArm?.snapshot;
+						if (snapshot === null || snapshot === void 0) {
+							snapshot = {
+								enabled: state.enabled === true,
+								model: state.model === null ? null : { ...state.model },
+								scene: state.scene ?? "business"
+							};
+						}
+						applyArenaSelection(state, scene, arenaModel);
+						// (A concluded arena session never reaches the wizard — the
+						// scene popup shows the read-only reopen row instead — so no
+						// challenge reset is needed here.)
+						// Display label for the composer-dock strip (scene · model · effort).
+						const choices = pending.reasoning !== void 0 ? buildEffortChoices(pending.reasoning, t) : [];
+						const resolvedEffort = effort === void 0 ? (pending.reasoning?.defaultEffort ?? void 0) : effort;
+						const effortLabel = resolvedEffort === void 0
+							? ""
+							: " · " + (choices.find((c) => c.effort === resolvedEffort)?.label ?? resolvedEffort);
+						state.slashArm = {
+							snapshot,
+							label: t("scene." + scene) + " · " + pending.name + effortLabel
+						};
+						// Scene switch loads that scene's remembered challenger skill
+						// (workspace × scene), mirroring the hero scene selector —
+						// a skill picked in an earlier conversation of the same
+						// workspace carries over when the same scene is chosen.
+						// Guard: when the persisted skills have NOT loaded yet (or
+						// the workspace has not resolved), leave state.skill
+						// untouched (undefined) so syncArena's seed — which runs
+						// every tick once skillsLoaded — fills it in later; forcing
+						// "" now would permanently block that re-seed.
+						if (skillsLoaded) {
+							try {
+								const wsEntry = workspaceSkillsCache[workspacePathOf(sessionId) ?? ""];
+								state.skill = (wsEntry !== null && typeof wsEntry === "object" && !Array.isArray(wsEntry) ? wsEntry[scene] : void 0) ?? "";
+							} catch {
+								state.skill = "";
+							}
+						}
+						try {
+							updateBlock(sessionId, state);
+						} catch {}
+						if (mounted !== null && mounted.sessionId === sessionId) {
+							try {
+								repaint();
+							} catch {}
+						}
+						try {
+							syncPersona();
+						} catch {}
+						arenaTick.bump();
+						closeSlashWizard();
+					};
+					const pickModel = (row) => {
+						const choices = row.reasoning !== void 0 ? buildEffortChoices(row.reasoning, t) : [];
+						if (choices.length === 0) {
+							// no effort levels — apply immediately with the model default
+							applyWizard({ provider: row.provider, model: row.model, name: row.name, reasoning: row.reasoning }, void 0);
+						} else {
+							slashWizard.set({
+								step: "effort",
+								pendingModel: { provider: row.provider, model: row.model, name: row.name, reasoning: row.reasoning }
+							});
+						}
+					};
+					const render = () => {
+						const s = slashWizard.getSnapshot();
+						rows = [];
+						activeRow = -1;
+						if (s.open !== true || s.sessionId !== sessionId) {
+							root.textContent = "";
+							return;
+						}
+						root.textContent = "";
+						const card = document.createElement("div");
+						card.className = "ma-slashWizard";
+						card.dataset.slashWizard = "";
+						card.setAttribute("role", "dialog");
+						card.setAttribute("aria-label", t("wizard.title"));
+						const head = document.createElement("div");
+						head.className = "ma-slashWizardHead";
+						const title = document.createElement("span");
+						title.className = "ma-slashWizardTitle";
+						title.textContent = t("wizard.title");
+						const crumb = document.createElement("span");
+						crumb.className = "ma-slashWizardBreadcrumb";
+						crumb.textContent = t("scene." + s.scene) + " › " + (s.step === "model" ? t("wizard.model") : t("wizard.effort"));
+						const close = document.createElement("button");
+						close.type = "button";
+						close.className = "ma-slashWizardClose";
+						close.textContent = "✕";
+						close.setAttribute("aria-label", t("wizard.cancel"));
+						close.addEventListener("click", () => closeSlashWizard());
+						head.append(title, crumb, close);
+						const body = document.createElement("div");
+						body.className = "ma-slashWizardBody";
+						const foot = document.createElement("div");
+						foot.className = "ma-slashWizardFoot";
+						if (s.step === "model") {
+							let snap = null;
+							try {
+								snap = models.directoryFor(sessionId)?.store?.getSnapshot?.() ?? null;
+							} catch {
+								snap = null;
+							}
+							if (snap === null || snap.status === "loading" || snap.status === "idle") {
+								const status = document.createElement("div");
+								status.className = "ma-menuStatus";
+								status.textContent = "…";
+								body.appendChild(status);
+								try {
+									models.directoryFor(sessionId).load().catch(() => void 0);
+								} catch {}
+							} else if (snap.status === "error" || snap.status === "failed") {
+								const err = document.createElement("div");
+								err.className = "ma-menuError";
+								const text = document.createElement("span");
+								text.textContent = t("menu.error");
+								const retry = document.createElement("button");
+								retry.type = "button";
+								retry.className = "ma-menuRetry";
+								retry.textContent = t("menu.retry");
+								retry.addEventListener("click", () => {
+									try {
+										models.directoryFor(sessionId).load().catch(() => void 0);
+									} catch {}
+								});
+								err.append(text, retry);
+								body.appendChild(err);
+							} else {
+								const groups = buildModelOptions(snap, s.pendingModel);
+								let total = 0;
+								for (const group of groups) {
+									const g = document.createElement("div");
+									g.className = "ma-group";
+									const gTitle = document.createElement("div");
+									gTitle.className = "ma-groupTitle";
+									gTitle.textContent = group.name;
+									g.appendChild(gTitle);
+									for (const row of group.models) {
+										const option = makeOption({
+											name: row.name,
+											description: row.description,
+											selected: s.pendingModel !== null && s.pendingModel.provider === row.provider && s.pendingModel.model === row.model
+										});
+										option.addEventListener("click", () => pickModel(row));
+										g.appendChild(option);
+										rows.push(option);
+										total += 1;
+									}
+									body.appendChild(g);
+								}
+								if (total === 0) {
+									const empty = document.createElement("div");
+									empty.className = "ma-menuEmpty";
+									empty.textContent = t("menu.empty");
+									body.appendChild(empty);
+								}
+							}
+							const cancel = document.createElement("button");
+							cancel.type = "button";
+							cancel.className = "ma-wizardBack";
+							cancel.textContent = t("wizard.cancel");
+							cancel.addEventListener("click", () => closeSlashWizard());
+							foot.appendChild(cancel);
+						} else {
+							const model = s.pendingModel;
+							const choices = model !== null && model.reasoning !== void 0 ? buildEffortChoices(model.reasoning, t) : [];
+							if (choices.length === 0) {
+								const empty = document.createElement("div");
+								empty.className = "ma-menuEmpty";
+								empty.textContent = t("effort.none");
+								body.appendChild(empty);
+							} else {
+								for (const choice of choices) {
+									const option = makeOption({
+										name: choice.label,
+										description: choice.description,
+										selected: model !== null && model.reasoningEffort === choice.effort
+									});
+									option.addEventListener("click", () => applyWizard({ provider: model.provider, model: model.model, name: model.name, reasoning: model.reasoning }, choice.effort));
+									body.appendChild(option);
+									rows.push(option);
+								}
+							}
+							const back = document.createElement("button");
+							back.type = "button";
+							back.className = "ma-wizardBack";
+							back.textContent = t("wizard.back");
+							back.addEventListener("click", () => slashWizard.set({ step: "model" }));
+							foot.appendChild(back);
+						}
+						const hint = document.createElement("span");
+						hint.textContent = "Esc";
+						foot.appendChild(hint);
+						card.append(head, body, foot);
+						// The card owns the keyboard (focus moves here on open/step
+						// change); a stray Enter outside the card can never pick.
+						card.tabIndex = 0;
+						card.addEventListener("keydown", onCardKeyDown);
+						cardEl = card;
+						root.appendChild(card);
+						focusCard();
+					};
+					const unsub = slashWizard.subscribe(() => {
+						if (disposed) return;
+						render();
+					});
+					// The model step must repaint when the directory settles
+					// (opened before the catalog finished loading).
+					let unsubDir = null;
+					try {
+						unsubDir = models.directoryFor(sessionId)?.store?.subscribe?.(() => {
+							if (disposed) return;
+							render();
+						}) ?? null;
+					} catch {
+						unsubDir = null;
+					}
+					render();
+					document.addEventListener("keydown", onDocKeyDown);
+					document.addEventListener("mousedown", onPointerDown);
+					return () => {
+						disposed = true;
+						unsub();
+						try {
+							unsubDir?.();
+						} catch {}
+						document.removeEventListener("keydown", onDocKeyDown);
+						document.removeEventListener("mousedown", onPointerDown);
+						root.textContent = "";
+					};
+				};
+
+				// React shell for the wizard overlay (conversation.input.overlay,
+				// list-kind — coexists with the native command popup). The host
+				// div only exists while open, so the mount effect must re-run on
+				// EVERY store change (state is a fresh object per set): a deps list
+				// of [sessionId] alone would run once against a null ref and never
+				// mount the wizard when the div appears (the real bug: after
+				// picking a scene nothing was rendered).
+				const SlashWizardView = (props) => {
+					const sessionId = props.sessionId;
+					const state = React.useSyncExternalStore(slashWizard.subscribe, slashWizard.getSnapshot);
+					const rootRef = React.useRef(null);
+					React.useEffect(() => {
+						const root = rootRef.current;
+						if (root === null) return;
+						return mountSlashWizard(root, sessionId);
+					}, [sessionId, state]);
+					if (state.open !== true || state.sessionId !== sessionId) return null;
+					return React.createElement("div", { className: "ma-slashWizardHost", "data-slash-wizard-host": "", ref: rootRef });
+				};
+
+				// The arena config is FROZEN only while a challenge is in flight.
+				// After a duel concludes (done/aborted) /arena may re-open the
+				// arena — the challenger stays dormant until the user explicitly
+				// re-arms (no auto re-arm; knowledge one-shot preserved). The
+				// arena session itself persisting is NOT enough to freeze (it
+				// always persists, reused across rounds).
+				const arenaChallengeInFlight = (sessionId) => arenaMount !== null
+					&& arenaMount.sessionId === sessionId
+					&& arenaMount.challenge !== null && arenaMount.challenge !== void 0
+					&& arenaMount.challenge.active === true;
+				// A session that ALREADY ran a duel (the arena session exists and
+				// no challenge is in flight): /arena shows the CURRENT config
+				// (model · effort · scene) as a single read-only reopen row — no
+				// modification allowed, which also makes model-switching on a
+				// reused session impossible by construction.
+				const isConcludedArena = (sessionId) => arenaMount !== null
+					&& arenaMount.sessionId === sessionId
+					&& arenaMount.arenaSessionId !== void 0
+					&& !arenaChallengeInFlight(sessionId);
+
+				// Re-open after a concluded duel (done/aborted): the reopen-row
+				// pick is the EXPLICIT re-arm — reset the terminal challenge to a
+				// fresh idle baseline and clear the done signals (link.done,
+				// persisted challenge, Theseus watch) so the next user message
+				// starts a NEW round. No auto re-arm: without this explicit action
+				// the challenger stays dormant (knowledge one-shot preserved). The
+				// existing arena session is REUSED (context continuity): the new
+				// round's arenaAnchor is seeded to the session's current tail so
+				// old content is never mistaken for a new challenger reply. The
+				// config cannot change on this path (the reopen row is read-only),
+				// so the recorded model always matches — no fresh-session branch.
+				const reopenConcludedArena = (sessionId, state) => {
+					if (arenaMount === null || arenaMount.sessionId !== sessionId) return;
+					const c = arenaMount.challenge;
+					if (c === null || c === void 0 || !isTerminalPhase(c.phase)) return;
+					const oldArenaId = arenaMount.arenaSessionId;
+					const link = linksCache[sessionId];
+					let arenaAnchor = null;
+					if (oldArenaId !== void 0) {
+						// Reuse: anchor to the session's current tail (old content
+						// is pre-existing, never a new turn).
+						try {
+							arenaAnchor = lastKeyOfSnapshot(oldArenaId) ?? null;
+						} catch {
+							arenaAnchor = null;
+						}
+					}
+					const fresh = {
+						active: false,
+						phase: "idle",
+						scene: state.scene ?? "business",
+						skill: state.skill ?? "",
+						userQuestion: "",
+						mainAnchor: null,
+						arenaAnchor,
+						lastMainText: "",
+						lastArenaText: "",
+						rejectCount: 0,
+						verdict: "",
+						round: 0,
+						pendingAnchor: false,
+						lastPromptSent: "",
+						lastInjectedText: "",
+						mainWasRunning: false,
+						arenaWasRunning: false,
+						lastReviewSeq: -1,
+						proposalPath: "",
+						designPath: "",
+						tasksPath: "",
+						reviewPath: "",
+						stallSince: 0,
+						challengerRePrompted: false,
+						// restored: true — this idle baseline is INTENTIONAL (the
+						// reopen reset), NOT a fresh pre-first-message state: it
+						// blocks syncArena's idle-upgrade inference, which would
+						// otherwise re-infer an ACTIVE challenge from the OLD round's
+						// history and resurrect the header before any new input.
+						restored: true,
+						alignDone: false
+					};
+					arenaMount.challenge = fresh;
+					state.challenge = fresh;
+					// Clear the done signals so shouldReArmChallenge passes, and mark
+					// the link as reopened so a RELOAD before the next message cannot
+					// re-infer a mid-flight challenge from the old round's history
+					// either. The marker disappears when the new round's challenge
+					// start overwrites the link.
+					if (link !== null && typeof link === "object" && !Array.isArray(link)) {
+						saveLink(sessionId, { ...link, done: false, reopened: true });
+					}
+					delete challengesCache[sessionId];
+					try {
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [{ op: "unset", path: ["challenges", sessionId] }]
+						}).catch(() => {});
+					} catch {}
+					// Theseus watch: clear the stale past-review heartbeat (the node
+					// half re-arms when the new knowledge challenge starts).
+					latestWatch = null;
+					latestReviewRequest = null;
+					try {
+						apiSettings()?.mutate?.({
+							ns: "model-arena",
+							ops: [
+								{ op: "set", path: ["arena", "mainSessionId"], value: "" },
+								{ op: "set", path: ["arena", "reviewRequest"], value: null }
+							]
+						}).catch(() => {});
+					} catch {}
+					arenaTick.bump();
+				};
+
+				// Current arena config as "scene · model · effort" for the read-only
+				// reopen row. Best-effort: falls back to the stored names when the
+				// directory is unavailable.
+				const currentConfigLabel = (sessionId) => {
+					const state = stateBySession.get(sessionId);
+					if (state === void 0 || state.model === null || state.model === void 0) return "";
+					let modelName = state.model.name ?? state.model.model;
+					let effortLabel = "";
+					try {
+						const snap = models.directoryFor(sessionId)?.store?.getSnapshot?.() ?? null;
+						const model = findArenaModel(snap, state.model);
+						if (model !== void 0) {
+							modelName = model.name ?? modelName;
+							const efforts = model.reasoning?.efforts ?? [];
+							effortLabel = state.model.reasoningEffort !== void 0
+								? (efforts.find((l) => l.id === state.model.reasoningEffort)?.name ?? state.model.reasoningEffort)
+								: (model.reasoning?.defaultEffort === void 0 ? t("effort.default") : efforts.find((l) => l.id === model.reasoning.defaultEffort)?.name ?? model.reasoning.defaultEffort);
+						}
+					} catch {
+						// best effort
+					}
+					return t("scene." + state.scene) + " · " + modelName + (effortLabel === "" ? "" : " · " + effortLabel);
+				};
+
+				// ── /arena undo: composer-dock strip ────────────────────────────
+				// After a completed wizard pick the config is applied immediately
+				// AND shown as an armed chip in the composer dock (conversation.input
+				// .dock, list-kind — the same strip the steering queue uses), with a
+				// ✕ undo that restores the pre-/arena state. The chip hides once the
+				// arena session exists (the config is committed/frozen), when the
+				// arena is turned off, or when the hero panel takes over.
+				const undoSlashArm = (sessionId) => {
+					const state = stateBySession.get(sessionId);
+					const arm = state?.slashArm;
+					if (state === void 0 || arm === null || arm === void 0) return false;
+					// A REOPEN arm (kind "reopen") restores the CONCLUDED state —
+					// the challenger goes dormant again — instead of the config
+					// snapshot (the reopen never changed the config).
+					if (arm.kind === "reopen") {
+						return undoReopenArena(sessionId, state);
+					}
+					const snap = arm.snapshot;
+					if (snap !== null && snap !== void 0) {
+						state.enabled = snap.enabled === true;
+						state.model = snap.model === null ? null : { ...snap.model };
+						state.scene = snap.scene ?? "business";
+					} else {
+						state.enabled = false;
+						state.model = null;
+					}
+					state.slashArm = null;
+					try {
+						updateBlock(sessionId, state);
+					} catch {}
+					if (mounted !== null && mounted.sessionId === sessionId) {
+						try {
+							repaint();
+						} catch {}
+					}
+					try {
+						syncPersona();
+					} catch {}
+					arenaTick.bump();
+					return true;
+				};
+				// Undo an EXPLICIT reopen: restore the concluded state — the
+				// challenge is done again, the done signals come back (link.done +
+				// persisted challenge), the reopened marker clears. The challenger
+				// stays dormant until a fresh /arena re-opens it.
+				const undoReopenArena = (sessionId, state) => {
+					if (arenaMount !== null && arenaMount.sessionId === sessionId && arenaMount.challenge !== null && arenaMount.challenge !== void 0) {
+						const c = arenaMount.challenge;
+						c.active = false;
+						c.phase = "done";
+						c.userQuestion = "";
+						c.mainAnchor = null;
+						c.arenaAnchor = null;
+						c.lastInjectedText = "";
+						c.lastPromptSent = "";
+						c.lastReviewSeq = -1;
+						c.pendingAnchor = false;
+						c.restored = false;
+						c.alignDone = false;
+						state.challenge = c;
+					}
+					const link = linksCache[sessionId];
+					if (link !== null && typeof link === "object" && !Array.isArray(link)) {
+						saveLink(sessionId, { ...link, done: true, reopened: false });
+					}
+					// Re-persist the done baseline so a reload keeps the concluded state.
+					try {
+						persistChallenge(sessionId);
+					} catch {}
+					state.slashArm = null;
+					arenaTick.bump();
+					return true;
+				};
+				const ArenaPendingStrip = (props) => {
+					const sessionId = props.sessionId;
+					React.useSyncExternalStore(arenaTick.subscribe, arenaTick.getSnapshot);
+					const state = sessionId === void 0 ? void 0 : stateBySession.get(sessionId);
+					const arm = state?.slashArm ?? null;
+					// Hide once a challenge is IN FLIGHT (config committed/frozen) or
+					// the arena is no longer enabled. A concluded duel may be
+					// re-opened, so the strip stays available after done.
+					const committed = arenaChallengeInFlight(sessionId);
+					if (state === void 0 || arm === null || committed || state.enabled !== true) return null;
+					return React.createElement("div", { className: "ma-arenaPending", "data-arena-pending": "", role: "status" },
+						React.createElement("span", { className: "ma-arenaPendingIcon", "aria-hidden": true }, "⚔"),
+						React.createElement("span", { className: "ma-arenaPendingText", "data-arena-pending-text": true }, arm.label),
+						React.createElement("button", {
+							type: "button",
+							className: "ma-arenaPendingUndo",
+							"data-arena-pending-undo": "",
+							"aria-label": t("slash.undo"),
+							title: t("slash.undo"),
+							onClick: () => {
+								try {
+									undoSlashArm(sessionId);
+								} catch {}
+							}
+						}, t("slash.undo")));
+				};
+
+				// ── /arena contribution: scene-first popupSelect ────────────────
+				let disposeArenaCommand = () => {};
+				let disposeWizardOverlay = () => {};
+				let disposePendingStrip = () => {};
+				try {
+					const commandUi = ctx.commandUi;
+					if (commandUi !== void 0 && typeof commandUi.register === "function") {
+						disposeArenaCommand = commandUi.register({
+							name: "arena",
+							description: t("command.description"),
+							available: (session) => {
+								try {
+									return ctx.sessions.subagentAddress(session.sessionId) === void 0;
+								} catch {
+									return false;
+								}
+							},
+							ui: {
+								kind: "popupSelect",
+								options: async (session) => {
+									// A session that already ran a duel: show the CURRENT
+									// config (model · effort · scene) as a single READ-ONLY
+									// reopen row — no modification, which also makes
+									// model-switching on a reused session impossible.
+									if (isConcludedArena(session.sessionId)) {
+										const label = currentConfigLabel(session.sessionId);
+										return [{
+											id: "reopen",
+											label: label === "" ? t("slash.reopen.title") : label,
+											detail: t("slash.reopen.desc")
+										}];
+									}
+									const directory = models.directoryFor(session.sessionId);
+									await directory.load().catch(() => void 0);
+									const snap = directory.store.getSnapshot();
+									if (snap === null || snap.status === "error" || snap.status === "failed") {
+										throw new Error(t("menu.error"));
+									}
+									// The wizard needs at least one eligible challenger
+									// model (input-box model excluded); refuse up front.
+									const eligible = buildModelOptions(snap, null).reduce((n, g) => n + g.models.length, 0);
+									if (eligible === 0) throw new Error(t("menu.empty"));
+									// Short popup-specific descriptions: the full
+									// settings.scene.X.desc paragraphs repeat the scene
+									// name and get ellipsized in the single-line popup row.
+									return SLASH_SCENES.map((scene) => ({
+										id: scene,
+										label: t("scene." + scene),
+										detail: t("scene.popup." + scene)
+									}));
+								},
+								onSelect: async (option, session) => {
+									// Freeze rule: only an IN-FLIGHT challenge locks the
+									// config (rewiring a running duel is forbidden). A
+									// concluded duel may be re-opened — the challenger
+									// stays dormant until then.
+									if (arenaChallengeInFlight(session.sessionId)) {
+										throw new Error(t("slash.frozen"));
+									}
+									if (option.id === "reopen") {
+										// Explicit re-arm with the CURRENT config (read-only):
+										// reset the concluded challenge + done signals so the
+										// next message starts a new round, reusing the old
+										// arena session (context continuity).
+										const state = stateFor(session.sessionId);
+										reopenConcludedArena(session.sessionId, state);
+										// Arm the composer-dock undo strip for the reopen: ✕
+										// restores the CONCLUDED state (challenger dormant).
+										state.slashArm = {
+											kind: "reopen",
+											label: currentConfigLabel(session.sessionId),
+											snapshot: null
+										};
+										arenaTick.bump();
+										return;
+									}
+									openSlashWizard(session.sessionId, option.id);
+								}
+							}
+						});
+					}
+					// Register the cascade wizard into the composer overlay slot
+					// (mirrors ui-commands' PopupSelectView registration).
+					const slots = typeof ctx.get === "function" ? ctx.get("slots") : void 0;
+					if (slots !== void 0 && typeof slots.inject === "function" && typeof slots.register === "function") {
+						disposeWizardOverlay = slots.inject("conversation.input.overlay", () => slots.register({
+							name: "conversation.input.overlay",
+							id: "arena-slash-wizard",
+							order: 2,
+							locale: NS,
+							inject: (sessionId) => ({ sessionId })
+						}, SlashWizardView));
+						disposePendingStrip = slots.inject("conversation.input.dock", () => slots.register({
+							name: "conversation.input.dock",
+							id: "arena-pending",
+							order: 5,
+							locale: NS,
+							inject: (sessionId) => ({ sessionId })
+						}, ArenaPendingStrip));
+					}
+				} catch (_arenaCommandFailure) {
+					disposeArenaCommand = () => {};
+					disposeWizardOverlay = () => {};
+					disposePendingStrip = () => {};
+				}
 								return () => {
 					clearTimeout(schedule.timer);
 					clearInterval(backgroundTimer);
@@ -4912,6 +5818,15 @@ window.__ModuleLoader__.load({
 					unsubRemote?.();
 					teardownArena();
 					cleanup();
+					try {
+						disposeArenaCommand();
+					} catch {}
+					try {
+						disposeWizardOverlay();
+					} catch {}
+					try {
+						disposePendingStrip();
+					} catch {}
 				};
 			});
 		}
@@ -4920,6 +5835,8 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.buildModelOptions = buildModelOptions;
 		exports.buildEffortChoices = buildEffortChoices;
+		exports.buildArenaModel = buildArenaModel;
+		exports.applyArenaSelection = applyArenaSelection;
 		exports.normalizeTemperatureInput = normalizeTemperatureInput;
 		exports.conflictsWithInput = conflictsWithInput;
 		exports.findArenaModel = findArenaModel;
@@ -4929,6 +5846,7 @@ window.__ModuleLoader__.load({
 		exports.assistantRows = assistantRows;
 		exports.nonMdSig = nonMdSig;
 		exports.SCENES = SCENES;
+		exports.isAcceptorScene = isAcceptorScene;
 		exports.fmt = fmt;
 		exports.extractFileRefs = extractFileRefs;
 		exports.pathBasename = pathBasename;
