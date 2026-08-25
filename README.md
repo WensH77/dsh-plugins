@@ -51,7 +51,11 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:session-export'
 ```
 
-**model-arena**：手动安装（见 [model-arena/README.md](model-arena/README.md)）。
+**model-arena**（模型竞技场，git 通道安装）：
+
+```bash
+dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:model-arena'
+```
 
 安装后在补丁层启用（chat-rollback / command-setting / tool-both / session-export 示例；plugin-market 为 bundle 包，无需此步，重启即加载）：
 

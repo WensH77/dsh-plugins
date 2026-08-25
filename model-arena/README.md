@@ -40,8 +40,13 @@ dsh web 模型竞技场插件（挑战模式）：**按场景分流——「知�
 
 ## 安装（dsh web profile）
 
-    mkdir -p ~/.dsh/profiles/web/node_modules/dsh-plugin-model-arena
-    cp -R model-arena/. ~/.dsh/profiles/web/node_modules/dsh-plugin-model-arena/
+```bash
+# 推荐：git 通道安装（公开仓库，HTTPS 拉取；可经「插件市场」检查更新/更新，跟随默认分支最新提交）
+dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:model-arena'
+```
+
+> 手动拷贝安装（`mkdir -p ~/.dsh/profiles/web/node_modules/dsh-plugin-model-arena && cp -R model-arena/. ~/.dsh/profiles/web/node_modules/dsh-plugin-model-arena/`）
+> 不产生 git 依赖，插件市场无法更新——已手动安装的用户可在插件市场点「检查更新」→「更新」，一键转为 git 通道安装。
 
     # ~/.dsh/profiles/web/cordis.patch.yml（顶层数组）：
     - insert:
