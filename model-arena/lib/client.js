@@ -817,7 +817,7 @@ window.__ModuleLoader__.load({
 				// collaborator (user view) verifies them.
 				return fmt("你是{mainRole}。接下来你将作为{mainRole}产出测试用例：先读取工作区 openspec 规格与可用的需求/缺陷上下文（jira 等），再产出结构化测试用例（覆盖正常/边界/异常路径，每条含前置条件、步骤、预期结果且可断言），随后针对协作者（最终用户视角）的验收意见修正用例。请用中文回答。禁止辩论。", { mainRole });
 			}
-			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑进行修正。请用中文回答。禁止辩论。", { mainRole });
+			return fmt("你是{mainRole}。接下来你将作为{mainRole}参与竞技场挑战：先回答用户问题，再针对挑战者的质疑逐条修正，但不必全盘接受质疑，如有不认可的条目，可以使用ask_user_question工具提出。请用中文回答。禁止辩论。", { mainRole });
 		};
 
 		function toolResultText(content) {

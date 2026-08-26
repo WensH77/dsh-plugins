@@ -696,6 +696,8 @@ check("business: 角色种子保留「身份高于」等级框架", bizSeed.incl
 const qaMainSeed = loaded.buildMainRoleSeed({ scene: "qa" }, realT);
 check("qa: 主模型角色含 openspec/jira 产出指令", qaMainSeed.includes("openspec") && qaMainSeed.includes("测试用例") && qaMainSeed.includes("预期结果"));
 check("business: 主模型角色不含 openspec 产出指令", !loaded.buildMainRoleSeed({ scene: "business" }, realT).includes("openspec"));
+const bizMainSeed = loaded.buildMainRoleSeed({ scene: "business" }, realT);
+check("business: 主模型角色逐条修正、不认可可用 ask_user_question 提出", bizMainSeed.includes("逐条修正") && bizMainSeed.includes("不必全盘接受质疑") && bizMainSeed.includes("ask_user_question") && !bizMainSeed.includes("进行修正"));
 const qaChallengePrompt = loaded.buildRoundPrompt("challenge", { scene: "qa", userQuestion: "Q", lastMainText: "用例" }, realT);
 check("qa: 验收轮 prompt 为逐条验收语义", qaChallengePrompt.includes("逐条验收") && qaChallengePrompt.includes("边界") && qaChallengePrompt.includes("可执行") && qaChallengePrompt.includes("可断言") && !qaChallengePrompt.includes("逐条质疑"));
 const qaFinalPrompt = loaded.buildRoundPrompt("final", { scene: "qa", lastMainText: "修正后用例" }, realT);
