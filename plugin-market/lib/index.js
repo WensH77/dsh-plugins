@@ -43,6 +43,10 @@ const REVIEW_TTL_DAYS = 7
 const DSH_REPO = { owner: 'deepseek-ai', name: 'deepseek-harness' }
 /** dsh 自更新检测/判定结果持久化文件。 */
 const DSH_STATE_FILE = join(homedir(), '.dsh', 'plugin-market-dsh.json')
+/** 更新后待重启 / 更新失败标记文件：{ [moduleName]: { kind: 'update'|'failed-update', error?, at } }。
+ * 更新成功落盘 → kind:'update'（运行树仍是旧代码，需重启加载新版本）；
+ * 更新失败 → kind:'failed-update' + error（可能处于半更新状态，卡片持续提示直到重试成功/卸载/重启）。 */
+const PENDING_FILE = join(homedir(), '.dsh', 'plugin-market-pending.json')
 /** dsh 版本检测间隔：启动时一次 + 每 1 小时同步。 */
 const DSH_CHECK_INTERVAL_MS = 60 * 60 * 1000
 
@@ -926,6 +930,49 @@ async function writeRepoOverride(packageName, repository) {
   return overrides[packageName] ?? null
 }
 
+// ── 更新后待重启 / 更新失败标记（持久化；dsh web 重启时清空） ───────────────────
+
+/** 读取全部标记：{ [moduleName]: { kind, error?, at } }。 */
+async function readPendingMarkers() {
+  try {
+    const parsed = JSON.parse(await readFile(PENDING_FILE, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const out = {}
+      for (const [key, value] of Object.entries(parsed)) {
+        if (value !== null && typeof value === 'object') {
+          out[key] = {
+            kind: value.kind === 'failed-update' ? 'failed-update' : 'update',
+            error: typeof value.error === 'string' ? value.error : null,
+            at: Number(value.at) || 0,
+          }
+        }
+      }
+      return out
+    }
+  } catch {}
+  return {}
+}
+
+/** 写入单个插件的标记（更新成功 → kind:'update'；更新失败 → kind:'failed-update' + error）。 */
+async function writePendingMarker(moduleName, marker) {
+  const markers = await readPendingMarkers()
+  markers[moduleName] = { ...marker, at: Number(marker.at) || Date.now() }
+  await writeFile(PENDING_FILE, JSON.stringify(markers, null, 2) + '\n', 'utf8')
+}
+
+/** 清除单个插件的标记（卸载时调用）。 */
+async function clearPendingMarker(moduleName) {
+  const markers = await readPendingMarkers()
+  if (!Object.prototype.hasOwnProperty.call(markers, moduleName)) return
+  delete markers[moduleName]
+  await writeFile(PENDING_FILE, JSON.stringify(markers, null, 2) + '\n', 'utf8')
+}
+
+/** 清空全部标记（dsh web 启动时调用：重启后运行树已加载最新代码，待重启/失败提示不再适用）。 */
+async function clearAllPendingMarkers() {
+  try { await writeFile(PENDING_FILE, '{}\n', 'utf8') } catch {}
+}
+
 /** 移除一条「- id: X」+「disabled: true」禁用块（重装 bundle 时清理卸载留下的临时禁用行）。 */
 async function removeDisableBlock(patchPath, id) {
   return queuedWrite(async () => {
@@ -1360,6 +1407,8 @@ async function updatePlugin(ctx, entryId, repository = '', updateJobId = '', rev
     if (!job || job.moduleName !== moduleName) throw new Error('更新任务不存在或已过期（请重新检查更新）')
     try {
       await pnpmInstall(profileDir, gitSpec(job.repoInfo))
+      // 更新成功落盘：写「更新后待重启」标记——运行树仍是旧代码，重启后加载新版本（重启时清空）
+      await writePendingMarker(moduleName, { kind: 'update', at: Date.now() })
       const newVersion = readStagedVersion(job.pkgDir)
       if (job.review !== null && job.review !== undefined && newVersion !== null) {
         await writeReviewCache(reviewKey(moduleName, newVersion), job.review)
@@ -1403,6 +1452,8 @@ async function updatePlugin(ctx, entryId, repository = '', updateJobId = '', rev
   }
 
   await pnpmInstall(profileDir, gitSpec(repoInfo))
+  // 更新成功落盘：写「更新后待重启」标记（同上；重启时清空）
+  await writePendingMarker(moduleName, { kind: 'update', at: Date.now() })
   if (reviewEnabled && review !== null && review !== undefined && stagedVersion !== null) {
     await writeReviewCache(reviewKey(moduleName, stagedVersion), review)
     // 版本元信息已变化：清掉缓存，避免 /review 用旧版本键查不到刚保存的报告
@@ -2501,7 +2552,7 @@ async function handle(ctx, req, res) {
     // 说明安装已成功落盘，重启后生效
     const pendingBundles = bundles
       .filter((b) => !DEFAULT_BUNDLES.includes(b) && !entries.some((e) => e.moduleName === b))
-      .map((b) => ({ moduleName: b, channel: channelOf(deps[b] ?? null) ?? 'bundle', spec: deps[b] ?? null }))
+      .map((b) => ({ moduleName: b, kind: 'bundle', channel: channelOf(deps[b] ?? null) ?? 'bundle', spec: deps[b] ?? null }))
     // insert 层插件：patch 里已 insert、但未加载进运行树（热重载关闭/失败或需重启）
     // → 同样列入待重启，避免「已安装」「待重启」都看不到它
     const pendingInserts = patch.inserts
@@ -2509,11 +2560,35 @@ async function handle(ctx, req, res) {
       .map((id) => {
         const moduleName = patch.insertNames[id]
         if (typeof moduleName !== 'string' || moduleName === '') return null
-        return { moduleName, channel: channelOf(deps[moduleName] ?? null) ?? 'insert', spec: deps[moduleName] ?? null }
+        return { moduleName, kind: 'insert', channel: channelOf(deps[moduleName] ?? null) ?? 'insert', spec: deps[moduleName] ?? null }
       })
       .filter(Boolean)
-    const pendingRestart = [...pendingBundles, ...pendingInserts]
-    sendJson(res, 200, { ok: true, entries, sources, patchPath, jobs: listInstallJobs(), pendingRestart, dshBestFit: DSH_BEST_FIT_VERSION, dshVersion: dshStateCache ?? null })
+    // 更新成功落盘但仍在运行树里（内存仍是旧代码）：标记文件里的 kind:'update' 条目
+    // 一并列入待重启——更新后必须重启才能加载新版本（dsh web 重启时 apply() 清空标记）
+    const entriesByName = new Map(entries.map((e) => [e.moduleName, e]))
+    const pendingMarkers = await readPendingMarkers()
+    const pendingUpdated = Object.entries(pendingMarkers)
+      .filter(([name, marker]) => marker.kind === 'update' && entriesByName.has(name))
+      .map(([name, marker]) => {
+        const entry = entriesByName.get(name)
+        return {
+          moduleName: name,
+          kind: 'update',
+          channel: channelOf(deps[name] ?? null) ?? 'git',
+          spec: deps[name] ?? null,
+          version: entry?.version ?? null,
+          at: marker.at ?? 0,
+        }
+      })
+    // 更新失败标记：只在已安装卡片上显示（可能处于半更新状态），不放待重启区
+    const updateFailures = {}
+    for (const [name, marker] of Object.entries(pendingMarkers)) {
+      if (marker.kind === 'failed-update' && entriesByName.has(name)) {
+        updateFailures[name] = { error: marker.error ?? '', at: marker.at ?? 0 }
+      }
+    }
+    const pendingRestart = [...pendingBundles, ...pendingInserts, ...pendingUpdated]
+    sendJson(res, 200, { ok: true, entries, sources, patchPath, jobs: listInstallJobs(), pendingRestart, updateFailures, dshBestFit: DSH_BEST_FIT_VERSION, dshVersion: dshStateCache ?? null })
     return
   }
 
@@ -2717,6 +2792,7 @@ async function handle(ctx, req, res) {
       sendError(res, 400, 'entryId 不能为空')
       return
     }
+    const updateEntry = ctx.loader.entries().find((candidate) => candidate.id === entryId)
     try {
       const result = await updatePlugin(ctx, entryId,
         typeof body.repository === 'string' ? body.repository.trim() : '',
@@ -2724,6 +2800,14 @@ async function handle(ctx, req, res) {
         body.review !== false)
       sendJson(res, 200, result)
     } catch (error) {
+      // 更新失败：写持久标记，卡片持续提示「可能状态不一致」直到重试成功 / 卸载 / 重启
+      if (updateEntry !== undefined && typeof updateEntry.options?.name === 'string') {
+        await writePendingMarker(updateEntry.options.name, {
+          kind: 'failed-update',
+          error: error instanceof Error ? error.message : String(error),
+          at: Date.now(),
+        }).catch(() => {})
+      }
       sendError(res, 500, error instanceof Error ? error.message : String(error))
     }
     return
@@ -2771,6 +2855,7 @@ async function handle(ctx, req, res) {
       }
       await removeInsertRow(patchPath, rowId)
       await writeRepoOverride(moduleName, '')
+      await clearPendingMarker(moduleName)
       sendJson(res, 200, { ok: true, removed: 'entry', packageName: moduleName, restart: false })
       return
     }
@@ -2788,6 +2873,7 @@ async function handle(ctx, req, res) {
       // 重启后 bundle 不再加载，该禁用行对不存在的条目无害；重装时会自动清理
       await disableEntry(patchPath, rowId)
       await writeRepoOverride(moduleName, '')
+      await clearPendingMarker(moduleName)
       sendJson(res, 200, { ok: true, removed: 'bundle', packageName: moduleName, restart: true })
       return
     }
@@ -2908,6 +2994,8 @@ async function handle(ctx, req, res) {
 /** 应用插件：注册 /plugin-market 路由。 */
 export function apply(ctx) {
   void cleanupStagingAndReviews(ctx)
+  // dsh web 重启：清空「更新后待重启 / 更新失败」标记——重启后运行树已加载最新代码，提示不再适用
+  void clearAllPendingMarkers()
   // dsh 自更新检测：web 启动时一次 + 每 1 小时同步（随插件 dispose 清理定时器）
   ctx.effect(() => {
     void checkDshUpdate(ctx)

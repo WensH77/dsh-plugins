@@ -142,6 +142,8 @@ window.__ModuleLoader__.load({
 			pendingEmpty: "暂无待安装任务",
 			restartPending: "待重启",
 			restartPendingHint: "重启 dsh web 后加载",
+			updateRestartHint: "更新已下载：重启 dsh web 后加载新版本",
+			updateFailed: "更新失败：{error}（可能处于不一致状态，重启前不会生效；可重试更新，或在 profile 目录执行 pnpm install --no-frozen-lockfile 后重启）",
 			jobPulling: "拉取中",
 			pullProgress: "解析 {resolved} 个依赖 · {percent}%",
 			jobReviewing: "审查中",
@@ -297,6 +299,8 @@ window.__ModuleLoader__.load({
 			onlyUser: "Only user-installed plugins are shown; dsh built-ins follow dsh updates and are not listed.",
 			restartPending: "Restart pending",
 			restartPendingHint: "Loads after restarting dsh web",
+			updateRestartHint: "Update downloaded — restart dsh web to load the new version",
+			updateFailed: "Update failed: {error} (state may be inconsistent and won't take effect until restart; retry the update, or run pnpm install --no-frozen-lockfile in the profile directory and restart)",
 			enabled: "Enabled",
 			disabled: "Disabled",
 			noSources: "No GitHub sources yet. Add a repo to start.",
@@ -569,12 +573,12 @@ window.__ModuleLoader__.load({
 					.then((data) => {
 						refresh();
 						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
-						flash("git 通道更新完成", true);
+						flash("git 通道更新完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
 						// 更新也做安全审查：报告附更新差异（相对已装代码改了什么）
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
 						else setModal(null);
 					})
-					.catch((error) => { setModal(null); flash(error.message, false); })
+					.catch((error) => { setModal(null); refresh(); flash(error.message, false); })
 					.finally(() => setBusy(null));
 			};
 			// 检查更新后出现「有更新」时的更新入口：
@@ -594,11 +598,11 @@ window.__ModuleLoader__.load({
 					.then((data) => {
 						refresh();
 						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
-						flash("git 通道更新完成", true);
+						flash("git 通道更新完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
 						else setModal(null);
 					})
-					.catch((error) => { setModal(null); flash(error.message, false); })
+					.catch((error) => { setModal(null); refresh(); flash(error.message, false); })
 					.finally(() => setBusy(null));
 			};
 
@@ -834,6 +838,9 @@ window.__ModuleLoader__.load({
 								: check !== undefined && check.git === null
 									? h("p", { className: "pm-message" }, t("gitNoRepo"))
 									: null,
+									state.data.updateFailures && state.data.updateFailures[entry.moduleName]
+										? h("p", { className: "pm-message", "data-error": "true" }, tpl(t("updateFailed"), { error: state.data.updateFailures[entry.moduleName].error ?? "" }))
+										: null,
 							h("div", { className: "pm-btns" },
 								entry.toggleable
 									? h("button", { className: "pm-btn", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doToggle(entry, !entry.enabled); } },
@@ -846,11 +853,11 @@ window.__ModuleLoader__.load({
 							)
 						);
 					})),
-				// 已安装但尚未加载进运行树（bundle 层启动时应用）→ 重启后生效
+				// 已安装但尚未加载进运行树（bundle 层启动时应用）/ 更新已下载未重启 → 重启后生效
 				(state.data.pendingRestart ?? []).length === 0
 					? null
 					: h("div", { className: "pm-restartBox" },
-						h("p", { className: "pm-hint" }, t("restartPendingHint")),
+						h("p", { className: "pm-hint" }, (state.data.pendingRestart ?? []).some((p) => p.kind === "update") ? t("updateRestartHint") : t("restartPendingHint")),
 						h("ul", { className: "pm-list" }, (state.data.pendingRestart ?? []).map((pending) =>
 							h("li", { className: "pm-row", key: pending.moduleName, "data-enabled": "false" },
 								h("div", { className: "pm-rowTop" },
@@ -859,7 +866,8 @@ window.__ModuleLoader__.load({
 									h("span", { className: "pm-tag", "data-enabled": "false" }, t("restartPending"))
 								),
 								h("div", { className: "pm-meta" },
-									h("span", { className: "pm-repo" }, pending.channel === "git" ? String(pending.spec ?? "git").replace(/^github:/u, "") : (pending.channel + (pending.spec ? " · " + pending.spec : "")))
+									h("span", { className: "pm-repo" }, pending.channel === "git" ? String(pending.spec ?? "git").replace(/^github:/u, "") : (pending.channel + (pending.spec ? " · " + pending.spec : ""))),
+									pending.kind === "update" ? h("span", { className: "pm-hint" }, t("version") + ": " + (pending.version ?? t("unknown"))) : null
 								)
 							)
 						))
