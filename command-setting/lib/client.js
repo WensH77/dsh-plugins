@@ -112,6 +112,19 @@ window.__ModuleLoader__.load({
 
 		const INITIAL = { status: "loading", commands: [], hidden: [], protected: [], error: null, saving: false };
 
+		/** 拼接 catalog URL：带 session（可选）与 contributions（浏览器贡献命令
+		 * 名，逗号分隔）。服务端归档清理据此把 /model 这类贡献命令并入已知命令
+		 * 面——不带上它们，贡献命令的 hidden 会被当成幽灵清掉。空贡献面也带
+		 * 空参数，表示「贡献面已知为空」，命令面仍可信。 */
+		function catalogUrl(commandUi, sessionId) {
+			const contributions = commandUi?.live?.contributions instanceof Map ? [...commandUi.live.contributions.keys()] : [];
+			const params = new URLSearchParams();
+			if (sessionId !== void 0 && sessionId !== "") params.set("session", sessionId);
+			params.set("contributions", contributions.join(","));
+			const qs = params.toString();
+			return "/command-setting/catalog" + (qs === "" ? "" : "?" + qs);
+		}
+
 		class CommandsSettingController {
 			constructor(commandUi, sessions, onHiddenChanged) {
 				// Capture the UNPATCHED candidates before apply() shadows the
@@ -153,7 +166,7 @@ window.__ModuleLoader__.load({
 				try {
 					const sessionInfo = await this.sessionRows();
 					const [data] = await Promise.all([
-						fetch("/command-setting/catalog" + (sessionInfo.id === void 0 ? "" : "?session=" + encodeURIComponent(sessionInfo.id)), { cache: "no-store" }).then((response) => response.json())
+						fetch(catalogUrl(this.commandUi, sessionInfo.id), { cache: "no-store" }).then((response) => response.json())
 					]);
 					if (!data.ok) throw new Error(data.message ?? "catalog failed");
 					const contributions = this.commandUi?.live?.contributions instanceof Map ? this.commandUi.live.contributions : null;
@@ -326,7 +339,7 @@ window.__ModuleLoader__.load({
 			let hiddenSet = new Set();
 			const syncHidden = async () => {
 				try {
-					const res = await fetch("/command-setting/catalog", { cache: "no-store" });
+					const res = await fetch(catalogUrl(ctx.commandUi, void 0), { cache: "no-store" });
 					const data = await res.json();
 					if (data.ok) {
 						hiddenSet = new Set(Array.isArray(data.hidden) ? data.hidden : []);
@@ -349,7 +362,9 @@ window.__ModuleLoader__.load({
 			const originalMatchSpace = commandUi.matchSpace.bind(commandUi);
 			commandUi.candidates = async (session, req) => {
 				const rows = await originalCandidates(session, req);
-				if (hiddenSet.size === 0) return rows;
+				// 防御：host 异常路径返回非数组时不崩菜单（与 controller.sessionRows
+				// 的 Array.isArray 防御一致）。
+				if (hiddenSet.size === 0 || !Array.isArray(rows)) return rows;
 				return rows.filter((row) => !hiddenSet.has(row.name));
 			};
 			commandUi.matchEnter = async (session, line, signal) => {
