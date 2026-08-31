@@ -35,6 +35,7 @@ window.__ModuleLoader__.load({
 			".pm-tag{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);border-radius:999px;padding:1px 9px;font-size:11px;line-height:17px;flex:none;font-weight:500}",
 			".pm-tag[data-enabled=true]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}",
 			".pm-tag[data-disabled=true]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}",
+			".pm-tag[data-pending=true]{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}",
 			".pm-tag.protected{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}",
 			".pm-meta{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px;gap:10px;display:flex;align-items:center;flex-wrap:wrap;font-family:var(--dsw-font-mono)}",
 			".pm-meta .pm-repo{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-mono)}",
@@ -161,12 +162,22 @@ window.__ModuleLoader__.load({
 			helpInstall: "帮我安装",
 			helpInstallDone: "已开启安装会话（{sessionId}），报错信息已附上，请到侧边栏会话查看进度",
 			helpSessionOpen: "安装会话：{sessionId}",
+			helpUpdate: "帮我更新",
+			helpUpdateDone: "已开启更新会话（{sessionId}），失败信息已附上，请到侧边栏会话查看进度",
+			helpUpdateOpen: "更新会话：{sessionId}",
 			uninstall: "卸载",
 			uninstallTitle: "确认卸载",
 			uninstallConfirm: "确定卸载 {name}？该操作会移除插件包与配置，无法撤销。",
 			cancel: "取消",
 			save: "保存",
-			reviewLabel: "安全审查（分层审查：全量文件特征扫描 + 风险信号定向深挖，deepseek-v4-flash x high；报告本地缓存 7 天）",
+			reviewLabel: "安全审查（分层审查：全量文件特征扫描 + 风险信号定向深挖；报告本地缓存 7 天）",
+			reviewModelLabel: "审查模型",
+			reviewEffortLabel: "推理程度",
+			modelFlash: "Flash",
+			modelPro: "Pro",
+			effortHigh: "High",
+			effortLow: "Low",
+			effortOff: "Off",
 			reviewOffProgress: "已开启 · 再点 {left} 次可关闭",
 			reviewSeverity: "风险级别",
 			reviewVerdict: "结论",
@@ -182,7 +193,7 @@ window.__ModuleLoader__.load({
 			cleanupCache: "清理缓存",
 			cleanupDone: "已清理：{staging} 个隔离残留、{reviews} 份过期审查报告",
 			reviewUnavailable: "审查未能完成（审查通道不可用）",
-			reviewUnavailableDetail: "审查会话与 LLM 通道均未产出报告（可能是宿主上下文不支持或模型调用失败）。可确认安装或中断。",
+			reviewUnavailableDetail: "LLM 审查通道未产出报告（可能是模型调用失败或返回内容无法解析）。可确认安装或中断。",
 			ok: "知道了",
 			checkUpdate: "检查更新",
 			update: "更新",
@@ -209,6 +220,11 @@ window.__ModuleLoader__.load({
 			updateTitle: "更新插件",
 			updateProgress: "正在安装更新…（使用检查更新时已审查的新版本，从隔离环境直接安装，可能需要一两分钟，请勿关闭页面）",
 			gitNoRepo: "无远端仓库来源，无法检查更新（仅展示安装时的来源仓库或本地路径）",
+			checkGit: "对比远端提交…",
+			checkPulling: "拉取新版本：{percent}%",
+			checkScanning: "L0 扫描中…",
+			checkReviewing: "LLM 审查中…（{files} 文件 · {signals} 信号）",
+			checkAggregating: "聚合终审中…",
 			phase: "状态",
 			removed: "已卸载：{name}",
 			removedRestart: "（需重启 dsh web 生效）",
@@ -220,6 +236,11 @@ window.__ModuleLoader__.load({
 			dshAnalyzing: "正在分析新版本…",
 			dshAnalyzeFailed: "分析失败：{error}",
 			dshChecking: "检查更新中…",
+			dshHasUpdateShort: "有新版本",
+			dshBreakingShort: "破坏性更新",
+			dshReportChanges: "变更要点",
+			dshReportAffected: "可能受影响的插件",
+			dshReportDetails: "详情",
 		};
 		const en = {
 			tab: "Plugin Market",
@@ -258,12 +279,22 @@ window.__ModuleLoader__.load({
 			helpInstall: "Help me install",
 			helpInstallDone: "Help session opened ({sessionId}) — error attached, see the sidebar session",
 			helpSessionOpen: "Help session: {sessionId}",
+			helpUpdate: "Help me update",
+			helpUpdateDone: "Update help session opened ({sessionId}) — error attached, see the sidebar session",
+			helpUpdateOpen: "Update session: {sessionId}",
 			uninstall: "Uninstall",
 			uninstallTitle: "Confirm uninstall",
 			uninstallConfirm: "Uninstall {name}? This removes the package and its config. This cannot be undone.",
 			cancel: "Cancel",
 			save: "Save",
-			reviewLabel: "Security review (layered: full-file risk scan + targeted deep-dive on signals, deepseek-v4-flash x high; reports cached locally for 7 days)",
+			reviewLabel: "Security review (layered: full-file risk scan + targeted deep-dive on signals; reports cached locally for 7 days)",
+			reviewModelLabel: "Review model",
+			reviewEffortLabel: "Reasoning",
+			modelFlash: "Flash",
+			modelPro: "Pro",
+			effortHigh: "High",
+			effortLow: "Low",
+			effortOff: "Off",
 			reviewOffProgress: "On · {left} more clicks to disable",
 			reviewSeverity: "Severity",
 			reviewVerdict: "Verdict",
@@ -279,7 +310,7 @@ window.__ModuleLoader__.load({
 			cleanupCache: "Clean cache",
 			cleanupDone: "Cleaned: {staging} staging residue, {reviews} stale review reports",
 			reviewUnavailable: "Review unavailable (review channel down)",
-			reviewUnavailableDetail: "Neither the review session nor the LLM channel produced a report (host context or model call failure). You may confirm the install or interrupt.",
+			reviewUnavailableDetail: "The LLM review channel produced no report (model call failed or the reply could not be parsed). You may confirm the install or interrupt.",
 			ok: "OK",
 			checkUpdate: "Check update",
 			update: "Update",
@@ -310,6 +341,11 @@ window.__ModuleLoader__.load({
 			updateTitle: "Updating plugin",
 			updateProgress: "Installing update… (installing the already-reviewed new version from the staged environment; may take a minute or two, keep this page open)",
 			gitNoRepo: "No remote repo source; update check unavailable (only the install-source repo or local path is shown)",
+			checkGit: "Comparing remote commit…",
+			checkPulling: "Pulling new version: {percent}%",
+			checkScanning: "L0 scanning…",
+			checkReviewing: "LLM reviewing… ({files} files · {signals} signals)",
+			checkAggregating: "Aggregating…",
 			phase: "State",
 			removed: "Removed: {name}",
 			removedRestart: " (restart dsh web to apply)",
@@ -321,6 +357,11 @@ window.__ModuleLoader__.load({
 			dshAnalyzing: "Analyzing the new version…",
 			dshAnalyzeFailed: "Analysis failed: {error}",
 			dshChecking: "Checking for updates…",
+			dshHasUpdateShort: "update available",
+			dshBreakingShort: "breaking update",
+			dshReportChanges: "Changes",
+			dshReportAffected: "Possibly affected plugins",
+			dshReportDetails: "Details",
 		};
 
 		// ── helpers ──────────────────────────────────────────────────────────
@@ -355,16 +396,40 @@ window.__ModuleLoader__.load({
 		// ── main tab component ───────────────────────────────────────────────
 		function PluginMarketTab({ t, sessions }) {
 			const [state, setState] = useState({ status: "loading" });
-			const [busy, setBusy] = useState(null);
+			// 忙状态按操作键记录（而非单一全局值）：不同插件的检查更新/更新/开关等操作互不阻塞，
+			// 支持并发检查；同一插件的 check/update 等键互斥，避免同一对象上的并行操作
+			const [busy, setBusy] = useState({});
+			const busyNow = (key) => busy[key] === true;
+			const enterBusy = (key) => setBusy((prev) => ({ ...prev, [key]: true }));
+			const leaveBusy = (key) => setBusy((prev) => { if (prev[key] !== true) return prev; const next = { ...prev }; delete next[key]; return next; });
 			const [message, setMessage] = useState(null);
 			const [messageOk, setMessageOk] = useState(false);
 			const [sources, setSources] = useState([]);
 			const [draft, setDraft] = useState("");
 			// 安全审查开关(默认开启,localStorage 持久化)
 			const [review, setReview] = useState(() => { try { return localStorage.getItem("pm-review") !== "0"; } catch { return true; } });
+			// 审查模型/推理程度（localStorage 持久化；默认 Pro High——推理档位 High/Low/Off 与模型一致）
+			const VALID_EFFORTS = ["high", "low", "off"];
+			const [route, setRoute] = useState(() => {
+				try {
+					const raw = localStorage.getItem("pm-review-effort") || "";
+					// 旧值迁移：max → high、none → off；无效值回落 high
+					const effort = raw === "max" ? "high" : raw === "none" ? "off" : (VALID_EFFORTS.includes(raw) ? raw : "high");
+					return {
+						model: localStorage.getItem("pm-review-model") || "deepseek-v4-pro",
+						effort,
+					};
+				} catch { return { model: "deepseek-v4-pro", effort: "high" }; }
+			});
+			const setRouteModel = (model) => { setRoute((prev) => ({ ...prev, model })); try { localStorage.setItem("pm-review-model", model); } catch {} };
+			const setRouteEffort = (effort) => { setRoute((prev) => ({ ...prev, effort })); try { localStorage.setItem("pm-review-effort", effort); } catch {} };
 			// 模态框:null 或 { type: "confirm"|"repo", entry, value? }
 			const [modal, setModal] = useState(null);
 			const [updateChecks, setUpdateChecks] = useState({});
+			// 弹窗代次：进行中弹窗（审查生成/更新安装）被手动关闭时 +1，
+			// 异步 then 里对比代次，防止用户关闭后又被结果"复活"弹窗
+			const modalGen = useRef(0);
+			const closeModal = () => { modalGen.current += 1; setModal(null); };
 
 			const refresh = () => {
 				call("/plugin-market/state")
@@ -375,13 +440,24 @@ window.__ModuleLoader__.load({
 			// 待安装任务轮询：有任务时每 1 秒实时刷新（审查耗时/阶段实时跳动）
 			let lastJobsKey = null;
 			const stageLabel = (stage) => stage === "scan" ? t("stageScan") : stage === "l1" ? t("stageL1") : stage === "aggregate" ? t("stageAggregate") : stage;
+			// 检查更新/审查实时进度文案（服务端 checks 结构化进度 → 本地化显示）
+			const checkStageText = (prog) => {
+				if (!prog) return null;
+				if (prog.stage === "git") return t("checkGit");
+				if (prog.stage === "pulling") return tpl(t("checkPulling"), { percent: prog.percent != null ? String(prog.percent) : "…" });
+				if (prog.stage === "scanning") return t("checkScanning");
+				if (prog.stage === "reviewing") return tpl(t("checkReviewing"), { files: String(prog.files ?? "?"), signals: String(prog.signals ?? "?") });
+				if (prog.stage === "aggregating") return t("checkAggregating");
+				return null;
+			};
 			useEffect(() => {
 				const timer = setInterval(() => {
 					fetch("/plugin-market/state").then((r) => r.json()).then((d) => {
 						if (!d || !Array.isArray(d.jobs)) return;
-						const key = d.jobs.map((j) => j.jobId + ":" + j.status).join(",");
-						// 有任务 → 每次刷新（耗时/阶段实时跳动）；无任务 → 只在有变化时更新（清空残留卡片）
-						if (d.jobs.length > 0 || key !== lastJobsKey) { lastJobsKey = key; setState({ status: "ready", data: d }); }
+						// 有任务或有实时进度 → 每次刷新；否则只在有变化时更新（清空残留卡片）
+						const checksActive = d.checks && Object.keys(d.checks).length > 0;
+						const key = d.jobs.map((j) => j.jobId + ":" + j.status).join(",") + "|" + JSON.stringify(d.checks ?? {});
+						if (d.jobs.length > 0 || checksActive || key !== lastJobsKey) { lastJobsKey = key; setState({ status: "ready", data: d }); }
 					}).catch(() => {});
 				}, 1000);
 				return () => { lastJobsKey = null; clearInterval(timer); };
@@ -395,7 +471,8 @@ window.__ModuleLoader__.load({
 			};
 
 			const doToggle = (entry, enabled) => {
-				setBusy(entry.entryId);
+				const key = "toggle:" + entry.entryId;
+				enterBusy(key);
 				call("/plugin-market/toggle", { entryId: entry.entryId, enabled })
 					.then((data) => {
 						refresh();
@@ -403,19 +480,20 @@ window.__ModuleLoader__.load({
 						else flash(enabled ? t("toggleOn") : t("toggleOff"), true);
 					})
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
 			};
 
 			const doCheckUpdate = (entry) => {
-				setBusy("check:" + entry.entryId);
-				call("/plugin-market/check-update", { packageName: entry.moduleName, repository: entry.repository ?? "", review })
+				const key = "check:" + entry.entryId;
+				enterBusy(key);
+				call("/plugin-market/check-update", { packageName: entry.moduleName, repository: entry.repository ?? "", review, model: route.model, effort: route.effort })
 					.then((data) => {
 						setUpdateChecks((prev) => ({ ...prev, [entry.entryId]: data }));
 						// 审查通过后服务端保留隔离目录（updateJobId）：确认更新时直接从该环境安装
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: "更新审查报告", entry, updateJobId: data.updateJobId ?? "" });
 					})
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
 			};
 
 			// 安全审查开关：开启 1 次点击；关闭需连点 5 次（点击整个文案计数）；每次切换后 1 秒保护期，防误触又开启
@@ -449,11 +527,12 @@ window.__ModuleLoader__.load({
 			const doUninstall = () => {
 				const entry = modal.entry;
 				setModal(null);
-				setBusy("uninstall:" + entry.entryId);
+				const key = "uninstall:" + entry.entryId;
+				enterBusy(key);
 				call("/plugin-market/uninstall", { entryId: entry.entryId })
 					.then((data) => { refresh(); flash(tpl(t("removed"), { name: data.packageName ?? entry.moduleName }) + (data.restart ? t("removedRestart") : "") + (data.uninstallError ? "：" + data.uninstallError : ""), true); })
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
 			};
 
 			const persistSources = (next) => {
@@ -480,8 +559,9 @@ window.__ModuleLoader__.load({
 				flash("git 通道安装完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
 			};
 			const doInstall = (repo) => {
-				setBusy("install:" + repo);
-				call("/plugin-market/install", { repo, review })
+				const key = "install:" + repo;
+				enterBusy(key);
+				call("/plugin-market/install", { repo, review, model: route.model, effort: route.effort })
 					.then((data) => {
 						if (data.pending === true && data.jobId) {
 							// 阶段 1 完成：有审查报告 → 弹窗等用户确认；
@@ -499,24 +579,26 @@ window.__ModuleLoader__.load({
 						}
 					})
 					.catch((error) => { if (!String(error.message ?? "").includes("已中断")) flash(error.message, false); })
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
 			};
 			const doConfirmInstall = () => {
 				const pending = modal.pending;
 				setModal(null);
-				setBusy("install:" + (pending.packageName ?? ""));
+				const key = "install:" + (pending.packageName ?? "");
+				enterBusy(key);
 				call("/plugin-market/install/confirm", { jobId: pending.jobId })
 					.then(finishInstall)
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
 			};
 			const doInterrupt = (jobId, event) => {
 				if (event) event.stopPropagation();
-				setBusy("interrupt:" + jobId);
+				const key = "interrupt:" + jobId;
+				enterBusy(key);
 				call("/plugin-market/install/interrupt", { jobId })
 					.then(() => { refresh(); flash(t("interrupted"), true); })
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
 			};
 			const readCurrentSessionId = () => {
 				try {
@@ -528,7 +610,8 @@ window.__ModuleLoader__.load({
 			// 帮我安装：失败任务 → 开启可见 harness 会话并附上报错，由会话诊断并完成安装
 			const doHelpInstall = (job, event) => {
 				if (event) event.stopPropagation();
-				setBusy("help:" + job.jobId);
+				const key = "help:" + job.jobId;
+				enterBusy(key);
 				call("/plugin-market/install/help", { jobId: job.jobId, sessionId: readCurrentSessionId() })
 					.then((data) => {
 						refresh();
@@ -539,24 +622,44 @@ window.__ModuleLoader__.load({
 						}
 					})
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy(key));
+			};
+			// 帮我更新：更新失败的插件 → 开启可见 harness 会话并附上失败信息，由会话诊断并完成更新
+			const doHelpUpdate = (entry) => {
+				const key = "help-update:" + entry.entryId;
+				enterBusy(key);
+				call("/plugin-market/update/help", { entryId: entry.entryId, sessionId: readCurrentSessionId() })
+					.then((data) => {
+						refresh();
+						flash(tpl(t("helpUpdateDone"), { sessionId: data.sessionId ?? "" }), true);
+						if (data && typeof data.sessionId === "string" && data.sessionId !== ""
+							&& sessions && typeof sessions.refresh === "function" && typeof sessions.open === "function") {
+							sessions.refresh().then(() => sessions.open(data.sessionId)).catch(() => {});
+						}
+					})
+					.catch((error) => flash(error.message, false))
+					.finally(() => leaveBusy(key));
 			};
 			const reviewingRef = useRef(new Set());
 			const doViewReview = (entry) => {
-				if (reviewingRef.current.has(entry.entryId)) return; // 该插件审查生成中，忽略重复点击
+				// 同一插件上有进行中的检查更新/更新任务时不另起审查（避免同一插件并行跑两路审查）；
+				// 其它插件的进行中任务不阻塞本卡片
+				if (busyNow("check:" + entry.entryId) || busyNow("update:" + entry.entryId)) return;
+				if (reviewingRef.current.has(entry.entryId)) return; // 该插件审查生成中，忽略重复点击（卡片 meta 区显示进度）
 				reviewingRef.current.add(entry.entryId);
-				setModal({ type: "review-loading", title: t("reviewInstalledTitle") });
-				call("/plugin-market/review", { entryId: entry.entryId })
-					.then((data) => setModal({ type: "review", report: data.report, title: t("reviewInstalledTitle") }))
-					.catch((error) => { setModal(null); flash(error.message, false); })
+				const gen = ++modalGen.current;
+				// 不弹「生成中」弹窗：卡片 meta 区实时显示审查进度（L0 扫描 → LLM 审查 → 聚合终审），完成后弹报告
+				call("/plugin-market/review", { entryId: entry.entryId, model: route.model, effort: route.effort })
+					.then((data) => { if (modalGen.current === gen) setModal({ type: "review", report: data.report, title: t("reviewInstalledTitle") }); })
+					.catch((error) => { if (modalGen.current === gen) setModal(null); flash(error.message, false); })
 					.finally(() => reviewingRef.current.delete(entry.entryId));
 			};
 			const doCleanup = () => {
-				setBusy("cleanup");
+				enterBusy("cleanup");
 				call("/plugin-market/cleanup")
 					.then((data) => { refresh(); flash(tpl(t("cleanupDone"), { staging: data.removedStaging ?? 0, reviews: data.removedReviews ?? 0 }), true); })
 					.catch((error) => flash(error.message, false))
-					.finally(() => setBusy(null));
+					.finally(() => leaveBusy("cleanup"));
 			};
 			const clickJob = (job) => {
 				// 待安装状态点击卡片可再次唤起审查报告
@@ -566,20 +669,25 @@ window.__ModuleLoader__.load({
 			};
 			const doConfirmUpdate = () => {
 				const entry = modal.entry;
-				// 直接从检查更新时已审查的隔离环境安装（不重新拉取/审查）：先打开进度弹窗，让用户知道正在安装
-				setModal({ type: "update-loading", entry });
-				setBusy("update:" + entry.entryId);
-				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", updateJobId: modal.updateJobId ?? "" })
+				const updateJobId = modal.updateJobId ?? "";
+				// 直接从检查更新时已审查的隔离环境安装（不重新拉取/审查）：先打开进度弹窗，让用户知道正在安装；
+				// 更新是长请求：弹窗带「取消」——关闭后请求继续在后台完成，结果只走消息提示，不再弹回报告
+				const gen = ++modalGen.current;
+				setModal({ type: "update-loading", entry, onCancel: closeModal });
+				const key = "update:" + entry.entryId;
+				enterBusy(key);
+				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", updateJobId, model: route.model, effort: route.effort })
 					.then((data) => {
 						refresh();
 						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
 						flash("git 通道更新完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
 						// 更新也做安全审查：报告附更新差异（相对已装代码改了什么）
+						if (modalGen.current !== gen) return; // 用户已关闭进度弹窗：不再弹出报告
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
 						else setModal(null);
 					})
-					.catch((error) => { setModal(null); refresh(); flash(error.message, false); })
-					.finally(() => setBusy(null));
+					.catch((error) => { if (modalGen.current === gen) setModal(null); refresh(); flash(error.message, false); })
+					.finally(() => leaveBusy(key));
 			};
 			// 检查更新后出现「有更新」时的更新入口：
 			//   审查开启且已生成隔离任务（updateJobId）→ 打开审查报告弹窗，确认后直接安装；
@@ -592,18 +700,21 @@ window.__ModuleLoader__.load({
 				doDirectUpdate(entry);
 			};
 			const doDirectUpdate = (entry) => {
-				setModal({ type: "update-loading", entry });
-				setBusy("update:" + entry.entryId);
+				const gen = ++modalGen.current;
+				setModal({ type: "update-loading", entry, onCancel: closeModal });
+				const key = "update:" + entry.entryId;
+				enterBusy(key);
 				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", review: false })
 					.then((data) => {
 						refresh();
 						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
 						flash("git 通道更新完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
+						if (modalGen.current !== gen) return; // 用户已关闭进度弹窗：不再弹出报告
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
 						else setModal(null);
 					})
-					.catch((error) => { setModal(null); refresh(); flash(error.message, false); })
-					.finally(() => setBusy(null));
+					.catch((error) => { if (modalGen.current === gen) setModal(null); refresh(); flash(error.message, false); })
+					.finally(() => leaveBusy(key));
 			};
 
 			if (state.status === "loading") {
@@ -635,25 +746,17 @@ window.__ModuleLoader__.load({
 						)
 					);
 				}
-				if (modal.type === "review-loading") {
-					return h("div", { className: "pm-overlay" },
-						h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation() },
-							h("p", { className: "pm-modalTitle" }, modal.title),
-							h("div", { className: "pm-loadingRow" },
-								h("span", { className: "pm-spinner" }),
-								h("span", null, t("reviewGenerating"))
-							)
-						)
-					);
-				}
 				if (modal.type === "update-loading") {
-					// 更新是数分钟的长请求：进行中弹窗不可关闭，完成后由 doConfirmUpdate 的 then/catch 关闭
-					return h("div", { className: "pm-overlay" },
+					// 更新是数分钟的长请求：弹窗可关闭（请求在后台继续完成，结果只走消息提示，不再弹回报告）
+					return h("div", { className: "pm-overlay", onClick: modal.onCancel ?? closeModal },
 						h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation() },
 							h("p", { className: "pm-modalTitle" }, t("updateTitle")),
 							h("div", { className: "pm-loadingRow" },
 								h("span", { className: "pm-spinner" }),
 								h("span", null, t("updateProgress"))
+							),
+							h("div", { className: "pm-modalRow" },
+								h("button", { className: "pm-btn", onClick: modal.onCancel ?? closeModal }, t("cancel"))
 							)
 						)
 					);
@@ -706,6 +809,11 @@ window.__ModuleLoader__.load({
 			const jobs = state.data.jobs ?? [];
 			// 只展示用户安装的插件；dsh 自带的官方 bundle 与基础设施跟随 dsh 更新，不在此展示
 			const entriesVisible = entries.filter((entry) => entry.userInstalled === true);
+			// 待重启：更新已下载（kind:'update'，条目已在运行树 → 在已安装卡片上标「待重启」标签）；
+			// bundle/insert 待加载项没有对应卡片，仍需单独区域展示
+			const pendingRestart = state.data.pendingRestart ?? [];
+			const pendingUpdateNames = new Set(pendingRestart.filter((p) => p.kind === "update").map((p) => p.moduleName));
+			const pendingOther = pendingRestart.filter((p) => p.kind !== "update");
 
 			return h("div", { className: "pm-section" },
 				h("h3", null, t("title")),
@@ -716,8 +824,21 @@ window.__ModuleLoader__.load({
 					h("span", { className: "pm-hint" }, t("reviewLabel")),
 					review && reviewOffClicks.current > 0 ? h("span", { className: "pm-hint", style: { color: "var(--dsw-alias-state-warning, #e6a23c)" } }, tpl(t("reviewOffProgress"), { left: String(REVIEW_OFF_CLICKS - reviewOffClicks.current) })) : null
 				),
+				review ? h("div", { className: "pm-inputRow", style: { marginTop: 6 } },
+					h("span", { className: "pm-hint" }, t("reviewModelLabel") + ":"),
+					h("select", { className: "pm-select", value: route.model, onChange: (event) => setRouteModel(event.target.value) },
+						h("option", { value: "deepseek-v4-flash" }, t("modelFlash")),
+						h("option", { value: "deepseek-v4-pro" }, t("modelPro"))
+					),
+					h("span", { className: "pm-hint" }, t("reviewEffortLabel") + ":"),
+					h("select", { className: "pm-select", value: route.effort, onChange: (event) => setRouteEffort(event.target.value) },
+						h("option", { value: "high" }, t("effortHigh")),
+						h("option", { value: "low" }, t("effortLow")),
+						h("option", { value: "off" }, t("effortOff"))
+					)
+				) : null,
 				h("div", { className: "pm-inputRow", style: { marginTop: 6 } },
-					h("button", { className: "pm-btn", disabled: busy !== null, onClick: doCleanup }, t("cleanupCache"))
+					h("button", { className: "pm-btn", disabled: busyNow("cleanup"), onClick: doCleanup }, t("cleanupCache"))
 				),
 				message === null ? null : h("p", { className: "pm-message", "data-error": messageOk ? undefined : "true", "data-ok": messageOk ? "true" : undefined }, message),
 
@@ -741,7 +862,7 @@ window.__ModuleLoader__.load({
 						return h("li", { className: "pm-sourceRow", key: repo },
 							h("span", { className: "pm-sourceText" }, repo),
 							withPath ? h("span", { className: "pm-sourceBadge" }, "subdir") : null,
-							h("button", { className: "pm-btn primary", disabled: busy !== null || installing, onClick: () => doInstall(repo) }, installing ? t("jobInstalling") : t("install")),
+							h("button", { className: "pm-btn primary", disabled: busyNow("install:" + repo) || installing, onClick: () => doInstall(repo) }, installing ? t("jobInstalling") : t("install")),
 							h("button", { className: "pm-btn danger", onClick: () => removeSource(repo) }, "✕")
 						);
 					})),
@@ -789,9 +910,9 @@ window.__ModuleLoader__.load({
 								: null,
 							h("div", { className: "pm-btns" },
 								jobHelpable
-									? h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: (e) => doHelpInstall(job, e) }, t("helpInstall"))
+									? h("button", { className: "pm-btn primary", disabled: busyNow("help:" + job.jobId) || busyNow("interrupt:" + job.jobId), onClick: (e) => doHelpInstall(job, e) }, t("helpInstall"))
 									: null,
-								h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: (e) => doInterrupt(job.jobId, e) }, t("interrupt"))
+								h("button", { className: "pm-btn danger", disabled: busyNow("interrupt:" + job.jobId) || busyNow("help:" + job.jobId), onClick: (e) => doInterrupt(job.jobId, e) }, t("interrupt"))
 							)
 						);
 					})),
@@ -805,7 +926,7 @@ window.__ModuleLoader__.load({
 						const check = updateChecks[entry.entryId];
 						const checkButton = h("button", {
 							className: "pm-btn",
-							disabled: busy !== null || entry.localInstalled,
+							disabled: busyNow("check:" + entry.entryId) || busyNow("update:" + entry.entryId) || entry.localInstalled,
 							title: entry.localInstalled ? t("localUpdateHint") : undefined,
 							onClick: (e) => { e.stopPropagation(); doCheckUpdate(entry); }
 						}, t("checkUpdate"));
@@ -814,7 +935,9 @@ window.__ModuleLoader__.load({
 							h("div", { className: "pm-rowTop" },
 								h("span", { className: "pm-dot", "data-enabled": entry.enabled ? "true" : "false" }),
 								h("span", { className: "pm-name" }, moduleShortName(entry.moduleName)),
-								h("span", { className: "pm-tag", "data-enabled": entry.enabled ? "true" : "false" }, entry.enabled ? t("enabled") : t("disabled")),
+								pendingUpdateNames.has(entry.moduleName)
+									? h("span", { className: "pm-tag", "data-pending": "true" }, t("restartPending"))
+									: h("span", { className: "pm-tag", "data-enabled": entry.enabled ? "true" : "false" }, entry.enabled ? t("enabled") : t("disabled")),
 								entry.protected ? h("span", { className: "pm-tag protected" }, "Protected") : null
 							),
 							h("div", { className: "pm-meta" },
@@ -822,52 +945,67 @@ window.__ModuleLoader__.load({
 								h("span", null, t("phase") + ": " + phaseLabel(entry.fiberPhase)),
 								// 只展示安装来源：拉取时的远端仓库或本地路径（编辑仓库功能已移除）
 								entry.repository ? h("span", { className: "pm-repo" }, t("repo") + ": " + entry.repository) : null,
-								entry.localPath ? h("span", { className: "pm-repo pm-repoPath" }, t("localPath") + ": " + entry.localPath) : null
+								entry.localPath ? h("span", { className: "pm-repo pm-repoPath" }, t("localPath") + ": " + entry.localPath) : null,
+								pendingUpdateNames.has(entry.moduleName) ? h("span", { className: "pm-hint" }, t("updateRestartHint")) : null,
+								state.data.checks && state.data.checks["check:" + entry.moduleName]
+									? h("span", { className: "pm-hint", "data-progress": "true" }, checkStageText(state.data.checks["check:" + entry.moduleName]))
+									: null,
+								state.data.checks && state.data.checks["review:" + entry.entryId]
+									? h("span", { className: "pm-hint", "data-progress": "true" }, checkStageText(state.data.checks["review:" + entry.entryId]))
+									: null
 							),
 							check !== undefined && check.git !== null
-								? (check.git.hasUpdate
-									? h("div", { className: "pm-updateRow" },
-										h("p", { className: "pm-message", "data-error": "true" },
-											check.git.unknown
-												? tpl(t("gitAdopt"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })
-												: tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })),
-										h("button", { className: "pm-btn primary", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doUpdateFromCheck(entry, check); } }, t("update")))
-									: check.git.unknown
-										? h("p", { className: "pm-message" }, t("gitUnknown"))
-										: h("p", { className: "pm-message", "data-ok": "true" }, t("gitUpToDate")))
+								? (check.git.fetchError
+									? h("p", { className: "pm-message", "data-error": "true" }, check.git.fetchError)
+									: check.git.hasUpdate
+										? h("div", { className: "pm-updateRow" },
+											h("p", { className: "pm-message", "data-error": "true" },
+												check.git.unknown
+													? tpl(t("gitAdopt"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })
+													: tpl(t("gitHasUpdate"), { head: String(check.git.remoteHead ?? "").slice(0, 7) })),
+											h("button", { className: "pm-btn primary", disabled: busyNow("update:" + entry.entryId) || busyNow("check:" + entry.entryId), onClick: (e) => { e.stopPropagation(); doUpdateFromCheck(entry, check); } }, t("update")))
+										: check.git.unknown
+											? h("p", { className: "pm-message" }, t("gitUnknown"))
+											: h("p", { className: "pm-message", "data-ok": "true" }, t("gitUpToDate")))
 								: check !== undefined && check.git === null
 									? h("p", { className: "pm-message" }, t("gitNoRepo"))
 									: null,
-									state.data.updateFailures && state.data.updateFailures[entry.moduleName]
-										? h("p", { className: "pm-message", "data-error": "true" }, tpl(t("updateFailed"), { error: state.data.updateFailures[entry.moduleName].error ?? "" }))
-										: null,
+								state.data.updateFailures && state.data.updateFailures[entry.moduleName]
+									? h("div", { className: "pm-updateRow" },
+										h("p", { className: "pm-message", "data-error": "true" }, tpl(t("updateFailed"), { error: state.data.updateFailures[entry.moduleName].error ?? "" })),
+										h("button", { className: "pm-btn primary", disabled: busyNow("help-update:" + entry.entryId), onClick: (e) => { e.stopPropagation(); doHelpUpdate(entry); } },
+											state.data.updateFailures[entry.moduleName].helpSessionId
+												? tpl(t("helpUpdateOpen"), { sessionId: state.data.updateFailures[entry.moduleName].helpSessionId })
+												: t("helpUpdate"))
+									)
+									: null,
 							h("div", { className: "pm-btns" },
 								entry.toggleable
-									? h("button", { className: "pm-btn", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); doToggle(entry, !entry.enabled); } },
+									? h("button", { className: "pm-btn", disabled: busyNow("toggle:" + entry.entryId), onClick: (e) => { e.stopPropagation(); doToggle(entry, !entry.enabled); } },
 										entry.enabled ? t("off") : t("on"))
 									: null,
 								checkButton,
 								(entry.extra || entry.userBundle === true) && !entry.localInstalled
-									? h("button", { className: "pm-btn danger", disabled: busy !== null, onClick: (e) => { e.stopPropagation(); confirmUninstall(entry); } }, t("uninstall"))
+									? h("button", { className: "pm-btn danger", disabled: busyNow("uninstall:" + entry.entryId), onClick: (e) => { e.stopPropagation(); confirmUninstall(entry); } }, t("uninstall"))
 									: null
 							)
 						);
 					})),
-				// 已安装但尚未加载进运行树（bundle 层启动时应用）/ 更新已下载未重启 → 重启后生效
-				(state.data.pendingRestart ?? []).length === 0
+				// 已写入但尚未加载进运行树（bundle 层启动时应用 / insert 热重载未生效）：
+				// 这类没有已安装卡片，单独区域展示；更新待重启已并入已安装卡片的「待重启」标签
+				pendingOther.length === 0
 					? null
 					: h("div", { className: "pm-restartBox" },
-						h("p", { className: "pm-hint" }, (state.data.pendingRestart ?? []).some((p) => p.kind === "update") ? t("updateRestartHint") : t("restartPendingHint")),
-						h("ul", { className: "pm-list" }, (state.data.pendingRestart ?? []).map((pending) =>
+						h("p", { className: "pm-hint" }, t("restartPendingHint")),
+						h("ul", { className: "pm-list" }, pendingOther.map((pending) =>
 							h("li", { className: "pm-row", key: pending.moduleName, "data-enabled": "false" },
 								h("div", { className: "pm-rowTop" },
 									h("span", { className: "pm-dot", "data-enabled": "false" }),
 									h("span", { className: "pm-name" }, moduleShortName(pending.moduleName)),
-									h("span", { className: "pm-tag", "data-enabled": "false" }, t("restartPending"))
+									h("span", { className: "pm-tag", "data-pending": "true" }, t("restartPending"))
 								),
 								h("div", { className: "pm-meta" },
-									h("span", { className: "pm-repo" }, pending.channel === "git" ? String(pending.spec ?? "git").replace(/^github:/u, "") : (pending.channel + (pending.spec ? " · " + pending.spec : ""))),
-									pending.kind === "update" ? h("span", { className: "pm-hint" }, t("version") + ": " + (pending.version ?? t("unknown"))) : null
+									h("span", { className: "pm-repo" }, pending.channel === "git" ? String(pending.spec ?? "git").replace(/^github:/u, "") : (pending.channel + (pending.spec ? " · " + pending.spec : "")))
 								)
 							)
 						))
@@ -909,36 +1047,110 @@ window.__ModuleLoader__.load({
 				let fast = false;
 				let analyzeBusy = false;
 
-				const readCurrentSessionId = () => {
-					try {
-						const list = ctx.sessions && ctx.sessions.list;
-						const snap = list && typeof list.getSnapshot === "function" ? list.getSnapshot() : null;
-						return snap && typeof snap.current === "string" ? snap.current : "";
-					} catch { return ""; }
-				};
-
 				const paint = (d) => {
 					if (!statusEl) return;
 					let state;
-					let title;
 					let text = "";
 					if (!d || d.ok === false) {
-						state = "unknown"; title = t("dshUnknown");
+						state = "unknown"; text = d && d.installed ? "v" + d.installed : "";
 					} else if (d.status === "analyzing") {
-						state = "analyzing"; title = t("dshAnalyzing"); text = d.installed ? "v" + d.installed : "";
+						state = "analyzing"; text = (d.installed ? "v" + d.installed + " · " : "") + t("dshAnalyzing");
 					} else if (d.hasUpdate === true && d.verdict === "breaking") {
-						state = "breaking"; title = tpl(t("dshBreaking"), { version: d.latest ?? "?" }); text = d.installed ? "v" + d.installed : "";
+						// 简约拼接：版本号 + 状态标记（判定详情点击弹窗查看）
+						state = "breaking"; text = (d.installed ? "v" + d.installed + " · " : "") + t("dshBreakingShort");
 					} else if (d.hasUpdate === true) {
-						state = "update"; title = tpl(t("dshHasUpdate"), { version: d.latest ?? "?" }); text = d.installed ? "v" + d.installed : "";
+						state = "update"; text = (d.installed ? "v" + d.installed + " · " : "") + t("dshHasUpdateShort");
 					} else if (d.checked === false) {
-						state = "unknown"; title = t("dshUnknown"); text = d.installed ? "v" + d.installed : "";
+						state = "unknown"; text = d.installed ? "v" + d.installed : "";
 					} else {
-						state = "ok"; title = tpl(t("dshUpToDate"), { version: d.installed ?? "?" }); text = d.installed ? "v" + d.installed : "";
+						state = "ok"; text = d.installed ? "v" + d.installed : "";
 					}
 					statusEl.dataset.state = state;
-					statusEl.title = title;
+					statusEl.title = ""; // 不显示 hover 文案
 					const ver = statusEl.querySelector(".pm-dshselfVersion");
 					if (ver) ver.textContent = text;
+				};
+
+				let dshReportOverlay = null;
+				const closeDshReport = () => {
+					if (dshReportOverlay && dshReportOverlay.parentElement) dshReportOverlay.parentElement.removeChild(dshReportOverlay);
+					dshReportOverlay = null;
+				};
+				// 判定弹窗：已分析（红/黄）点击时展示 verdict/summary/变更/受影响插件/详情
+				const showDshReport = (d) => {
+					closeDshReport();
+					const overlay = document.createElement("div");
+					overlay.className = "pm-overlay";
+					overlay.style.zIndex = "1001";
+					overlay.addEventListener("click", closeDshReport);
+					const modal = document.createElement("div");
+					modal.className = "pm-modal";
+					modal.style.maxWidth = "560px";
+					modal.addEventListener("click", (e) => e.stopPropagation());
+					const title = document.createElement("p");
+					title.className = "pm-modalTitle";
+					const body = document.createElement("div");
+					body.className = "pm-modalBody";
+					if (d && (d.verdict === "safe" || d.verdict === "breaking")) {
+						title.textContent = d.verdict === "breaking" ? tpl(t("dshBreaking"), { version: d.latest ?? "?" }) : tpl(t("dshHasUpdate"), { version: d.latest ?? "?" });
+						if (d.verdict === "breaking") title.classList.add("danger");
+						const sum = document.createElement("p");
+						sum.className = "pm-modalText";
+						sum.textContent = d.summary ?? "";
+						body.appendChild(sum);
+						if (Array.isArray(d.changes) && d.changes.length > 0) {
+							const h = document.createElement("p");
+							h.className = "pm-modalText";
+							h.style.fontWeight = "600";
+							h.textContent = t("dshReportChanges") + "：";
+							body.appendChild(h);
+							const ul = document.createElement("ul");
+							ul.className = "pm-reviewRisks";
+							d.changes.forEach((c) => { const li = document.createElement("li"); li.textContent = c; ul.appendChild(li); });
+							body.appendChild(ul);
+						}
+						if (Array.isArray(d.affectedPlugins) && d.affectedPlugins.length > 0) {
+							const h = document.createElement("p");
+							h.className = "pm-modalText";
+							h.style.fontWeight = "600";
+							h.textContent = t("dshReportAffected") + "：";
+							body.appendChild(h);
+							const ul = document.createElement("ul");
+							ul.className = "pm-reviewRisks";
+							d.affectedPlugins.forEach((c) => { const li = document.createElement("li"); li.textContent = c; ul.appendChild(li); });
+							body.appendChild(ul);
+						}
+						if (d.details) {
+							const h = document.createElement("p");
+							h.className = "pm-modalText";
+							h.style.fontWeight = "600";
+							h.textContent = t("dshReportDetails") + "：";
+							body.appendChild(h);
+							const p = document.createElement("p");
+							p.className = "pm-modalText";
+							p.textContent = d.details;
+							body.appendChild(p);
+						}
+					} else {
+						title.textContent = t("dshUnknown");
+						const p = document.createElement("p");
+						p.className = "pm-modalText";
+						p.textContent = (d && typeof d.error === "string" && d.error !== "") ? d.error : t("dshUnknown");
+						body.appendChild(p);
+					}
+					const row = document.createElement("div");
+					row.className = "pm-modalRow";
+					const ok = document.createElement("button");
+					ok.className = "pm-btn primary";
+					ok.textContent = t("ok");
+					ok.addEventListener("click", closeDshReport);
+					row.appendChild(ok);
+					modal.appendChild(title);
+					modal.appendChild(body);
+					modal.appendChild(row);
+					overlay.appendChild(modal);
+					document.body.appendChild(overlay);
+					dshReportOverlay = overlay;
 				};
 
 				const startPoll = (f) => {
@@ -962,33 +1174,32 @@ window.__ModuleLoader__.load({
 				const onClick = () => {
 					if (!statusEl || analyzeBusy) return;
 					const state = statusEl.dataset.state;
+					if (state === "analyzing") return; // 分析进行中：忽略重复点击（服务端同样不并发起第二次分析）
 					if (state === "update" || state === "breaking") {
-						analyzeBusy = true;
-						statusEl.dataset.state = "analyzing";
-						statusEl.title = t("dshAnalyzing");
-						startPoll(true);
-						fetch("/plugin-market/dsh-version/analyze", {
-							method: "POST",
-							headers: { "content-type": "application/json" },
-							body: JSON.stringify({ sessionId: readCurrentSessionId() }),
-						})
+						// 已有判定 → 弹判定弹窗；待分析 → 静默直连 LLM 分析（不弹窗），完成后点击再看弹窗
+						fetch("/plugin-market/dsh-version", { cache: "no-store" })
 							.then((r) => r.json())
 							.then((d) => {
-								if (d && typeof d.sessionId === "string" && d.sessionId !== "") {
-									ctx.sessions.refresh().then(() => ctx.sessions.open(d.sessionId)).catch(() => {});
-								} else {
-									statusEl.title = (d && typeof d.error === "string" && d.error !== "") ? d.error : t("dshAnalyzeFailed").replace("{error}", "");
-									fetchState();
+								if (d && d.hasUpdate === true && (d.verdict === "safe" || d.verdict === "breaking")) {
+									showDshReport(d);
+									return;
 								}
+								analyzeBusy = true;
+								statusEl.dataset.state = "analyzing";
+								startPoll(true);
+								fetch("/plugin-market/dsh-version/analyze", {
+									method: "POST",
+									headers: { "content-type": "application/json" },
+									body: JSON.stringify({}),
+								})
+									.then((r) => r.json())
+									.then((d2) => { if (!d2 || d2.ok !== true) fetchState(); })
+									.catch(() => fetchState())
+									.finally(() => { analyzeBusy = false; });
 							})
-							.catch((error) => {
-								statusEl.title = tpl(t("dshAnalyzeFailed"), { error: error && error.message ? error.message : String(error) });
-								fetchState();
-							})
-							.finally(() => { analyzeBusy = false; });
+							.catch(() => fetchState());
 					} else {
 						// 绿/灰：手动重检
-						statusEl.title = t("dshChecking");
 						fetch("/plugin-market/dsh-version/check", { method: "POST" })
 							.then((r) => r.json())
 							.then((d) => paint(d))
@@ -1038,6 +1249,7 @@ window.__ModuleLoader__.load({
 				startPoll(false);
 
 				return () => {
+					closeDshReport();
 					if (observer) observer.disconnect();
 					if (attrObserver) attrObserver.disconnect();
 					if (pollTimer !== null) clearInterval(pollTimer);
