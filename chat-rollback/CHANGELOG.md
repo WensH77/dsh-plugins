@@ -2,6 +2,37 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.2.0
+
+- **TOCTOU 收窄（二次冲突校验）**：`preflight` 与真正执行之间其他会话的写入，在 `rollback` 端点再次检测——有冲突且未确认 → `409 {code:'conflict', files}`，客户端回到「?」确认态；确认后带 `force=1` 重发才执行。冲突判定逻辑提取为 `rollbackConflictState`，preflight 与 rollback 共用（`handlePreflight` 相应瘦身）
+- **空快照安全网**：恢复点快照为空（如 `excludes` 配成 `'*'`、快照损坏/回归）且工作区非空时，回滚会清空整个工作区——未确认 → `409 {code:'empty-snapshot'}`；确认（`force=1`）后执行。注意：回滚到首条消息（清空 agent 全部改动）也属此类，会多一次确认
+- **restore 失败自动回滚**：恢复失败时自动用 recovery 备份把工作区还原到恢复前状态（`codeRollback.rolledBack` 供客户端提示），不再停在半恢复状态
+- **快照原子写**：`snapshotWorkspace` 先落 `.tmp` 再 rename，杜绝「zstd 中途失败留下 size>0 半截文件」被 size>0 守卫误认为完整快照（此前会永久使用损坏快照）；`zstd -T0` 多线程压缩
+- **快照任务按 session 串行化**：同一会话的 turn-N 快照 + manifest 原子成组完成后才开始 turn-N+1，避免快速连续 turn（steer）下 tar 与 hash 交错读取被 agent 修改中的工作区
+- **hashWorkspace 并发 sha256**：8 并发小池提升大工作区清单生成吞吐（不做 mtime 缓存——preflight 依赖当前哈希精确性）
+- **isExcluded 快路径**：无元字符且无 `/` 的裸模式（`.git`/`node_modules`）走「段包含」判定，避开 pm 回溯；修复快路径误伤含 `/` 模式（`build/output` 被 split 拆段而漏排）的回归
+- **findPruneExpr 保守化**：含 `[` 的模式不再参与 find 剪枝（find 与 libarchive 字符类语义有分歧，剪枝过头 = 漏文件），一律交 isExcluded 后置过滤
+- **lazy prune 竞态修复**：rollback 开头的惰性清理跳过本次源会话目录，避免与快照硬链接继承并发（跨文件系统 copyFile 降级路径）
+- **客户端**：`mounted` Map 泄漏修复（scan 清理 `!isConnected` 行）；runRollback 改 ndjson 阶段流（`stream=1`），busy 期间展示「备份/恢复/继承/归档」进度文案；409 冲突/空快照回到确认态；`rollback.rolledBack`/`rollback.emptyWarn`/`rollback.conflictRecheck` 等新文案
+- **平台支持声明**（README）：macOS/Linux（依赖系统 `sh`/`tar`/`find`/`zstd`）；Windows 不支持
+- 测试：新增 S（二次冲突 409+force）、T（空快照守卫 409+force）；M 补 `rolledBack` 断言；H2/H3 适配空快照守卫的 force 流程；差分 fuzz 固化为 `test/matcher-fuzz.mjs`（固定种子、可复现、win32 跳过）
+
+### 0.1.5 审查修复（自审发现的两个真实缺陷）
+
+- **伪流修复**：ndjson 进度流初版把阶段收集到数组、在全部执行完成后才 writeHead 一次性写出——客户端 fetch 直到响应结束才收到所有行，进度提示退化为完成瞬间的闪烁。改为通过 409 校验后立即 writeHead，各阶段执行时即时 `res.write`（新增测试 U 断言阶段行按执行顺序即时到达）
+- **forcePending 修复**：初版客户端把所有确认点击都带 `force=1`，正常 preflight 通过后的确认也绕过执行前二次校验，TOCTOU 收窄形同虚设。改为仅 409（冲突/空快照）之后的确认携带 force（`forcePending` 标记），正常确认不带 force——服务端二次校验在首次执行时仍然生效（client-emit 测试扩为四段流程：preflight → 409 conflict → 确认 → force 重发，断言两次请求的 force 差异）
+- 空快照守卫的 `find` 加排除剪枝：工作区仅剩被排除内容（如只有 `.git`）时不再误报 409
+- `backupWorkspace` 返回值检查：备份失败时告警（自动回滚兜底不可用）
+- README 已知限制补充：快照串行化的时效性说明、匹配器与本机 bsdtar 对齐的跨平台注记
+
+### 排除语义与快照管线（并入 0.2.0，原 0.1.4）
+
+- **排除模式重写为 tar `--exclude` 语义的忠实移植**（libarchive `__archive_pathmatch` 的 JS 移植）：未锚定、按路径元素尝试、`*` 跨 `/`、`?`、`[...]`（`!`/`^` 取反、范围）、`^`/`$` 锚定、前导 `./` 归一化——快照、哈希清单、恢复剪枝三侧共用同一判定，与真实 bsdtar 差分 fuzz 1000 组零分歧（含 macOS 系统 libarchive 与上游的 `[!a]` 末端行为差异对齐）
+- **修复致命缺陷：裸 `.*`/`*` 类模式把整包清空**——旧快照命令 `tar -cf - .` 会把起始点 `.` 归档，未锚定匹配下 `.*` 命中起始点导致快照为空，回滚时解包空快照 + 剪枝会删除工作区全部文件（recovery 备份同样为空，无法挽回）。快照管线改为 find 清单 + `tar -T`（`--null`/`--no-recursion`），归档不含起始点：`.*` 现在可以安全地一键忽略所有点文件，且支持含换行的文件名、每条目只入档一次、空目录保留
+- **修复含 `/` 与通配排除项的三侧不一致**：旧 isExcluded 只认顶层前缀/字面段，而 tar 侧对 `build/output` 这类模式任意深度生效——恢复剪枝会把 tar 已排除路径下的文件误删。三侧统一后此问题消除
+- **修复移植 bug**：`*` 回溯递归未传递已消费的模式下标，模式被反复重入导致深度超限返回 -1 并被当作「匹配」（`*.log` 曾误判 `plain.txt` 为排除）
+- README 默认 excludes 笔误修正（`['git', ...]` → `['.git', 'node_modules']`），补充排除模式语义、`.*` 用法与快照管线说明
+
 ## 0.1.3
 
 - 快照清理修复（针对磁盘只涨不落，实测用户目录达 191GB）：

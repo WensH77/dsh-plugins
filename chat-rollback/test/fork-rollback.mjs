@@ -90,8 +90,9 @@ function makeCtx(workspace, snapRoot, eventsBySession) {
 
 function fakeRes() {
   return {
-    status: null, headers: null, body: null,
+    status: null, headers: null, body: null, chunks: null,
     writeHead(status, headers) { this.status = status; this.headers = headers; },
+    write(chunk) { (this.chunks ??= []).push(String(chunk)); },
     end(body) { this.body = body; }
   };
 }
@@ -511,9 +512,9 @@ test('H2: A CREATES the file — rollback B then A end-to-end (end manifests pre
       await routes.get('/chat-rollback/preflight')({ url: '/chat-rollback/preflight?session=' + sessionId + '&seq=2' }, res);
       return JSON.parse(res.body);
     };
-    const rollback = async (sessionId) => {
+    const rollback = async (sessionId, force) => {
       const res = fakeRes();
-      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + sessionId + '&seq=2' }, res);
+      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + sessionId + '&seq=2' + (force ? '&force=1' : '') }, res);
       return JSON.parse(res.body);
     };
 
@@ -538,9 +539,13 @@ test('H2: A CREATES the file — rollback B then A end-to-end (end manifests pre
     assert.strictEqual(pa.conflict, false, 'A no longer conflicts after B rolled back');
     assert.deepStrictEqual(pa.files, [], 'A conflict list empty');
 
-    // Rollback A -> test.md (created by A) is removed
-    const bodyA = await rollback(A);
-    assert.strictEqual(bodyA.ok, true, 'A rollback ok');
+    // Rollback A: 工作区初始为空 → A 的 turn-1 快照为空 → 空快照守卫 409
+    // （回滚将清空工作区），确认（force）后执行——test.md（A 创建）被移除
+    const guardA = await rollback(A);
+    assert.strictEqual(guardA.ok, false, 'A rollback gated by empty-snapshot guard');
+    assert.strictEqual(guardA.code, 'empty-snapshot', 'guard code empty-snapshot');
+    const bodyA = await rollback(A, true);
+    assert.strictEqual(bodyA.ok, true, 'A rollback ok (force)');
     assert.ok((await stat(join(workspace, 'test.md')).catch(() => null)) === null, 'test.md removed by A rollback');
   } finally {
     await rm(workspace, { recursive: true, force: true });
@@ -576,9 +581,9 @@ test('H3: A has NO end manifest (its turn never ended) — rollback B then A rep
       await routes.get('/chat-rollback/preflight')({ url: '/chat-rollback/preflight?session=' + sessionId + '&seq=2' }, res);
       return JSON.parse(res.body);
     };
-    const rollback = async (sessionId) => {
+    const rollback = async (sessionId, force) => {
       const res = fakeRes();
-      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + sessionId + '&seq=2' }, res);
+      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + sessionId + '&seq=2' + (force ? '&force=1' : '') }, res);
       return JSON.parse(res.body);
     };
 
@@ -605,8 +610,12 @@ test('H3: A has NO end manifest (its turn never ended) — rollback B then A rep
     assert.deepStrictEqual(pa.files, [], 'A conflict list empty');
     assert.strictEqual(pa.reason, 'no-end-manifest', 'reason stays no-end-manifest');
 
-    const bodyA = await rollback(A);
-    assert.strictEqual(bodyA.ok, true, 'A rollback ok');
+    // A rollback: 空快照守卫（A 的 turn-1 快照为空，工作区有文件）→ 409，force 后执行
+    const guardA = await rollback(A);
+    assert.strictEqual(guardA.ok, false, 'A rollback gated by empty-snapshot guard');
+    assert.strictEqual(guardA.code, 'empty-snapshot', 'guard code empty-snapshot');
+    const bodyA = await rollback(A, true);
+    assert.strictEqual(bodyA.ok, true, 'A rollback ok (force)');
     assert.ok((await stat(join(workspace, 'test.md')).catch(() => null)) === null, 'test.md removed by A rollback');
   } finally {
     await rm(workspace, { recursive: true, force: true });
@@ -782,6 +791,7 @@ test('M: restore failure — source kept unarchived for retry', async () => {
     assert.strictEqual(body.ok, true, 'rollback ok (conversation still rolls back)');
     assert.strictEqual(body.codeRollback.restored, false, 'restore failed');
     assert.strictEqual(body.codeRollback.reason, 'restore-failed', 'reason restore-failed');
+    assert.strictEqual(body.codeRollback.rolledBack, true, 'workspace auto-rolled-back from recovery backup');
     assert.strictEqual(body.archivedSource, false, 'source NOT archived');
     assert.ok(!archived.includes(SRC), 'archiveSession not called');
     assert.ok((await stat(join(snapRoot, SRC)).catch(() => null)) !== null, 'source snapshots kept for retry');
@@ -911,6 +921,242 @@ test('P: periodic prune — timer reclaims archived residue automatically', asyn
     );
   } finally {
     dispose?.();
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// Q: '.*' 通配排除——点文件在快照、哈希清单、恢复剪枝三侧一致：任意深度的
+// 点文件/点目录不进快照；回滚剪枝绝不删除点文件。回归背景：旧实现只做字面
+// 段匹配（isExcluded 不认 '.*'），且旧快照命令把起始点 '.' 归档，tar 侧
+// 裸 '.*' 会匹配起始点把整包排除——空快照恢复会把工作区清空。
+test('Q: .* wildcard — dotfiles excluded at any depth and protected from prune', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-dot-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-dot-snap-'));
+  try {
+    await mkdir(join(workspace, '.cache'), { recursive: true });
+    await mkdir(join(workspace, 'sub'), { recursive: true });
+    await writeFile(join(workspace, '.env'), 'SECRET=1\n');
+    await writeFile(join(workspace, '.cache', 'k.txt'), 'k\n');
+    await writeFile(join(workspace, 'sub', '.hidden'), 'h\n');
+    await writeFile(join(workspace, 'top.txt'), 'one\n');
+    await writeFile(join(workspace, 'sub', 'x.txt'), 'x\n');
+
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-dot';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, excludes: ['.*'], pruneIntervalMs: 0 });
+
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    const listing1 = (await run('tar -tf ' + join(snapRoot, SRC, 'turn-1.tar.zst'))).stdout;
+    const members = listing1.split('\n').filter(Boolean);
+    assert.ok(!members.includes('./'), 'start point not archived: ' + members.join(','));
+    assert.ok(members.includes('./top.txt') && members.includes('./sub/x.txt'), 'non-dot files archived: ' + members.join(','));
+    assert.ok(!listing1.includes('.env') && !listing1.includes('.cache') && !listing1.includes('.hidden'), 'dotfiles excluded at any depth');
+    const manifest1 = JSON.parse(await readFile(join(snapRoot, SRC, 'turn-1.files.json'), 'utf8'));
+    assert.strictEqual(manifest1['.env'], undefined, 'manifest excludes .env');
+    assert.strictEqual(manifest1['sub/.hidden'], undefined, 'manifest excludes nested dotfile');
+    assert.ok(typeof manifest1['top.txt'] === 'string', 'manifest keeps top.txt');
+
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+
+    // turn-2 work: change a tracked file, add a new dotfile and a new regular file
+    await writeFile(join(workspace, 'top.txt'), 'two\n');
+    await writeFile(join(workspace, '.env.new'), 'SECRET=2\n');
+    await writeFile(join(workspace, 'new.txt'), 'new\n');
+
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.ok, true, 'rollback ok');
+    assert.strictEqual(body.codeRollback.restored, true, 'code restored');
+    assert.strictEqual(await readFile(join(workspace, 'top.txt'), 'utf8'), 'one\n', 'tracked file reverted');
+    assert.ok((await stat(join(workspace, 'new.txt')).catch(() => null)) === null, 'new regular file pruned');
+    assert.ok((await stat(join(workspace, '.env.new')).catch(() => null)) !== null, 'new dotfile protected from prune');
+    assert.strictEqual(await readFile(join(workspace, '.env'), 'utf8'), 'SECRET=1\n', '.env untouched by restore');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// R: 含 / 与通配的排除项在 tar 侧是未锚定语义（嵌套路径同样命中），而旧
+// isExcluded 只认顶层前缀/字面段——三侧不一致会让恢复剪枝删掉「tar 已排除、
+// JS 却判定未排除」的嵌套文件。本用例锁定修复后的三侧一致性。
+test('R: with-slash and wildcard excludes — nested matches on all three sides', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-path-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-path-snap-'));
+  try {
+    await mkdir(join(workspace, 'sub', 'build', 'output'), { recursive: true });
+    await writeFile(join(workspace, 'sub', 'build', 'output', 'n.txt'), 'n\n');
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    await writeFile(join(workspace, 'debug.log'), 'old\n');
+
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-path';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, excludes: ['build/output', '*.log'], pruneIntervalMs: 0 });
+
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    const listing1 = (await run('tar -tf ' + join(snapRoot, SRC, 'turn-1.tar.zst'))).stdout;
+    assert.ok(!listing1.includes('build/output'), 'with-slash exclude matches nested dir on the tar side: ' + listing1.split('\n').filter(Boolean).join(','));
+    assert.ok(!listing1.includes('.log'), 'wildcard exclude matches on the tar side');
+
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+
+    // turn-2 work: add files under excluded paths — prune must NOT delete them
+    await writeFile(join(workspace, 'sub', 'build', 'output', 'new.txt'), 'new\n');
+    await writeFile(join(workspace, 'app.log'), 'new\n');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    await writeFile(join(workspace, 'plain.txt'), 'new\n');
+
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' }, res);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.ok, true, 'rollback ok');
+    assert.strictEqual(body.codeRollback.restored, true, 'code restored');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'tracked file reverted');
+    assert.ok((await stat(join(workspace, 'plain.txt')).catch(() => null)) === null, 'non-excluded new file pruned');
+    assert.ok((await stat(join(workspace, 'sub', 'build', 'output', 'new.txt')).catch(() => null)) !== null, 'nested excluded-path file protected from prune');
+    assert.ok((await stat(join(workspace, 'app.log')).catch(() => null)) !== null, 'wildcard-excluded file protected from prune');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// S: rollback 二次冲突校验（TOCTOU 收窄）——preflight 与执行之间其他会话的
+// 写入在 rollback 时再次检测：无 force → 409 conflict（回到确认态）；force → 执行。
+test('S: rollback re-checks conflicts — 409 then force proceeds', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-toc-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-toc-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-toc';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, pruneIntervalMs: 0 });
+    // turn1: start+end；turn2: start（恢复点快照 turn-2）+end（last-write）
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.files.json')).catch(() => null)) !== null), 'turn-1 start manifest');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/end', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.end.files.json')).catch(() => null)) !== null), 'turn-1 end manifest');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.files.json')).catch(() => null)) !== null), 'turn-2 start manifest');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/end', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.end.files.json')).catch(() => null)) !== null), 'turn-2 end manifest');
+    // preflight 之后、执行之前，另一会话的写入
+    await writeFile(join(workspace, 'f.txt'), 'three\n');
+    await writeFile(join(workspace, 'new.txt'), 'x\n');
+
+    const rollback = async (force) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' + (force ? '&force=1' : '') }, res);
+      return { status: res.status, body: JSON.parse(res.body) };
+    };
+    const first = await rollback(false);
+    assert.strictEqual(first.status, 409, 'rollback HTTP 409');
+    assert.strictEqual(first.body.code, 'conflict', '409 code conflict');
+    assert.deepStrictEqual(first.body.files, ['f.txt', 'new.txt'], 'conflict lists externally changed files');
+    const second = await rollback(true);
+    assert.strictEqual(second.status, 200, 'forced rollback HTTP 200');
+    assert.strictEqual(second.body.ok, true, 'forced rollback ok');
+    assert.strictEqual(second.body.codeRollback.restored, true, 'code restored');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'f.txt restored to the restore point (turn-1 end)');
+    assert.ok((await stat(join(workspace, 'new.txt')).catch(() => null)) === null, 'new.txt pruned');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// T: 空快照安全网——恢复点快照为空但工作区非空时，回滚会清空工作区：无 force
+// → 409 empty-snapshot（不执行）；force 确认后执行清空。
+test('T: empty-snapshot guard — 409 then force wipes workspace', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-emp-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-emp-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-emp';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, pruneIntervalMs: 0 });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+    // 把恢复点快照 turn-2 替换成「空 tar 的 zstd」（模拟损坏/回归）：恢复它将清空工作区
+    assert.ok((await run('dd if=/dev/zero bs=1024 count=1 2>/dev/null | zstd -qf -o ' + join(snapRoot, SRC, 'turn-2.tar.zst'))).ok, 'empty snapshot written');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    const rollback = async (force) => {
+      const res = fakeRes();
+      await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3' + (force ? '&force=1' : '') }, res);
+      return { status: res.status, body: JSON.parse(res.body) };
+    };
+    const first = await rollback(false);
+    assert.strictEqual(first.status, 409, 'empty-snapshot HTTP 409');
+    assert.strictEqual(first.body.code, 'empty-snapshot', '409 code empty-snapshot');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'two\n', 'workspace untouched by the 409');
+    const second = await rollback(true);
+    assert.strictEqual(second.status, 200, 'forced rollback HTTP 200');
+    assert.strictEqual(second.body.ok, true, 'forced rollback ok');
+    assert.strictEqual(second.body.codeRollback.restored, true, 'empty snapshot restores ok');
+    assert.ok((await stat(join(workspace, 'f.txt')).catch(() => null)) === null, 'workspace wiped by forced empty-snapshot restore');
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(snapRoot, { recursive: true, force: true });
+  }
+});
+
+// U: stream=1 的 ndjson 阶段流——阶段行随执行即时出现且顺序固定。防「伪流」
+// 回归（0.1.5 初版把所有阶段收集完、在响应末尾一次性写出，客户端收不到实时
+// 进度，进度提示退化为完成瞬间的闪烁）。
+test('U: stream=1 — phase lines are written live in execution order', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'crb-str-'));
+  const snapRoot = await mkdtemp(join(tmpdir(), 'crb-str-snap-'));
+  try {
+    await writeFile(join(workspace, 'f.txt'), 'one\n');
+    const events = makeEvents([
+      { turn: 1, user: 'do X', assistant: 'done X' },
+      { turn: 2, user: 'do Y', assistant: 'done Y' }
+    ]);
+    const SRC = 'session-str';
+    const { ctx, handlers, routes } = makeCtx(workspace, snapRoot, { [SRC]: events });
+    plugin.apply(ctx, { snapshotDir: snapRoot, pruneIntervalMs: 0 });
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 1 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-1.tar.zst')).catch(() => null)) !== null), 'turn-1 snapshot');
+    for (const h of handlers.get('session/event')) h(ctx.sessions.get(SRC), { type: 'turn/start', data: { turn: 2 } });
+    assert.ok(await waitFor(async () => (await stat(join(snapRoot, SRC, 'turn-2.tar.zst')).catch(() => null)) !== null), 'turn-2 snapshot');
+    await writeFile(join(workspace, 'f.txt'), 'two\n');
+    const res = fakeRes();
+    await routes.get('/chat-rollback/rollback')({ url: '/chat-rollback/rollback?session=' + SRC + '&seq=3&stream=1' }, res);
+    assert.strictEqual(res.status, 200, 'stream HTTP 200');
+    assert.ok(String(res.headers?.['content-type'] ?? '').includes('ndjson'), 'ndjson content-type');
+    const lines = (res.chunks ?? []).join('').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const expected = ['session', 'cancel', 'backup', 'restore', 'inherit', 'archive', 'done'];
+    assert.deepStrictEqual(lines.map((l) => l.phase), expected, 'phase lines arrive in execution order');
+    const done = lines[lines.length - 1];
+    assert.strictEqual(done.ok, true, 'done carries ok');
+    assert.strictEqual(done.codeRollback.restored, true, 'done carries codeRollback');
+    assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'restore executed');
+  } finally {
     await rm(workspace, { recursive: true, force: true });
     await rm(snapRoot, { recursive: true, force: true });
   }

@@ -107,9 +107,44 @@ const sessions = {
   open: async () => {}
 };
 
+// ndjson 流响应：模拟服务端 stream=1 的阶段进度流（backup/restore/…/done）
+const ndjsonResponse = (lines) => {
+  const payload = lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
+  const bytes = new TextEncoder().encode(payload);
+  let offset = 0;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (offset >= bytes.length) return { done: true, value: undefined };
+          const chunk = bytes.slice(offset, bytes.length);
+          offset = bytes.length;
+          return { done: false, value: chunk };
+        }
+      })
+    }
+  };
+};
+
+// 二次校验回归：不带 force 的首次执行 → 409 conflict；force=1 重发 → done。
+// 用于断言「正常确认点击不带 force、409 之后的确认才带」的 forcePending 机制
+// （回归背景：0.1.5 初版所有确认点击都带 force=1，服务端二次校验形同虚设）。
+const rollbackCalls = [];
 globalThis.fetch = async (url) => {
-  if (url.includes('/chat-rollback/preflight')) return { json: async () => ({ ok: true }) };
-  if (url.includes('/chat-rollback/rollback')) return { json: async () => ({ ok: true, sessionId: 'new', nextInput: 'ROLLED BACK TEXT', archivedSource: true }) };
+  if (url.includes('/chat-rollback/preflight')) return { ok: true, json: async () => ({ ok: true }) };
+  if (url.includes('/chat-rollback/rollback')) {
+    rollbackCalls.push(url);
+    if (url.includes('force=1')) {
+      return ndjsonResponse([
+        { phase: 'session', sessionId: 'new' },
+        { phase: 'restore', codeRollback: { restored: true } },
+        { phase: 'done', ok: true, sessionId: 'new', nextInput: 'ROLLED BACK TEXT', archivedSource: true }
+      ]);
+    }
+    return { status: 409, json: async () => ({ code: 'conflict', files: ['f.txt'], message: 'conflict' }) };
+  }
   throw new Error('unexpected fetch ' + url);
 };
 
@@ -127,6 +162,8 @@ const sandbox = {
   },
   HTMLElement: FakeElement,
   MutationObserver: class { observe() {} disconnect() {} },
+  TextDecoder,
+  TextEncoder,
   console,
   setTimeout,
   clearTimeout,
@@ -162,13 +199,24 @@ await sleep(150); // the initial scan (120ms debounce) mounts the button
 const button = findButton(userRow);
 check('rollback button mounted under the user bubble', button !== null);
 if (button !== null) {
-  // first click → preflight (async) → confirm armed
+  // click 1 → preflight (async) → confirm armed
   button._handlers.click[0]();
   await sleep(30);
   check('confirm state armed after preflight', button.className.includes('confirm') || button.className.includes('conflict'));
-  // second click → rollback → prefill emit on the NEW session ctx
+  // click 2 → rollback WITHOUT force → 409 conflict → back to ? conflict state
   button._handlers.click[0]();
   await sleep(50);
+  check('409 conflict returns to conflict state', button.className.includes('conflict'), 'class=' + button.className);
+  check('first rollback attempt carries NO force', rollbackCalls.length === 1 && !rollbackCalls[0].includes('force=1'), JSON.stringify(rollbackCalls));
+  check('no prefill after 409', emitCalls.filter((c) => c[0] === 'new').length === 0, JSON.stringify(emitCalls));
+  // click 3 → conflict → confirm armed
+  button._handlers.click[0]();
+  await sleep(10);
+  check('confirm re-armed after conflict review', button.className.includes('confirm'), 'class=' + button.className);
+  // click 4 → rollback WITH force=1 → done → prefill emit on the NEW session ctx
+  button._handlers.click[0]();
+  await sleep(50);
+  check('second rollback attempt carries force=1', rollbackCalls.length === 2 && rollbackCalls[1].includes('force=1'), JSON.stringify(rollbackCalls));
   const newCalls = emitCalls.filter((c) => c[0] === 'new');
   check('prefill emitted exactly once for the new session', newCalls.length === 1, 'calls=' + JSON.stringify(emitCalls));
   check('prefill dispatch carries the session ctx as thisArg (the fix)', newCalls.length === 1 && newCalls[0][1] === ctxNew, 'first arg=' + String(newCalls[0]?.[1] === ctxNew ? 'ctx' : newCalls[0]?.[1]));

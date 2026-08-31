@@ -61,52 +61,244 @@ function shq(value) {
   return "'" + String(value).replace(/'/gu, "'\\''") + "'";
 }
 
-/** 判断相对路径是否命中任一排除项：不含 / 的排除项作为**任意路径段**出现即命中
- * （.git / node_modules 在 cwd 下任意层级都排除，含嵌套仓库；.gitignore 这类
- * 名字不同的工作文件不受影响）；含 / 的排除项按相对路径前缀匹配。
+// ── tar --exclude 语义的忠实移植（libarchive __archive_pathmatch）────────
+// bsdtar/gtar 的排除匹配（exclusion flag = PATHMATCH_NO_ANCHOR_START |
+// PATHMATCH_NO_ANCHOR_END，见 libarchive archive_match.c）：
+//   - 未锚定：模式在路径每个元素（/ 分隔处）逐一尝试，'^' 可锚定开头
+//   - 未锚定结尾：'$' 可锚定结尾；模式耗尽时剩余 / 段被忽略（dir 匹配 dir/）
+//   - '*' 跨 / 匹配任意串（尾随 '*' 恒成功），'?' 单字符，[...] 字符类
+//     （'^'/'!' 取反、支持范围、'\]' 转义），'\\' 转义下一个字符
+//   - 模式与路径两侧的前导 './' 都会被跳过
+// 移植到 JS 是为了让 hash 清单、恢复剪枝与 tar 自身对「哪些路径被排除」的
+// 判定完全一致——三者不一致时（旧实现的字面匹配 vs tar 通配），恢复剪枝会把
+// tar 排除过但 JS 判定未排除的文件删掉。
+
+const MATCH_MAX_RECURSION = 30;
+
+/** pm_slashskip：跳过 '/', './', 结尾的 '.'（对应 C 的 pm_slashskip）。 */
+function matchSlashskip(str, i) {
+  while (i < str.length && (str[i] === '/' || (str[i] === '.' && (str[i + 1] === '/' || str[i + 1] === undefined)))) i += 1;
+  return i;
+}
+
+/** pm_list：[...] 字符类匹配（对应 C 的 pm_list）。 */
+function matchClass(p, start, end, c) {
+  let i = start;
+  let match = true;
+  let nomatch = false;
+  if (p[i] === '!' || p[i] === '^') { match = false; nomatch = true; i += 1; }
+  let rangeStart = null;
+  while (i < end) {
+    let nextRangeStart = null;
+    const ch = p[i];
+    if (ch === '-') {
+      if (rangeStart === null || i === end - 1) {
+        if (ch === c) return match;
+      } else {
+        let rangeEnd = p[++i];
+        if (rangeEnd === '\\') rangeEnd = p[++i];
+        if (rangeStart <= c && c <= rangeEnd) return match;
+      }
+    } else if (ch === '\\') {
+      i += 1;
+      if (p[i] === c) return match;
+      nextRangeStart = p[i];
+    } else {
+      if (ch === c) return match;
+      nextRangeStart = ch;
+    }
+    rangeStart = nextRangeStart;
+    i += 1;
+  }
+  return nomatch;
+}
+
+/** pm：核心 glob 匹配（对应 C 的 pm；si 为字符串起始下标，piStart 为模式
+ * 起始下标——'*' 回溯递归必须从消费后的位置继续，否则同一 '*' 被反复重入）。 */
+function matchPmAt(p, s, si, flags, depth, piStart = 0) {
+  if (depth > MATCH_MAX_RECURSION) return -1;
+  let pi = piStart;
+  if (s[si] === '.' && s[si + 1] === '/') si = matchSlashskip(s, si + 1);
+  if (p[pi] === '.' && p[pi + 1] === '/') pi = matchSlashskip(p, pi + 1);
+  for (;;) {
+    if (pi >= p.length) {
+      if (s[si] === '/') {
+        if (flags.noAnchorEnd) return 1;
+        si = matchSlashskip(s, si);
+      }
+      return si >= s.length;
+    }
+    const ch = p[pi];
+    if (ch === '?') {
+      if (si >= s.length) return 0;
+    } else if (ch === '*') {
+      while (p[pi] === '*') pi += 1;
+      if (pi >= p.length) return 1; // 尾随 '*' 恒成功
+      let s2 = si;
+      while (s2 < s.length) {
+        const r = matchPmAt(p, s, s2, flags, depth + 1, pi);
+        if (r) return r;
+        s2 += 1;
+      }
+      return 0;
+    } else if (ch === '[') {
+      let end = pi + 1;
+      while (end < p.length && p[end] !== ']') {
+        if (p[end] === '\\' && end + 1 < p.length) end += 1;
+        end += 1;
+      }
+      if (end < p.length && p[end] === ']') {
+        // 注意：不守卫 si >= s.length——macOS 系统 libarchive（Apple 分支）
+        // 在字符串耗尽时仍执行字符类判定，否定类 [!a] 因而匹配已耗尽的串
+        // （实测 `log[!a]` 排除 `log`）；保持一致才能三侧判定统一。
+        if (!matchClass(p, pi + 1, end, s[si])) return 0;
+        pi = end; // 由循环尾部的 ++ 越过 ']'
+      } else {
+        // 无闭合 ']'：按字面 '['
+        if (p[pi] !== s[si]) return 0;
+      }
+    } else if (ch === '\\') {
+      if (pi + 1 >= p.length) {
+        if (s[si] !== '\\') return 0; // 尾随反斜杠匹配自身
+      } else {
+        pi += 1;
+        if (p[pi] !== s[si]) return 0;
+      }
+    } else if (ch === '/') {
+      if (s[si] !== '/' && si < s.length) return 0;
+      pi = matchSlashskip(p, pi);
+      si = matchSlashskip(s, si);
+      if (pi >= p.length && flags.noAnchorEnd) return 1;
+      pi -= 1; // 抵消循环尾部的 ++
+      si -= 1;
+    } else if (ch === '$') {
+      if (pi + 1 >= p.length && flags.noAnchorEnd) {
+        return matchSlashskip(s, si) >= s.length;
+      }
+      if (p[pi] !== s[si]) return 0;
+    } else {
+      if (p[pi] !== s[si]) return 0;
+    }
+    pi += 1;
+    si += 1;
+  }
+}
+
+/** __archive_pathmatch：未锚定模式下模式在每个路径元素起点逐一尝试。 */
+function matchPath(pattern, str, flags) {
+  if (pattern === null || pattern === undefined || pattern.length === 0) return str === null || str === undefined || str.length === 0;
+  if (str === null || str === undefined) return false;
+  if (flags.noAnchorStart && pattern[0] === '^') {
+    pattern = pattern.slice(1);
+    flags = { noAnchorStart: false, noAnchorEnd: flags.noAnchorEnd };
+  }
+  if (pattern[0] === '/' && str[0] !== '/') return false;
+  if (pattern[0] === '*' || pattern[0] === '/') {
+    let pi = 0;
+    let si = 0;
+    while (pattern[pi] === '/') pi += 1;
+    while (str[si] === '/') si += 1;
+    return matchPmAt(pattern, str, si, flags, 0, pi);
+  }
+  if (flags.noAnchorStart) {
+    let si = 0;
+    for (;;) {
+      if (str[si] === '/') si += 1;
+      const r = matchPmAt(pattern, str, si, flags, 0);
+      if (r) return r;
+      const idx = str.indexOf('/', si);
+      if (idx === -1) break;
+      si = idx;
+    }
+    return 0;
+  }
+  return matchPmAt(pattern, str, 0, flags, 0);
+}
+
+/** 排除匹配的 flags（与 libarchive 排除侧一致：两头都不锚定）。 */
+const EXCLUDE_FLAGS = { noAnchorStart: true, noAnchorEnd: true };
+
+/** 判断相对路径是否命中任一排除项：语义与 tar --exclude 完全一致（见 matchPath）。
  * hash、tar 快照、恢复剪枝共用同一判定，保证三者对"哪些文件属于工作目录"一致。 */
 function isExcluded(rel, excludes) {
   for (const pattern of excludes) {
     const name = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
     if (name === '') continue;
-    if (name.includes('/')) {
-      if (rel === name || rel.startsWith(name + '/')) return true;
+    // 无元字符**且无斜杠**的裸模式（默认的 .git / node_modules 即此类）：
+    // 未锚定语义等价于「任一路径段 === name」。先 includes 粗筛再 split 精确
+    // 比对，避免为每个文件做 pm 回溯；命中即排除。含 / 或元字符（* ? [ ] \ ^ $）
+    // 的模式必须走完整 matchPath——快路径的 split 会把 'build/output' 拆成两段，
+    // 无法匹配跨段模式。
+    if (!/[/*?\[\]\\^$]/.test(name)) {
+      if (rel.includes(name) && rel.split('/').includes(name)) return true;
       continue;
     }
-    if (rel === name) return true;
-    for (const segment of rel.split('/')) {
-      if (segment === name) return true;
-    }
+    if (matchPath(name, rel, EXCLUDE_FLAGS)) return true;
   }
   return false;
 }
 
-/** 由排除项生成 tar --exclude 参数：裸名（bsdtar/libarchive 按 basename 匹配任意
- * 层级）+ 通配形态（GNU tar 需显式匹配嵌套路径）。全部单引号包裹防 shell 展开。 */
+/** find 剪枝表达式：仅对 find -name 能安全处理的模式（不含 /、^、$、\）做
+ * 目录剪枝以加速遍历；其余模式交给 isExcluded（matchPath）后置过滤，二者
+ * 最终判定一致。快照清单与哈希清单共用同一表达式。 */
+function findPruneExpr(excludes) {
+  const args = [];
+  for (const pattern of excludes) {
+    const name = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
+    // find -name 的字符类语义与 libarchive 的 pm 存在细微分歧（无闭合 ']'、
+    // 类内转义等），剪枝过头 = 快照/hash 漏文件。含 '[' 的模式一律不剪枝，
+    // 交给 isExcluded（matchPath）后置过滤兜底，最终判定仍与 tar 一致。
+    if (name === '' || /[/^$\\\[]/.test(name)) continue;
+    args.push('-name ' + shq(name) + ' -prune');
+  }
+  return args.length > 0 ? args.join(' -o ') + ' -o ' : '';
+}
+
+/** 由排除项生成 tar --exclude 参数：只传裸模式。tar 的排除匹配本身就是
+ * 未锚定、按路径元素尝试的 glob（见 matchPath 移植说明），「星号斜杠 P」、
+ * 「点斜杠 P」等旧式变体在 libarchive 语义下既多余又会引入歧义（如 "./.*"
+ * 被归一化后等价于裸 ".*"）。全部单引号包裹防 shell 展开。 */
 function tarExcludeArgs(excludes) {
   const args = [];
   for (const pattern of excludes) {
     const name = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
     if (name === '') continue;
-    if (name.includes('/')) {
-      args.push('--exclude=' + shq(name));
-      continue;
-    }
     args.push('--exclude=' + shq(name));
-    args.push('--exclude=' + shq('*/' + name));
-    args.push('--exclude=' + shq(name + '/*'));
-    args.push('--exclude=' + shq('*/' + name + '/*'));
   }
   return args.join(' ');
 }
 
-/** Full-tree snapshot of cwd into a tar.zst file (best-effort, excludes applied). */
+/** Full-tree snapshot of cwd into a tar.zst file (best-effort, excludes applied).
+ * 用 find 生成条目清单经 -T 喂给 tar：归档里没有起始点 "." 条目，因此
+ * `.*`/`*` 这类模式不会匹配到起始点把整包排除（裸模式安全）；--null/-print0
+ * 支持含换行等任意字符的文件名；--no-recursion 让 find 列出的每个条目只入档
+ * 一次（目录与文件都由清单显式给出，空目录也保留）。清单与哈希侧共用同一
+ * find 剪枝表达式。路径一律 shq 单引号包裹：双引号内的 $/反引号会被 shell
+ * 展开，路径含这些字符的工作区会被快照到错误的目标甚至执行命令。 */
 async function snapshotWorkspace(cwd, targetFile, excludes) {
   await fs.mkdir(dirname(targetFile), { recursive: true });
   const excl = tarExcludeArgs(excludes);
-  // 路径一律 shq 单引号包裹：双引号内的 $/反引号会被 shell 展开，路径含
-  // 这些字符的工作区会被快照到错误的目标甚至执行命令。
-  return runSh('tar -C ' + shq(cwd) + ' ' + excl + ' -cf - . | zstd -q -o ' + shq(targetFile));
+  const prune = findPruneExpr(excludes);
+  // 原子写：先落 .tmp 再 rename，杜绝「zstd 中途失败留下 size>0 的半截文件」
+  // 被 turn/start 的 size>0 守卫误判为完整快照（此前会永久使用损坏快照）；
+  // -T0 让 zstd 用多线程压缩（GNU/Linux 与 macOS homebrew zstd 均支持）。
+  const tmp = targetFile + '.tmp';
+  const result = await runSh(
+    'cd ' + shq(cwd) + ' && find . ' + prune +
+    '-mindepth 1 -print0 | tar --null --no-recursion -C ' + shq(cwd) + ' -T - ' + excl +
+    ' -cf - | zstd -q -T0 -o ' + shq(tmp)
+  );
+  if (!result.ok) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    return result;
+  }
+  try {
+    await fs.rename(tmp, targetFile);
+    return { ok: true };
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    return { ok: false, stderr: String(error?.message ?? error) };
+  }
 }
 
 /** Restore cwd from a tar.zst snapshot: overwrite existing files, then prune
@@ -205,24 +397,31 @@ async function sha256File(file) {
  * nor hashed. */
 async function hashWorkspace(cwd, excludes) {
   // 无括号写法（find 的 -prune 按项短路，等价于括号分组；也避开 JS 字符串里
-  // 反斜杠转义被吞的坑）：-name X -prune -o -name Y -prune -o -type f -print
-  const pruneArgs = excludes
-    .filter((p) => !p.includes('/'))
-    .map((p) => '-name ' + shq(p.endsWith('/') ? p.slice(0, -1) : p) + ' -prune');
-  const pruneExpr = pruneArgs.length > 0 ? pruneArgs.join(' -o ') + ' -o ' : '';
+  // 反斜杠转义被吞的坑）：-name X -prune -o -name Y -prune -o -type f -print。
+  // 剪枝表达式与快照清单共用（findPruneExpr）；含 /、^、$、\、[ 的模式不被
+  // find 剪枝，由下方 isExcluded 后置过滤兜底，最终判定与 tar 一致。
+  const pruneExpr = findPruneExpr(excludes);
   const files = await runSh('find ' + shq(cwd) + ' ' + pruneExpr + '-type f -print');
   if (!files.ok) return null;
   const map = {};
+  // 小并发池做 sha256（流式已不占内存，并发只提升吞吐）；map 按键写入，
+  // 完成顺序无关。注：不做 mtime+size 缓存——preflight 冲突判定依赖当前
+  // 哈希的精确性，缓存可能漏检「外部原地改写但 mtime 不变」的冲突。
+  const pending = [];
+  const CONCURRENCY = 8;
   for (const line of files.stdout.split('\n')) {
     const abs = line.trim();
     if (abs === '') continue;
     const rel = abs.slice(cwd.length).replace(/^\//, '');
     if (rel === '' || rel.endsWith('/')) continue;
     if (isExcluded(rel, excludes)) continue;
-    try {
-      map[rel] = await sha256File(abs);
-    } catch {}
+    pending.push(sha256File(abs).then((hash) => { map[rel] = hash; }).catch(() => {}));
+    if (pending.length >= CONCURRENCY) {
+      await Promise.all(pending);
+      pending.length = 0;
+    }
   }
+  await Promise.all(pending);
   return map;
 }
 
@@ -369,7 +568,7 @@ function liveSessionIds(env) {
  * 无关目录树时误删用户数据。
  * Runs lazily from handleRollback, on a periodic timer (apply), and via
  * POST /chat-rollback/prune-archived. */
-async function pruneSnapshots(env, sessionIdHint) {
+async function pruneSnapshots(env, sessionIdHint, skipId) {
   try {
     const archived = new Set(env.ctx.workspaceRegistry?.archivedSessionIds ?? []);
     if (sessionIdHint !== undefined && !archived.has(sessionIdHint)) return { ok: true, pruned: [], orphaned: [] };
@@ -380,6 +579,9 @@ async function pruneSnapshots(env, sessionIdHint) {
     const now = Date.now();
     for (const entry of dirs) {
       if (sessionIdHint !== undefined && entry !== sessionIdHint) continue;
+      // skipId：回滚中正被继承的源会话目录不在此次清理范围（见 handleRollback
+      // 的惰性清理调用——它异步执行，可能与快照硬链接继承并发）。
+      if (skipId !== undefined && entry === skipId) continue;
       let reason = null;
       if (archived.has(entry)) {
         reason = 'archived';
@@ -554,6 +756,56 @@ function computeConflicts(targetMap, lastWriteMap, currentMap) {
   return { conflict: files.length > 0, files };
 }
 
+/** 计算一次回滚的冲突状态（只读）。preflight 与 rollback 共用同一判定，保证
+ * 「该回滚是否会覆盖其他会话的写入」两处结论一致（也用于 rollback 的二次
+ * 校验收窄 preflight→执行之间的 TOCTOU 窗口）。返回 { conflict, files, reason }。
+ * reason 说明降级路径：no-snapshot / source-running / no-manifest /
+ * no-end-manifest（无 last-write 参照，按无冲突放行）/ clean / conflict。 */
+async function rollbackConflictState(env, source, turn) {
+  const cwd = source.header?.cwd;
+  if (!env.snapshotsEnabled || typeof cwd !== 'string' || cwd === '') {
+    return { conflict: false, files: [], reason: 'no-snapshot' };
+  }
+  let running = false;
+  try {
+    const agent = env.ctx.agents.get(source.id);
+    running = agent !== undefined && agent.status === 'running';
+  } catch {}
+  if (running) return { conflict: false, files: [], reason: 'source-running' };
+  const snapDir = join(env.snapRoot, source.id);
+  const targetMap = await loadManifest(join(snapDir, 'turn-' + (turn + 1) + '.files.json'), env.excludes);
+  if (targetMap === null) return { conflict: false, files: [], reason: 'no-manifest' };
+  let lastWriteMap = null;
+  let lastWriteProvenance = 'end';
+  const endFile = await latestManifestFile(snapDir, END_MANIFEST);
+  if (endFile !== null) {
+    lastWriteMap = await loadManifest(endFile, env.excludes);
+  } else {
+    const startFile = await latestManifestFile(snapDir, (entry) => {
+      const m = /^turn-(\d+)\.files\.json$/.exec(entry);
+      return m === null ? null : (Number(m[1]) > turn + 1 ? Number(m[1]) : null);
+    });
+    if (startFile !== null) {
+      lastWriteMap = await loadManifest(startFile, env.excludes);
+      lastWriteProvenance = 'start';
+    } else {
+      lastWriteProvenance = 'unknown';
+    }
+  }
+  const currentMap = await hashWorkspace(cwd, env.excludes);
+  if (lastWriteMap === null) {
+    // 无任何恢复点之后的 last-write 参照：当前状态无法归因（典型：单轮会话
+    // 且该轮未正常 turn/end）。恢复仍先生成 recovery 备份，按无冲突放行。
+    return { conflict: false, files: [], reason: lastWriteProvenance === 'unknown' ? 'no-end-manifest' : 'clean' };
+  }
+  const conflict = computeConflicts(targetMap, lastWriteMap, currentMap);
+  return {
+    conflict: conflict.conflict,
+    files: conflict.files,
+    reason: conflict.conflict ? 'conflict' : (lastWriteProvenance === 'unknown' ? 'no-end-manifest' : 'clean')
+  };
+}
+
 /** Read-only conflict preflight for a rollback target. Runs BEFORE any restore
  * so the client can gate the confirm (✓) behind a "?" when another session has
  * also changed files this rollback would overwrite. */
@@ -577,79 +829,12 @@ async function handlePreflight(req, res, env) {
       return;
     }
     const target = resolveRollbackTarget(source.events, seq);
-    const cwd = source.header?.cwd;
-    // No snapshot machinery (disabled / fresh / non-cwd) -> nothing to compare,
-    // so no conflict; rollback degrades to conversation-only as before.
-    if (!env.snapshotsEnabled || typeof cwd !== 'string' || cwd === '') {
-      sendJson(res, 200, { ok: true, conflict: false, files: [], reason: 'no-snapshot', sourceTurn: target.turn });
-      return;
-    }
-    // A still-running source is mid-turn: its own in-progress changes are not
-    // checkpointed, so they are indistinguishable from another session's. The
-    // rollback cancels that agent anyway — skip the gate rather than mislabel
-    // its own edits as foreign.
-    let running = false;
-    try {
-      const agent = env.ctx.agents.get(source.id);
-      running = agent !== undefined && agent.status === 'running';
-    } catch {}
-    if (running) {
-      sendJson(res, 200, { ok: true, conflict: false, files: [], reason: 'source-running', sourceTurn: target.turn });
-      return;
-    }
-    const snapDir = join(env.snapRoot, sessionId);
-    const targetMap = await loadManifest(join(snapDir, 'turn-' + (target.turn + 1) + '.files.json'), env.excludes);
-    if (targetMap === null) {
-      // Legacy/foreign dirs without manifests: cannot compare, so no gate.
-      sendJson(res, 200, { ok: true, conflict: false, files: [], reason: 'no-manifest', sourceTurn: target.turn });
-      return;
-    }
-    // "Our last write" reference: the state this session left the workspace in
-    // after its most recent completed turn. An end manifest (turn-N.end)
-    // records exactly that. When it is missing (write failure, interrupted
-    // session), a start manifest of a LATER turn is an equally valid record —
-    // turn/start N captures the state after turn N-1. Only a manifest STRICTLY
-    // newer than the restore point counts: the restore-point manifest itself is
-    // the target, not our last write, and using it would mislabel every file
-    // the session created during the turns being rolled back as a foreign
-    // change (the rollback-B-then-A case).
-    let lastWriteMap = null;
-    let lastWriteProvenance = 'end';
-    const endFile = await latestManifestFile(snapDir, END_MANIFEST);
-    if (endFile !== null) {
-      lastWriteMap = await loadManifest(endFile, env.excludes);
-    } else {
-      const startFile = await latestManifestFile(snapDir, (entry) => {
-        const m = /^turn-(\d+)\.files\.json$/.exec(entry);
-        return m === null ? null : (Number(m[1]) > target.turn + 1 ? Number(m[1]) : null);
-      });
-      if (startFile !== null) {
-        lastWriteMap = await loadManifest(startFile, env.excludes);
-        lastWriteProvenance = 'start';
-      } else {
-        lastWriteProvenance = 'unknown';
-      }
-    }
-    const currentMap = await hashWorkspace(cwd, env.excludes);
-    let conflict;
-    if (lastWriteMap === null) {
-      // No record of any state after the restore point (typically a single-turn
-      // session whose end manifest never got written — e.g. the very turn that
-      // created the file). Current states then cannot be attributed to this
-      // session vs. others; flagging every difference would turn each file the
-      // session itself created into a false "?" (rollback of session 2, then
-      // rollback of session 1, reports no conflict). The restore still writes a
-      // recovery backup first, so report clean and let the two-click confirm
-      // proceed.
-      conflict = { conflict: false, files: [] };
-    } else {
-      conflict = computeConflicts(targetMap, lastWriteMap, currentMap);
-    }
+    const state = await rollbackConflictState(env, source, target.turn);
     sendJson(res, 200, {
       ok: true,
-      conflict: conflict.conflict,
-      files: conflict.files,
-      reason: conflict.conflict ? 'conflict' : (lastWriteProvenance === 'unknown' ? 'no-end-manifest' : 'clean'),
+      conflict: state.conflict,
+      files: state.files,
+      reason: state.reason,
       sourceSessionId: sessionId,
       sourceTurn: target.turn
     });
@@ -660,9 +845,6 @@ async function handlePreflight(req, res, env) {
 
 async function handleRollback(req, res, env) {
   try {
-    // Lazy cleanup: snapshots of archived sessions (and orphaned/non-standard
-    // dirs) are reclaimed on rollback.
-    pruneSnapshots(env).catch(() => {});
     const url = new URL(req.url ?? '/', 'http://x');
     const sessionId = url.searchParams.get('session') ?? '';
     const seqParam = url.searchParams.get('seq') ?? '';
@@ -670,6 +852,11 @@ async function handleRollback(req, res, env) {
       sendJson(res, 400, { ok: false, code: 'bad-request', message: 'session id and a numeric seq are required' });
       return;
     }
+    // Lazy cleanup: snapshots of archived sessions (and orphaned/non-standard
+    // dirs) are reclaimed on rollback. skipId = 本次源会话：该目录马上要被
+    // inheritSnapshots 硬链接继承，惰性清理若与其并发（尤其跨文件系统
+    // copyFile 降级路径）可能先删源快照。
+    pruneSnapshots(env, undefined, sessionId).catch(() => {});
     const source = env.ctx.sessions.get(sessionId);
     if (source === undefined) {
       sendJson(res, 404, { ok: false, code: 'session-not-found', message: 'no live session ' + sessionId });
@@ -686,6 +873,44 @@ async function handleRollback(req, res, env) {
       return;
     }
     const { cut, seed, turn, nextInput } = resolveRollbackTarget(events, seq);
+    const force = url.searchParams.get('force') === '1';
+    const stream = url.searchParams.get('stream') === '1';
+    // TOCTOU 收窄：preflight 与真正执行之间其他会话的写入，在这里再验一次；
+    // 有冲突且未 force → 409，客户端回到「?" 确认态，确认后带 force=1 重发。
+    const state = await rollbackConflictState(env, source, turn);
+    if (state.conflict && !force) {
+      sendJson(res, 409, { ok: false, code: 'conflict', files: state.files, sourceSessionId: sessionId, sourceTurn: turn, message: 'files changed by other sessions; confirm to overwrite' });
+      return;
+    }
+    // 空快照安全网：恢复点快照为空（如 excludes 配成 '*'、或快照损坏/回归）
+    // 且工作区非空时，恢复会清空整个工作区——需用户确认（force）才执行。
+    let emptySnapshotGuard = false;
+    if (env.snapshotsEnabled && !force) {
+      const cwd = source.header?.cwd;
+      const snapDir = join(env.snapRoot, sessionId);
+      const snapshotFile = join(snapDir, 'turn-' + (turn + 1) + '.tar.zst');
+      if (typeof cwd === 'string' && cwd !== '' && await fsTargetExists(snapshotFile)) {
+        const listing = await runSh('tar -tf ' + shq(snapshotFile));
+        if (listing.ok && listing.stdout.trim() === '') {
+          // 只统计非排除内容：工作区仅有被排除文件（如只有 .git）时恢复不会
+          // 触碰它们，不应误报 409。
+          const ws = await runSh('find ' + shq(cwd) + ' ' + findPruneExpr(env.excludes) + '-mindepth 1');
+          if (ws.ok && ws.stdout.trim() !== '') emptySnapshotGuard = true;
+        }
+      }
+    }
+    if (emptySnapshotGuard) {
+      sendJson(res, 409, { ok: false, code: 'empty-snapshot', files: [], sourceSessionId: sessionId, sourceTurn: turn, message: 'snapshot is empty; rollback would wipe the workspace — confirm to proceed' });
+      return;
+    }
+    // stream=1 的 ndjson 进度流：先写响应头（409 校验已全部通过），此后每个
+    // 阶段即时写一行，客户端可实时展示进度；非流式保持单次 JSON。
+    if (stream) {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
+    }
+    const emitPhase = (p) => {
+      if (stream) res.write(JSON.stringify(p) + '\n');
+    };
     let agentPreset;
     let setup;
     try {
@@ -719,6 +944,7 @@ async function handleRollback(req, res, env) {
       agentOptions: selection === undefined ? {} : { provider: selection.provider, model: selection.model },
       setup
     });
+    emitPhase({ phase: 'session', sessionId: childId });
     let workspaceNote;
     try {
       const workspace = env.ctx.workspaceRegistry.list().find((candidate) => candidate.sessionIds.includes(source.id));
@@ -743,6 +969,7 @@ async function handleRollback(req, res, env) {
     } catch (error) {
       env.ctx.logger.warn('chat-rollback: source agent cancel failed: ' + String(error));
     }
+    emitPhase({ phase: 'cancel', sourceCancelled });
     // Code rollback: restore the workspace to the state right AFTER the turn
     // that contains the rollback target message, undoing every file change the
     // target turn and later turns made. Snapshot "turn-N" is taken at turn-N
@@ -762,19 +989,29 @@ async function handleRollback(req, res, env) {
       } else if (await fsTargetExists(snapshotFile)) {
         const stamp = Date.now();
         const backupFile = join(env.snapRoot, childId, 'recovery-' + stamp + '.tar.zst');
+        emitPhase({ phase: 'backup' });
         try {
-          await backupWorkspace(cwd, backupFile, env.excludes);
+          const backupOk = await backupWorkspace(cwd, backupFile, env.excludes);
+          if (!backupOk) env.ctx.logger.warn('chat-rollback: pre-restore backup failed for ' + childId + ' (auto-rollback on restore failure unavailable)');
           const restore = await restoreWorkspace(cwd, snapshotFile, env.excludes);
           if (restore.ok) {
             codeRollback = { restored: true, snapshot: 'turn-' + (turn + 1) + '.tar.zst', backup: 'recovery-' + stamp + '.tar.zst' };
           } else {
-            codeRollback = { restored: false, reason: 'restore-failed', message: restore.stderr.slice(0, 500) };
+            // 恢复失败：自动用 recovery 备份把工作区还原到恢复前状态（尽力而
+            // 为），避免停在半恢复状态；rolledBack 供客户端提示。
+            let rolledBack = false;
+            try {
+              const undo = await restoreWorkspace(cwd, backupFile, env.excludes);
+              rolledBack = undo.ok;
+            } catch {}
+            codeRollback = { restored: false, reason: 'restore-failed', message: restore.stderr.slice(0, 500), ...(rolledBack ? { rolledBack: true } : {}) };
           }
         } catch (error) {
           codeRollback = { restored: false, reason: 'restore-failed', message: String(error?.message ?? error).slice(0, 500) };
         }
       }
     }
+    emitPhase({ phase: 'restore', codeRollback });
     // Snapshot inheritance: the new session's seed carries turns 1..turn, so a
     // further rollback inside it to a seeded message needs the source's
     // snapshots turn-1..turn-(turn+1) — and the source dir is pruned right
@@ -788,6 +1025,7 @@ async function handleRollback(req, res, env) {
     } catch (error) {
       inheritNote = 'snapshot inherit failed: ' + String(error);
     }
+    emitPhase({ phase: 'inherit', inheritedSnapshots });
     // The source session is superseded: archive it so it leaves the sidebar
     // and cannot be resumed alongside the new branch (its later turns' file
     // changes were already undone by the code rollback). Archiving is durable
@@ -812,7 +1050,8 @@ async function handleRollback(req, res, env) {
     } catch (error) {
       archiveNote = 'archive failed: ' + String(error);
     }
-    sendJson(res, 200, {
+    emitPhase({ phase: 'archive', archivedSource });
+    const body = {
       ok: true,
       sessionId: childId,
       // The source session this branch was cut from and the turn whose
@@ -828,7 +1067,14 @@ async function handleRollback(req, res, env) {
       ...(archiveNote === undefined ? {} : { archiveNote }),
       ...(workspaceNote === undefined ? {} : { workspaceNote }),
       ...(nextInput === '' ? {} : { nextInput })
-    });
+    };
+    if (stream) {
+      // 阶段行已在执行过程中即时写出（见 emitPhase），这里只发终态。
+      res.write(JSON.stringify({ phase: 'done', ...body }) + '\n');
+      res.end();
+    } else {
+      sendJson(res, 200, body);
+    }
   } catch (error) {
     sendJson(res, 500, { ok: false, code: 'internal', message: String(error?.message ?? error) });
   }
@@ -861,6 +1107,16 @@ function apply(ctx, config = {}) {
   const snapshotsEnabled = config.snapshotEnabled ?? true;
   const env = { ctx, snapRoot, excludes, snapshotsEnabled };
   const disposers = [];
+  // 快照任务按 session 串行：同一会话的 turn-N 快照 + manifest 原子成组完成
+  // 后才开始 turn-N+1 的，避免快速连续 turn（steer）下 tar 与 hash 交错读取
+  // 正在被 agent 修改的工作区，造成快照/清单不一致。
+  const snapshotQueues = new Map();
+  const enqueueSnapshot = (sessionId, task) => {
+    const prev = snapshotQueues.get(sessionId) ?? Promise.resolve();
+    const run = prev.then(task);
+    snapshotQueues.set(sessionId, run.catch(() => {}));
+    return run;
+  };
 
   if (snapshotsEnabled) {
     // Turn-level workspace snapshots: at every turn/start we capture the cwd
@@ -889,8 +1145,10 @@ function apply(ctx, config = {}) {
         // children). Keep the inherited file: it holds the accurate ancestor
         // state, while the shared cwd may have moved on by the child's first
         // turn. Turns never repeat within a session, so nothing legitimate is
-        // ever skipped; size>0 guards against partial files.
-        fs.stat(target).then((st) => st.size > 0).catch(() => false).then(async (complete) => {
+        // ever skipped; size>0 guards against partial files（原子写后目标文件
+        // 只会在 rename 完成后出现）。
+        enqueueSnapshot(session.id, async () => {
+          const complete = await fs.stat(target).then((st) => st.size > 0).catch(() => false);
           if (complete) return { ok: true, skipped: true };
           const snap = await snapshotWorkspace(cwd, target, excludes);
           if (!snap.ok) return snap;
@@ -908,9 +1166,11 @@ function apply(ctx, config = {}) {
         // inherited (a child's own turns regenerate it), so the skip guard only
         // prevents a duplicate turn/end from overwriting a fresh manifest.
         const endManifest = join(dir, 'turn-' + turn + '.end.files.json');
-        fs.stat(endManifest).then((st) => st.size > 0).catch(() => false).then((complete) => {
+        enqueueSnapshot(session.id, async () => {
+          const complete = await fs.stat(endManifest).then((st) => st.size > 0).catch(() => false);
           if (complete) return { ok: true, skipped: true };
-          return writeManifest(cwd, endManifest, excludes);
+          const result = await writeManifest(cwd, endManifest, excludes);
+          return result.ok ? { ok: true } : result;
         }).then((result) => {
           if (result?.ok) ctx.logger.info('chat-rollback: end-manifest turn ' + turn + ' of ' + session.id + (result.skipped ? ' (kept)' : ''));
           else ctx.logger.warn('chat-rollback: end-manifest failed for turn ' + turn + ': ' + String(result?.message ?? '').slice(0, 200));
@@ -993,6 +1253,7 @@ function apply(ctx, config = {}) {
   }
 
   return () => {
+    snapshotQueues.clear();
     for (const dispose of disposers) dispose();
   };
 }

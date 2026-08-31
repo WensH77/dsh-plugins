@@ -58,6 +58,13 @@ window.__ModuleLoader__.load({
 			'rollback.codeSkipped': '无工作区快照，仅回滚对话（代码修改保留）',
 			'rollback.codeFailed': '代码恢复失败',
 			'rollback.conflict': '存在版本冲突，文件 {files} 在其他会话中也存在改动，本次回滚会将以上改动覆盖',
+			'rollback.conflictRecheck': '文件被其他会话改动，需再次确认',
+			'rollback.emptyWarn': '快照为空，回滚将清空工作区——再次点击确认执行',
+			'rollback.rolledBack': '恢复失败，已自动还原工作区',
+			'rollback.stage.backup': '正在备份当前工作区…',
+			'rollback.stage.restore': '正在恢复文件…',
+			'rollback.stage.inherit': '正在继承历史快照…',
+			'rollback.stage.archive': '正在归档原会话…',
 			'rollback.tip': '在目标消息处截断历史，创建新会话继续对话（原会话自动归档）'
 		};
 		const en = {
@@ -73,6 +80,13 @@ window.__ModuleLoader__.load({
 			'rollback.codeSkipped': 'No workspace snapshot — conversation only (code changes kept)',
 			'rollback.codeFailed': 'Workspace restore failed',
 			'rollback.conflict': 'Version conflict: {files} also changed in other sessions — this rollback will overwrite those changes',
+			'rollback.conflictRecheck': 'Files changed by other sessions — confirm again',
+			'rollback.emptyWarn': 'Snapshot is empty — rollback will wipe the workspace. Click again to confirm',
+			'rollback.rolledBack': 'Restore failed; workspace auto-rolled-back',
+			'rollback.stage.backup': 'Backing up workspace…',
+			'rollback.stage.restore': 'Restoring files…',
+			'rollback.stage.inherit': 'Inheriting snapshots…',
+			'rollback.stage.archive': 'Archiving source session…',
 			'rollback.tip': 'Cut history before this message and continue in a new session (the original is archived)'
 		};
 
@@ -104,6 +118,10 @@ window.__ModuleLoader__.load({
 				confirm: false,
 				conflict: false,
 				conflictFiles: [],
+				// 仅在 409（冲突/空快照）之后为 true：下一次确认点击才携带 force=1。
+				// 正常 preflight 通过后的确认**不带** force——服务端执行前会再校验
+				// 一次（TOCTOU 收窄），若此时有新冲突会 409 回来走确认流程。
+				forcePending: false,
 				busy: false,
 				showNote(text, ok) {
 					note.textContent = text;
@@ -146,8 +164,12 @@ window.__ModuleLoader__.load({
 				if (control.confirm) {
 					control.confirm = false;
 					control.busy = true;
+					const force = control.forcePending === true;
+					control.forcePending = false;
 					control.paint();
-					runRollback(control);
+					// 仅 409（冲突/空快照）之后的确认携带 force=1；正常确认不带，
+					// 让服务端执行前的二次校验仍然生效。
+					runRollback(control, force);
 					return;
 				}
 				if (control.conflict) {
@@ -208,8 +230,10 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** The rollback request; session/seq ride the control's current binding. */
-		async function runRollback(control) {
+		/** The rollback request; session/seq ride the control's current binding.
+		 * force=true 时携带 force=1（409 冲突/空快照确认后的二次点击）；默认
+		 * stream=1 走 ndjson 阶段流，busy 期间按阶段展示恢复进度文案。 */
+		async function runRollback(control, force) {
 			const { sessions, sessionId, seq, t } = control.binding ?? {};
 			if (sessions === undefined || typeof seq !== 'number' || sessionId === undefined) {
 				control.busy = false;
@@ -218,47 +242,100 @@ window.__ModuleLoader__.load({
 				return;
 			}
 			try {
-				const res = await fetch('/chat-rollback/rollback?session=' + encodeURIComponent(sessionId) + '&seq=' + seq, { method: 'POST', cache: 'no-store' });
-				const data = await res.json();
-				if (typeof data !== 'object' || data === null) throw new Error('invalid rollback response');
-				if (data.ok) {
-					let note = t('rollback.created');
-					if (data.archivedSource) note += ' · ' + t('rollback.archived');
-					if (typeof data.inheritedSnapshots === 'number' && data.inheritedSnapshots > 0) note += ' · ' + t('rollback.snapshots');
-					if (data.codeRollback !== undefined) {
-						const cb = data.codeRollback;
-						if (cb.restored) note += ' · ' + t('rollback.codeRestored');
-						else if (cb.reason !== 'no-snapshot' && cb.reason !== 'no-cwd') note += ' · ' + t('rollback.codeFailed') + (typeof cb.message === 'string' ? ': ' + cb.message : '');
+				const url = '/chat-rollback/rollback?session=' + encodeURIComponent(sessionId) + '&seq=' + seq + '&stream=1' + (force ? '&force=1' : '');
+				const res = await fetch(url, { method: 'POST', cache: 'no-store' });
+				// 409 拦截：TOCTOU 冲突或空快照清空 —— 不执行，回到确认态
+				if (res.status === 409) {
+					const data = await res.json().catch(() => ({}));
+					if (data?.code === 'conflict') {
+						control.conflictFiles = Array.isArray(data.files) ? data.files : [];
+						control.conflict = true;
+						control.confirm = false;
+						control.forcePending = true;
+						control.paint();
+						control.showNote(t('rollback.conflictRecheck'), false);
+						return;
 					}
-					control.showNote(note, true);
-					await sessions.refresh();
-					const next = data.nextInput;
-					if (typeof next === 'string' && next !== '') {
-						// Prefill the NEW session's composer with the rolled-back
-						// message's text. The composer shell is created during
-						// session materialization (its slash listeners are already
-						// wired), and a fresh machine starts at draftRev 0 — so an
-						// untouched draft accepts {start:0,end:0,draftRev:0}. If the
-						// user already typed, the rev check fails silently.
-						//
-						// The dispatch MUST carry the session ctx as `thisArg`:
-						// cordis' dispatch only context-filters listeners when a
-						// subject is given (thisArg[Context.filter]); a bare
-						// `ctx.emit(event, ...)` runs every listener on the hooks
-						// table — which, with the shared session-ctx architecture,
-						// prefilled EVERY mounted composer with the rolled-back
-						// text. The dsh input-trigger uses the same shaped call
-						// (actx.bail(actx, "slash/input-insert-text", ...)).
-						const binding = sessions.binding(data.sessionId);
-						binding?.ctx.emit(binding.ctx, 'slash/input-insert-text', {
-							text: next,
-							span: { start: 0, end: 0, draftRev: 0 }
-						});
+					if (data?.code === 'empty-snapshot') {
+						control.conflict = false;
+						control.confirm = true;
+						control.forcePending = true;
+						control.paint();
+						control.showNote(t('rollback.emptyWarn'), false);
+						return;
 					}
-					sessions.open(data.sessionId);
-				} else {
-					control.showNote(String(data.message ?? data.code ?? t('rollback.error')), false);
+					control.showNote(String(data?.message ?? t('rollback.error')), false);
+					return;
 				}
+				if (!res.ok || !res.body) {
+					const data = await res.json().catch(() => ({}));
+					control.showNote(String(data?.message ?? t('rollback.error')), false);
+					return;
+				}
+				// ndjson 阶段流：{phase} 行 + 最后 {phase:'done', ...body}
+				const reader = res.body.getReader();
+				const decoder = new TextDecoder();
+				let buffer = '';
+				let data = null;
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					buffer += decoder.decode(value, { stream: true });
+					let nl;
+					while ((nl = buffer.indexOf('\n')) !== -1) {
+						const line = buffer.slice(0, nl);
+						buffer = buffer.slice(nl + 1);
+						if (line.trim() === '') continue;
+						let msg;
+						try { msg = JSON.parse(line); } catch { continue; }
+						if (msg.phase === 'backup') control.showNote(t('rollback.stage.backup'), false);
+						else if (msg.phase === 'restore') control.showNote(t('rollback.stage.restore'), false);
+						else if (msg.phase === 'inherit') control.showNote(t('rollback.stage.inherit'), false);
+						else if (msg.phase === 'archive') control.showNote(t('rollback.stage.archive'), false);
+						if (msg.phase === 'done') data = msg;
+					}
+				}
+				if (data === null || typeof data !== 'object' || data.ok !== true) {
+					control.showNote(String(data?.message ?? data?.code ?? t('rollback.error')), false);
+					return;
+				}
+				let note = t('rollback.created');
+				if (data.archivedSource) note += ' · ' + t('rollback.archived');
+				if (typeof data.inheritedSnapshots === 'number' && data.inheritedSnapshots > 0) note += ' · ' + t('rollback.snapshots');
+				if (data.codeRollback !== undefined) {
+					const cb = data.codeRollback;
+					if (cb.restored) note += ' · ' + t('rollback.codeRestored');
+					else if (cb.reason !== 'no-snapshot' && cb.reason !== 'no-cwd') {
+						note += ' · ' + t('rollback.codeFailed') + (typeof cb.message === 'string' ? ': ' + cb.message : '');
+						if (cb.rolledBack) note += ' · ' + t('rollback.rolledBack');
+					}
+				}
+				control.showNote(note, true);
+				await sessions.refresh();
+				const next = data.nextInput;
+				if (typeof next === 'string' && next !== '') {
+					// Prefill the NEW session's composer with the rolled-back
+					// message's text. The composer shell is created during
+					// session materialization (its slash listeners are already
+					// wired), and a fresh machine starts at draftRev 0 — so an
+					// untouched draft accepts {start:0,end:0,draftRev:0}. If the
+					// user already typed, the rev check fails silently.
+					//
+					// The dispatch MUST carry the session ctx as `thisArg`:
+					// cordis' dispatch only context-filters listeners when a
+					// subject is given (thisArg[Context.filter]); a bare
+					// `ctx.emit(event, ...)` runs every listener on the hooks
+					// table — which, with the shared session-ctx architecture,
+					// prefilled EVERY mounted composer with the rolled-back
+					// text. The dsh input-trigger uses the same shaped call
+					// (actx.bail(actx, "slash/input-insert-text", ...)).
+					const binding = sessions.binding(data.sessionId);
+					binding?.ctx.emit(binding.ctx, 'slash/input-insert-text', {
+						text: next,
+						span: { start: 0, end: 0, draftRev: 0 }
+					});
+				}
+				sessions.open(data.sessionId);
 			} catch (err) {
 				control.showNote(err instanceof Error ? err.message : String(err), false);
 			} finally {
@@ -290,6 +367,12 @@ window.__ModuleLoader__.load({
 				mounted.delete(row);
 			};
 			function scan() {
+				// 清理已离开 DOM 的行：会话切换/渲染回收时这些行不会再出现在
+				// 行循环里，detach 不会被触发——先统一清掉，防 mounted Map 与
+				// DOM 引用泄漏。
+				for (const row of mounted.keys()) {
+					if (!row.isConnected) detach(row);
+				}
 				let sessionId;
 				let nodes;
 				try {
