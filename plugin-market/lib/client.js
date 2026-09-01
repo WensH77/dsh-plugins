@@ -241,6 +241,10 @@ window.__ModuleLoader__.load({
 			dshReportChanges: "变更要点",
 			dshReportAffected: "可能受影响的插件",
 			dshReportDetails: "详情",
+			dshReportVersions: "版本变更明细（当前 → 最新，共 {count} 个版本，不跳版本）",
+			dshReportVersionBreaking: "破坏性变更",
+			dshReportVersionMissing: "（该版本变更未能分析）",
+			dshReportVersionEmpty: "（该版本无变更说明）",
 		};
 		const en = {
 			tab: "Plugin Market",
@@ -362,6 +366,10 @@ window.__ModuleLoader__.load({
 			dshReportChanges: "Changes",
 			dshReportAffected: "Possibly affected plugins",
 			dshReportDetails: "Details",
+			dshReportVersions: "Version-by-version changes (current → latest, {count} versions, no version skipped)",
+			dshReportVersionBreaking: "breaking change",
+			dshReportVersionMissing: "(changes for this version could not be analyzed)",
+			dshReportVersionEmpty: "(no change notes for this version)",
 		};
 
 		// ── helpers ──────────────────────────────────────────────────────────
@@ -1098,6 +1106,37 @@ window.__ModuleLoader__.load({
 						sum.className = "pm-modalText";
 						sum.textContent = d.summary ?? "";
 						body.appendChild(sum);
+						if (Array.isArray(d.versions) && d.versions.length > 0) {
+							const h = document.createElement("p");
+							h.className = "pm-modalText";
+							h.style.fontWeight = "600";
+							h.textContent = tpl(t("dshReportVersions"), { count: String(d.versions.length) });
+							body.appendChild(h);
+							const ol = document.createElement("ol");
+							ol.className = "pm-reviewRisks";
+							ol.style.listStyle = "decimal";
+							d.versions.forEach((v) => {
+								const li = document.createElement("li");
+								const head = document.createElement("span");
+								head.style.fontWeight = "600";
+								head.textContent = "v" + v.version + (v.breaking === true ? "（" + t("dshReportVersionBreaking") + "）" : "");
+								li.appendChild(head);
+								if (Array.isArray(v.changes) && v.changes.length > 0) {
+									const ul = document.createElement("ul");
+									ul.className = "pm-reviewRisks";
+									v.changes.forEach((c) => { const sub = document.createElement("li"); sub.textContent = c; ul.appendChild(sub); });
+									li.appendChild(ul);
+								} else {
+									const note = document.createElement("div");
+									note.className = "pm-modalText";
+									note.style.opacity = "0.7";
+									note.textContent = v.missing === true ? t("dshReportVersionMissing") : t("dshReportVersionEmpty");
+									li.appendChild(note);
+								}
+								ol.appendChild(li);
+							});
+							body.appendChild(ol);
+						}
 						if (Array.isArray(d.changes) && d.changes.length > 0) {
 							const h = document.createElement("p");
 							h.className = "pm-modalText";
