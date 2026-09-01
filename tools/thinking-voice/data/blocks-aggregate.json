@@ -1,0 +1,10 @@
+{
+  "generatedAt": "2026-09-01T07:10:34.541Z",
+  "totalBlocks": 21646,
+  "byModel": {
+    "deepseek-v4-flash": 17415,
+    "deepseek-v4-pro": 4227,
+    "deepseek-v4-flash-vision-exp": 4
+  },
+  "note": "来自 2026-09-01 调查: 681 会话, 仅聚合统计, 无原文"
+}

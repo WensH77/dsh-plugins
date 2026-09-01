@@ -1,0 +1,19 @@
+{
+  "date": "2026-09-01 15:06",
+  "design": "同一对象(~/.dsh/sessions)同一工具(du), 只改提问动词; 措辞避开 we/let me/need",
+  "arms": [
+    {
+      "group": "A 分析型",
+      "question": "为什么 ~/.dsh/sessions 会占用这么大空间？分析一下主要是什么在占空间。",
+      "session": "session-44eb6ec2-17f0-4fa2-a8df-955c5f4cb64a",
+      "result": "5 个思考块, 5/5 以 We need / Need to 开口"
+    },
+    {
+      "group": "B 执行型",
+      "question": "列出 ~/.dsh/sessions 下各个子目录的大小，按从大到小排序。",
+      "session": "session-fc15a931-75d2-400b-ba3d-481b06b89e85",
+      "result": "0 个思考块, 直接跑 du 输出表格"
+    }
+  ],
+  "conclusion": "问题形式决定思考语态; We need 是分析型任务的语域, 非可锚定的模型状态"
+}
