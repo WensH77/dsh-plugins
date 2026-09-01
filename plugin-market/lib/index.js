@@ -34,6 +34,15 @@ const SOURCES_FILE = join(homedir(), '.dsh', 'plugin-market-sources.json')
 const REPOS_FILE = join(homedir(), '.dsh', 'plugin-market-repos.json')
 /** 隔离审查目录：先拉取到此处审查，通过后再迁移到 profile。 */
 const STAGING_DIR = join(homedir(), '.dsh', 'plugin-market-staging')
+/**
+ * 隔离目录的 pnpm 设置：必须与 dsh initProfile 为真实 profile 写的
+ * pnpm-workspace.yaml 一致。缺了它，pnpm 会退回默认 auto-install-peers=true，
+ * 于是去 registry 解析插件声明的 peer 及其传递闭包——而 @deepseek-ai/dsh-* 全系
+ * 只发预发布版（latest 停在旧的 0.0.1-rc.1，实际在用的是 next/alpha 标签），
+ * 归并出的 ^0.1.x 之类范围匹配不到任何版本，拉取阶段直接 ERR_PNPM_NO_MATCHING_VERSION。
+ * 插件本身能否运行由宿主的 profiles/node_modules 回退链决定，与此处解析无关。
+ */
+const STAGING_PNPM_WORKSPACE = 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n'
 /** 审查报告缓存目录（按 包名+版本 缓存，避免重复分析；7 天清理）。 */
 const REVIEWS_DIR = join(homedir(), '.dsh', 'plugin-market-reviews')
 /** 审查缓存有效期（天）。 */
@@ -1645,6 +1654,9 @@ async function stagePackage(spec, job, extraOnProgress) {
   // 提前登记 jobDir，中断时即便拉取未完成也能清理残留
   if (job !== undefined && job !== null) job.staged = { jobDir }
   fsMod.writeFileSync(join(jobDir, 'package.json'), JSON.stringify({ name: 'staging', private: true, dependencies: {} }, null, 2) + '\n')
+  // 与真实 profile 同款 pnpm 设置（见 STAGING_PNPM_WORKSPACE）：不写这份配置，
+  // 声明了非 optional 的 @deepseek-ai/dsh-* peer 的插件在这一步就会拉取失败。
+  fsMod.writeFileSync(join(jobDir, 'pnpm-workspace.yaml'), STAGING_PNPM_WORKSPACE)
   // 拉取进度：流式解析 pnpm 的 Progress 行 → job.progress（安装任务 1s 轮询展示进度条）
   // 与 extraOnProgress（检查更新的实时进度）
   const onProgress = (parsed) => {

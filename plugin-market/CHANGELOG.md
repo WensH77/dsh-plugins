@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.12.2
+
+- **修复「声明了 `@deepseek-ai/dsh-*` peer 的插件一律装不上」**：隔离暂存目录（`~/.dsh/plugin-market-staging/job-*`）此前只写 `package.json`，没有 `pnpm-workspace.yaml`，pnpm 于是退回默认 `auto-install-peers=true`，去 registry 解析插件 peer 的整条传递闭包；而 `@deepseek-ai/dsh-*` 全系只发预发布版（`dsh-invariants` 的 `latest` 还停在 `0.0.1-rc.1`，实际在用的是 `next: 0.1.1-rc.2` / `alpha: 0.1.2-alpha.3`），归并出的 `^0.1.1` 之类范围匹配不到任何版本，**拉取阶段直接 `ERR_PNPM_NO_MATCHING_VERSION` 失败**（安装/检查更新/更新三条通道全中，因为都走 `stagePackage`）。现在暂存目录会写入与 dsh `initProfile` 完全一致的 `pnpm-workspace.yaml`（`nodeLinker: hoisted` + `autoInstallPeers: false`），拉取只留一条 peer 警告，插件能否运行仍由宿主的 `profiles/node_modules` 回退链决定，与此处解析无关
+
 ## 0.12.1
 
 - **旧判定不再复用，点击即重新分析**：升级到 0.12.0 前持久化的 dsh 判定（旧格式、无 `versions` 逐版本明细、可能是英文聚合报告）不再被点击复用——点击状态灯会**强制重新分析**，直接产出中文逐版本报告；新格式（versions 非空）仍按幂等复用，版本明细为空时 10 分钟窗口内复用防限流重试
