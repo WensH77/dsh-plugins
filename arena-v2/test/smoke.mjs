@@ -5,6 +5,12 @@ import {
   ARENA_ANOTHER_ROUND_NO,
   ARENA_ANOTHER_ROUND_QUESTION_ID,
   ARENA_ANOTHER_ROUND_YES,
+  ARENA_K_REPORT_NO,
+  ARENA_K_REPORT_QUESTION_ID,
+  ARENA_K_REPORT_YES,
+  ARENA_K_REVISION_NO,
+  ARENA_K_REVISION_QUESTION_ID,
+  ARENA_K_REVISION_YES,
   CHALLENGER_LABEL,
   Config,
   DEFAULT_CHALLENGER_MODEL,
@@ -12,10 +18,14 @@ import {
   DEFAULT_CHALLENGE_PROMPT,
   DEFAULT_CONCLUSION_PROMPT,
   DEFAULT_INSTRUCTION,
+  DEFAULT_KNOWLEDGE_INSTRUCTION,
   DEFAULT_MAIN_PERSONA,
   DEFAULT_SCENE_SEARCH_GUIDE,
   DEFAULT_SEARCH_GUIDE,
+  DEFAULT_SESSION_HISTORY_GUIDE,
   DEFAULT_VERDICT_PROMPT,
+  EXPLORER_LABEL,
+  KNOWLEDGE_SEARCH_GUIDE,
   SCENES,
   SCENE_NAMES,
   apply,
@@ -23,20 +33,27 @@ import {
   challengerModelOf,
   collectAnswer,
   collectAnotherRoundChoice,
+  collectAskAnswerText,
   collectFiles,
   collectToolRecords,
   collectUserQuestion,
   composeRoundText,
+  explorerLabelFor,
   foldArenaMode,
   inject,
   isChallengerLabel,
+  isExplorerLabel,
   name,
   normalizeScene,
   parseArenaCommand,
   parseAnotherRoundAnswer,
   parseIntentOutput,
+  parseKnowledgeChoice,
+  parseReviewFileVerdict,
+  parseStageResult,
   parseVerdictOutcome,
   sanitizeSessionRefs,
+  sceneFromAnyLabel,
   sceneFromLabel,
   scenePersonasOf,
   subagentProviderOf
@@ -90,8 +107,17 @@ assert.equal(bizPersonas.mainPersona, DEFAULT_MAIN_PERSONA, 'business 主代理�
 assert.equal(bizPersonas.challengerPrompt, DEFAULT_CHALLENGER_PROMPT, 'business 挑战者回落顶层默认');
 assert.equal(bizPersonas.challengePrompt, DEFAULT_CHALLENGE_PROMPT, 'business 质疑轮模板回落顶层默认');
 const knPersonas = scenePersonasOf({}, 'knowledge');
-assert.ok(knPersonas.mainPersona.includes('Knowledge Expert'), 'knowledge 主代理默认不同');
+assert.ok(knPersonas.mainPersona.includes('主控者'), 'knowledge 主代理默认为主控者（Workflow Controller）');
 assert.ok(knPersonas.challengerPrompt.includes('审查者'), 'knowledge 挑战者默认不同');
+assert.ok(knPersonas.explorerPrompt.includes('探索者子代理'), 'knowledge 有独立探索者 persona');
+assert.ok(knPersonas.explorePrompt.includes('theseus-explore'), 'knowledge 有 explore 委派模板');
+assert.ok(knPersonas.explorePrompt.includes('{question}'), 'explore 委派模板带用户原文占位符');
+assert.ok(knPersonas.proposePrompt.includes('theseus-propose'), 'knowledge 有 propose 委派模板');
+assert.ok(knPersonas.reviewPrompt.includes('theseus-review-spec'), 'knowledge 有 review 委派模板');
+assert.ok(knPersonas.readinessPrompt.includes('theseus-user-readiness-review'), 'knowledge 有 readiness 委派模板');
+assert.ok(knPersonas.reportPrompt.includes('subagent_fork'), 'knowledge 报告经 fork reporter 生成');
+assert.ok(knPersonas.challengerPrompt.includes('Done'), '挑战者只返回 Done');
+assert.ok(!knPersonas.challengerPrompt.includes('五维审查'), '挑战者 persona 不绑定审查细节（skill 可能调整）');
 assert.notEqual(knPersonas.mainPersona, bizPersonas.mainPersona, 'knowledge 与 business 主代理不同');
 const qaPersonas = scenePersonasOf({}, 'qa');
 assert.ok(qaPersonas.mainPersona.includes('QA Expert'), 'qa 主代理默认不同');
@@ -298,12 +324,35 @@ assert.equal(defaults.maxVerdictRounds, 3, 'maxVerdictRounds 默认 3');
 assert.deepEqual(defaults.challengerModel, DEFAULT_CHALLENGER_MODEL, 'challengerModel 默认值一致');
 // 多源检索指引：目前只注入业务探索（business）；knowledge / qa 默认不注入
 assert.equal(defaults.sceneSearchGuide.business, DEFAULT_SEARCH_GUIDE, 'business 默认注入多源检索指引');
-assert.equal(defaults.sceneSearchGuide.knowledge, '', 'knowledge 默认不注入');
+assert.ok(defaults.sceneSearchGuide.knowledge.includes('openspec/specs'), 'knowledge 注入 Theseus 知识源检索指引');
+assert.ok(defaults.sceneSearchGuide.knowledge.includes('openspec/states'), 'knowledge 检索指引含 workflow 运行时');
+assert.ok(defaults.sceneSearchGuide.knowledge.includes('spec-meta.ts'), 'knowledge 检索指引含 spec-meta');
 assert.equal(defaults.sceneSearchGuide.qa, '', 'qa 默认不注入');
 assert.ok(DEFAULT_SEARCH_GUIDE.includes('mcp__jira'), '指引含 Jira MCP 工具');
 assert.ok(DEFAULT_SEARCH_GUIDE.includes('git log'), '指引含 git 检索');
 assert.ok(DEFAULT_SEARCH_GUIDE.includes('openspec'), '指引含 openspec 检索');
 assert.ok(DEFAULT_SEARCH_GUIDE.includes('代码库'), '指引含代码库检索');
+
+// knowledge 检索指引：与工作区 theseus 技能对齐（状态词汇 / spec-meta 入口 / worktree 边界 / 优先级）
+assert.ok(!KNOWLEDGE_SEARCH_GUIDE.includes('needs-review'), 'knowledge 指引不再引用仓库中不存在的 needs-review 状态');
+assert.ok(!KNOWLEDGE_SEARCH_GUIDE.includes('stale'), 'knowledge 指引不再引用仓库中不存在的 stale 状态');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('status: active'), 'knowledge 指引用真实状态词汇 active');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('status: draft'), 'knowledge 指引用真实状态词汇 draft（draft 须先验证）');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('git rev-parse --show-toplevel'), 'spec-meta 用仓库根解析路径调用（cwd 无关）');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('只读基线'), 'explore-master 标注为只读基线');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('feature worktree'), 'apply 阶段写代码走 feature worktree（不是 explore-master）');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('SKILL.md 为准'), '与工作区 SKILL.md 冲突时以 SKILL.md 为准');
+
+// 历史会话检索指引：独立字段、全场景、只给主代理、能力式条件
+assert.equal(defaults.sessionHistoryGuide, DEFAULT_SESSION_HISTORY_GUIDE, 'sessionHistoryGuide 默认值一致');
+assert.ok(!DEFAULT_SEARCH_GUIDE.includes('session-search'), '历史会话已拆出，不再内嵌在 business 多源检索里');
+assert.ok(!KNOWLEDGE_SEARCH_GUIDE.includes('session-search'), '历史会话不重复出现在 knowledge 检索指引里');
+assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('session-search'), '历史会话指引点名 session-search 等价能力');
+assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('没有该能力则整段跳过'), '无该能力时优雅跳过');
+assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('搜不到不等于没发生过'), '含字面子串匹配的边界说明');
+assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('session id'), '引用过往结论须注明 session id');
+assert.equal(Config({ sessionHistoryGuide: '' }).sessionHistoryGuide, '', "sessionHistoryGuide 可置空（'' = 不注入）");
+
 assert.ok(!('targetPresets' in defaults), 'targetPresets 已移除（与预设无关）');
 
 // ── 终评「仍存疑」→ 询问用户是否再来一轮（不计轮次、不设上限）─────────────
@@ -311,7 +360,7 @@ assert.ok(!('targetPresets' in defaults), 'targetPresets 已移除（与预设�
 assert.ok(DEFAULT_VERDICT_PROMPT.includes('结论：认可'), '终评轮要求输出认可结论标记');
 assert.ok(DEFAULT_VERDICT_PROMPT.includes('结论：仍存疑'), '终评轮要求输出仍存疑结论标记');
 assert.ok(scenePersonasOf({}, 'qa').verdictPrompt.includes('结论：通过'), 'qa 终验轮标记为通过');
-assert.ok(scenePersonasOf({}, 'knowledge').verdictPrompt.includes('结论：认可'), 'knowledge 终审轮也有结论标记');
+assert.equal(scenePersonasOf({}, 'knowledge').verdictPrompt, DEFAULT_VERDICT_PROMPT, 'knowledge 质疑/终评模板回落顶层值但不被 Theseus 流程渲染');
 
 // 结论判定：标记行优先 → 末尾两行 → 全文；存疑优先于认可（否定词含肯定词子串）
 assert.equal(parseVerdictOutcome('结论：认可'), 'approved', '标记行认可');
@@ -394,5 +443,92 @@ assert.ok(DEFAULT_INSTRUCTION.includes('【结论输出要求】'), '指令引�
 // 轮次计数：设计与字段保留，但不记录、不累加、不设上限
 assert.equal(defaults.maxVerdictRounds, 3, 'maxVerdictRounds 保留（不参与判定）');
 assert.ok(!DEFAULT_INSTRUCTION.includes('{maxVerdictRounds}'), '指令不再用轮数上限约束主代理');
+
+// ── 知识沉淀（knowledge）：Theseus workflow 对抗流程 ──────────────────────
+// 双 label：探索者 arena-explorer:<scene> + 挑战者 arena-challenger:<scene>
+assert.equal(EXPLORER_LABEL, 'arena-explorer', '探索者 label 前缀');
+assert.equal(explorerLabelFor('knowledge'), 'arena-explorer:knowledge', '探索者 label 带场景');
+assert.equal(explorerLabelFor('whatever'), 'arena-explorer:business', '未知场景回落 business');
+assert.ok(isExplorerLabel('arena-explorer:knowledge'), '探索者 label 命中');
+assert.ok(!isExplorerLabel('arena-explorer:nope'), '非法场景后缀不命中');
+assert.ok(!isExplorerLabel(CHALLENGER_LABEL + ':knowledge'), '挑战者 label 不是探索者');
+assert.equal(sceneFromAnyLabel('arena-challenger:knowledge'), 'knowledge', 'any label 取挑战者场景');
+assert.equal(sceneFromAnyLabel('arena-explorer:knowledge'), 'knowledge', 'any label 取探索者场景');
+assert.equal(sceneFromAnyLabel('other'), null, '非竞技场 label 无场景');
+
+// 探索者返回协议解析（取最后一个协议行；前缀行）
+assert.deepEqual(parseStageResult('叙述…\nSTAGE_DONE explore CONFIRMED'), { kind: 'stage_done', stage: 'explore', result: 'CONFIRMED' }, 'STAGE_DONE 解析');
+assert.deepEqual(parseStageResult('STAGE_DONE user-readiness CLEARED'), { kind: 'stage_done', stage: 'user-readiness', result: 'CLEARED' }, 'readiness 阶段结果');
+assert.equal(parseStageResult('NEED_QUESTION {"question":"q?"}').kind, 'need_question', 'NEED_QUESTION 解析');
+assert.equal(parseStageResult('NEED_QUESTION {"question":"q?"}').question, '{"question":"q?"}', '问题 JSON 原文保留');
+assert.deepEqual(parseStageResult('BLOCKED 缺 JIRA 票据'), { kind: 'blocked', reason: '缺 JIRA 票据' }, 'BLOCKED 解析');
+assert.equal(parseStageResult('随便说点什么'), null, '无协议行 null');
+assert.equal(parseStageResult(null), null, '非字符串 null');
+assert.deepEqual(
+  parseStageResult('STAGE_DONE explore CONFIRMED\n多余行'),
+  { kind: 'stage_done', stage: 'explore', result: 'CONFIRMED' },
+  '协议行取最后一处命中'
+);
+// dsh 结算包装文本：协议拼在行中间（"…Its closing message:STAGE_DONE explore CONFIRMED"）——
+// 曾因要求行首导致解析失败、流程停在 propose 不派发（session-406356e0 事故）。
+assert.deepEqual(
+  parseStageResult('Background subagent 45c5b11a finished and will do no further work unless you send it more.Its closing message:STAGE_DONE explore CONFIRMED'),
+  { kind: 'stage_done', stage: 'explore', result: 'CONFIRMED' },
+  '结算包装文本（协议不在行首）也能解析'
+);
+assert.deepEqual(
+  parseStageResult('先返回了一个问题 NEED_QUESTION {"question":"q?"}，随后补充 STAGE_DONE explore CONFIRMED'),
+  { kind: 'stage_done', stage: 'explore', result: 'CONFIRMED' },
+  '同消息多协议标记取最后一个'
+);
+
+// review.md Overall Verdict 解析（文件为判定唯一真相）
+assert.equal(parseReviewFileVerdict('**Overall Verdict**: READY'), 'ready', 'READY 认可');
+assert.equal(parseReviewFileVerdict('**Overall Verdict**: NEEDS REVISION'), 'needs_revision', 'NEEDS REVISION');
+assert.equal(parseReviewFileVerdict('**Overall Verdict**: NEEDS_REVISION'), 'needs_revision', '下划线兼容');
+assert.equal(parseReviewFileVerdict('Overall Verdict：NOT READY'), 'not_ready', 'NOT READY + 全角冒号');
+assert.equal(parseReviewFileVerdict('没有 verdict 行'), null, '无判定 null');
+assert.equal(parseReviewFileVerdict(null), null, '非字符串 null');
+
+// 知识沉淀固定提问（主控者 ask_user_question → 宿主判定）
+const kReportJson = (sel) => JSON.stringify({ answers: [{ id: ARENA_K_REPORT_QUESTION_ID, selected: [sel] }] });
+const kRevisionJson = (sel) => JSON.stringify({ answers: [{ id: ARENA_K_REVISION_QUESTION_ID, selected: [sel] }] });
+assert.equal(ARENA_K_REPORT_QUESTION_ID, 'arena_k_report', '报告提问 id 固定');
+assert.equal(ARENA_K_REVISION_QUESTION_ID, 'arena_k_revision', '修订提问 id 固定');
+assert.equal(parseKnowledgeChoice(kReportJson(ARENA_K_REPORT_YES), 'report'), 'generate', '选生成报告');
+assert.equal(parseKnowledgeChoice(kReportJson(ARENA_K_REPORT_NO), 'report'), 'skip', '选跳过（否定优先）');
+assert.equal(parseKnowledgeChoice(kRevisionJson(ARENA_K_REVISION_YES), 'revision'), 'continue', '选再来一轮');
+assert.equal(parseKnowledgeChoice(kRevisionJson(ARENA_K_REVISION_NO), 'revision'), 'stop', '选结束（否定优先）');
+assert.equal(parseKnowledgeChoice('garbage', 'report'), null, '无法判定 null（按 skip/stop 兜底）');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes(ARENA_K_REPORT_QUESTION_ID), 'knowledge 指令含报告提问 id');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes(ARENA_K_REVISION_QUESTION_ID), 'knowledge 指令含修订提问 id');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('Theseus CLI'), 'knowledge 指令声明主控者持 CLI');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('ask_user_question 都只能由你提出'), 'knowledge 指令声明提问独占');
+assert.ok(defaults.knowledgeInstruction, DEFAULT_KNOWLEDGE_INSTRUCTION, 'knowledgeInstruction 默认一致');
+
+// 中继答案提取：只看最后一次结算之后的 ask_user_question 结果原文
+const kAskResult = (callId, text) => ({
+  type: 'tool/result',
+  data: { message: { content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text }] }] } }
+});
+assert.equal(
+  collectAskAnswerText([
+    { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [{ type: 'text', text: 'NEED_QUESTION {"question":"x"}' }] } },
+    { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } },
+    kAskResult('c1', '{"answers":[{"id":"q","selected":["A"]}]}')
+  ]),
+  '{"answers":[{"id":"q","selected":["A"]}]}',
+  '提取结算后的回答原文'
+);
+assert.equal(
+  collectAskAnswerText([
+    { type: 'tool/call', data: { name: 'ask_user_question', callId: 'old' } },
+    kAskResult('old', '{"answers":[]}'),
+    { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [] } }
+  ]),
+  '',
+  '结算前的提问不计入'
+);
+assert.equal(collectAskAnswerText([]), '', '没问 = 空串');
 
 console.log('arena-v2 smoke OK');

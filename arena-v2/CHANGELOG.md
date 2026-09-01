@@ -2,6 +2,49 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.0（feat：历史会话检索指引独立成段（只给主代理）+ fix：knowledge 检索指引对齐工作区 theseus 技能）
+
+- **新增 `sessionHistoryGuide`（历史会话检索指引）**：从 `DEFAULT_SEARCH_GUIDE`（business 第 5 项）拆出为独立常量 `DEFAULT_SESSION_HISTORY_GUIDE`，**全场景共用**（business / knowledge / qa 都注入），随竞技指令段落渲染在「场景检索指引」之后、「阶段指示」之前。
+  - **只注入主代理**：该段落对子代理会话本就返回空（origin/depth 门控），挑战者/探索者是独立会话（父代理历史不进入），回捞历史会话既无意义又会污染对抗——子代理只该基于收到的回合材料与工作区文件判断。
+  - **能力式条件**：正文以「若你具备检索本地 dsh 历史会话的能力（例如技能列表中有 session-search，或其它等价的会话检索技能/工具）」开头——没有该能力的部署整段自然失效，宿主不探测技能目录。
+  - 内容含触发场景（用户提到**当前会话之外**的过往内容 / 复用本会话没有出处的结论 / 质疑里出现「这个之前定过」类争议）、用法（短查询定位候选 → 拉完整上下文 → 再作答；引用注明 session id 与日期）、边界（字面子串匹配、**搜不到不等于没发生过**、当前会话内的内容直接回看上文）。`''` = 不注入。
+- **修复 knowledge 检索指引与工作区 theseus 技能的四处冲突**（对照 intranet-aio 的 `AGENTS.md`、`theseus-retrieve-specs` / `theseus-explore` / `theseus-apply-change` 的 SKILL.md）：
+  - **状态词汇不存在** → 原文「needs-review / stale 规格须先对代码验证」，但 `openspec/specs` 的 frontmatter 只有 `status: active`(36) / `status: draft`(6)，skill 的 Trust Handling 也只定义这两个；改为 **active 可直接采信 / draft 须先对当前代码·工件验证**。
+  - **spec-meta 调用路径** → `node scripts/spec-meta.ts`（相对路径，cwd 不在 repo root 即失败）改为 skill 同款 `node "$(git rev-parse --show-toplevel)/scripts/spec-meta.ts" search --term "<term>"`，并补上 helper 不可用时「回退直接文件搜索并在 trace/摘要声明回退」。
+  - **worktree 边界误导** → 主控者唯一真写代码的阶段是 T6 apply，原文只说「探索/审查优先读 explore-master」；补上 explore-master 是**只读基线不得修改**、apply 写代码必须用该 change 的 feature worktree（`worktrees/<project>/<branch>/`，AGENTS.md 的强制 worktree 约定）。
+  - **优先级未声明** → 末尾补「本指引只是知识源清单，执行细节与输出契约（Search Order、`Relevant specs consulted` / `Trust notes` 块）以工作区 SKILL.md 为准，冲突时一律以 SKILL.md 为准」——此前只写在 README 里，而 SKILL.md 是会被上下文压缩剪掉的历史消息、指引却每轮重渲染。
+  - 保留 Jira 项并注明**由本指引补充**：intranet-aio 全仓未声明任何 MCP 接入方式，`theseus-retrieve-specs` 只把 JIRA key 当检索输入。
+- 测试：knowledge 指引不含 needs-review/stale、含 active/draft、含 `git rev-parse --show-toplevel`、含只读基线与 feature worktree、含 SKILL.md 优先级声明；历史会话指引默认值一致、可置空、含能力式条件与边界文案，且不再重复出现在 business / knowledge 指引里。
+
+- **修复「插件市场装不上 arena-v2」——10 条 peer 全部补 `optional: true`**：本插件的 `peerDependencies` 此前都不是 optional。插件市场的隔离暂存拉取目录没有 pnpm 配置（pnpm 默认 `auto-install-peers=true`），于是 pnpm 会去 registry 解析这些 peer 及其**传递闭包**；而 `@deepseek-ai/dsh-*` 全系只发预发布版（`dsh-invariants` 的 `latest` 还停在 `0.0.1-rc.1`，实际在用的是 `next: 0.1.1-rc.2` / `alpha: 0.1.2-alpha.3`），归并出的 `^0.1.1` 之类范围匹配不到任何版本 → `ERR_PNPM_NO_MATCHING_VERSION`，**拉取阶段就失败**（同仓 `plugin-market` peer 全 optional、`chat-rollback` peer 都有稳定版，故不受影响）。补齐 `peerDependenciesMeta` 后 pnpm 不再自动安装它们，也不会把一份重复的 dsh 闭包塞进 profile；运行期依旧由宿主的 `profiles/node_modules` 回退链按包名解析，peer 声明只作兼容性说明。
+  - **为什么不是改版本范围**：`^0.1.1-rc.2` 匹配不到 `0.1.2-alpha.3`（semver 规定预发布只能匹配同一 `[major,minor,patch]` 元组），但把范围抬到 `^0.1.2-alpha.3` 会让 pnpm 真的下载整套 alpha 闭包，且上游一发 `0.1.3-alpha` 就原地复发；改成 `*` 更糟——`*` 同样排除预发布，pnpm 会去拉过期的 `latest`（实测装进来 `dsh-agent@0.1.0-rc.6`、`dsh-system-prompt@0.0.1-rc.1`）。optional 是唯一既不误装、又对 rc/alpha 宿主通吃的写法。
+
+## 0.32.1（fix：结算包装文本解析 + 缺失的 {question} 传递 + awaiting 自愈续跑）
+
+- **修复结算协议解析失败（session-406356e0 事故）**：dsh 的 subagent-settled 包装文本把协议拼在行中间（`…Its closing message:STAGE_DONE explore CONFIRMED`，无换行、不在行首），旧 `parseStageResult` 只认行首 → 返回 null → 回退 awaiting，而主代理仍被结算消息唤醒完成 judge+record（states 已推进到 propose），宿主却因 phase=awaiting 不再派发 → **流程停在 propose，探索者收不到下一阶段**。修复：协议标记改为**全文搜索**（取最后一个），不再要求行首。
+- **自愈续跑（防御）**：即使协议再次解析失败，主代理回合结束时宿主以 Theseus 状态文件为真相恢复——`phase=awaiting` 且残留 `kStage/workflowId` 时，读 `openspec/states/<id>.json`：explore→propose 派发 propose；propose→review 派发挑战者；readiness→apply 直接进入 apply 回合（跳过重复 record，record 已完成才会推进）。正常路径不受影响。
+- **补齐 `{question}` 传递**：`explorePrompt` 新增用户原始表述占位符（`「{question}」`），k_init 派发 explore 时用 `collectUserQuestion` 机器提取用户原文填充——用户的主题/范围/背景/约束不再依赖主控者自觉转述。
+- **检索指引新增历史会话源**：`DEFAULT_SEARCH_GUIDE`（business）新增第 5 项——若具备检索本地 dsh 历史会话的能力（例如技能列表中有 `session-search` 或其它等价的会话检索技能/工具），可将当前工作区相关的过往会话作为搜索源（短查询定位候选、拉取完整上下文，引用时注明 session id 与日期）；没有该能力则跳过本项，不影响其它场景/部署。
+- **绑定即续跑（k_init 按状态文件跳阶段）**：会话焦点已有绑定时跳过意图门控，读 `openspec/states/<id>.json` 的 currentStage 直接续跑——`propose` → 派发 propose（跳过重复 explore/record）；`review` → 直接送审；`user-readiness-review` → 续 readiness；`apply` → 主控者 apply 回合；`archive/done` → 直接收尾关闭。重启/重开后发一条消息（如「继续」）即可从断点继续，不再重跑已完成阶段。
+- 测试：结算包装文本解析、同消息多协议标记取最后一个、explore 模板含 `{question}`。
+
+## 0.32.0（feat：知识沉淀场景 = Theseus workflow 对抗流程）
+
+- **知识沉淀（knowledge）场景整体重构为 Theseus workflow 对抗流程**（不再复用 business 的质疑/终评结构）：
+  - **三代理分工**：主控者（主代理）持 Theseus CLI（mode/judge/record）与**全部** ask_user_question；探索者子代理（label `arena-explorer:knowledge`）执行 theseus-explore / theseus-propose / theseus-user-readiness-review，requirement-report 经 **subagent_fork 派生 reporter** 后台执行；挑战者子代理（label `arena-challenger:knowledge`）执行 theseus-review-spec，**只写 review.md、只返回 "Done"**。判定一律读文件（review.md 的 Overall Verdict、openspec/states 的 currentStage），不依赖子代理自述。
+  - **文件所有权**：探索者写除 review.md 与 Theseus 运行时（`openspec/states/`、`openspec/.runtime/`）外的一切工件；挑战者只写 review.md；主控者只经 CLI 变更运行时状态（T6 apply 阶段在 worktree 写代码）。
+  - **阶段机（knowledge 专属 phase）**：`k_init`（绑定 workflow + judge）→ `k_explore`（探索者）→ `k_gate`（主控者 judge+record，宿主验证 states 文件推进）→ `k_propose`（探索者，Metadata Interview 经 `NEED_QUESTION` 中继）→ `k_gate` → `k_review`（挑战者）→ `k_verdict`（按 review.md 分支：READY → 报告询问 → `k_readiness` → CLEARED 后主控者 `k_apply`；NEEDS_REVISION → 固定提问「再来一轮修订」，同意重新 propose 再送审，**无轮次上限**；NOT_READY → 主控者列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，record NOT_READY 后**直接关闭**）→ `k_ask`（中继提问：主控者 ask_user_question，宿主提取答案回传探索者并回到原阶段）。
+  - **探索者返回协议**（宿主机器解析）：`STAGE_DONE <stage> <result>` / `NEED_QUESTION <问题JSON>` / `BLOCKED <原因>`；无法解析 → 保守回等待态可重试。
+  - **readiness 分支**：CLEARED → apply；NOT_CLEARED / NEEDS_REVISION → 主控者总结后关闭。
+  - **apply 验证**：主控者 `k_apply` 回合结束后宿主读 `openspec/states/<id>.json` 确认 currentStage=archive 才收尾，否则注入提醒留场重试。
+  - **场景化收尾提醒**：knowledge 关闭时注入「T7 worktree-commit-push / T8 openspec-impl-doc / T9 theseus-archive-change 需用户明确指示」，不再用 business 的「禁止写操作」文案。
+- **双子代理固定模型**：`registerContinuableSetup` 按 label 识别挑战者**与**探索者，两者都装 `challengerModel`（deepseek-v4-pro · max）与各自 persona（探索者=explorerPrompt，挑战者=challengerPrompt）。
+- **配置扩展**：`scenePersonas.<scene>` 新增 `explorerPrompt` / `explorePrompt` / `proposePrompt` / `reviewPrompt` / `readinessPrompt` / `reportPrompt`（knowledge 默认六件套，其它场景回落空串）；新增顶层 `knowledgeInstruction`（默认 `DEFAULT_KNOWLEDGE_INSTRUCTION`）。
+- **检索指引**：`sceneSearchGuide.knowledge` 默认注入 Theseus 知识源指引（openspec specs/changes/drafts、openspec/states、spec-meta.ts、Jira、explore-master worktree），不再为空。
+- **固定提问**：`arena_k_report`（生成报告/跳过）、`arena_k_revision`（再来一轮修订/结束并保留当前工件），选项文案固定，宿主用 `parseKnowledgeChoice` 机器判定。
+- 新增纯函数与测试：`parseStageResult`、`parseReviewFileVerdict`、`parseKnowledgeChoice`、`collectAskAnswerText`、`explorerLabelFor` / `isExplorerLabel` / `sceneFromAnyLabel`；测试覆盖双 label、协议行解析、review.md 判定（含 `**bold**` 与全角冒号兼容）、固定提问、中继答案提取、knowledge 默认 persona/模板/指令/检索指引。
+- 修复：`dispatchArenaRound` 内 `subagents` 局部变量与 id 追踪 Map 同名遮蔽（business 派发改用 `subagentsSvc` 局部名）。
+
 ## 0.31.0（feat：终评仍存疑由用户决定是否再来一轮 + 收尾输出完整结论）
 
 - **终评结论机器判定**：终评轮模板新增「**最后单独一行**输出 `结论：认可` / `结论：仍存疑`（qa 为 `结论：通过`）」要求；新增 `parseVerdictOutcome`——标记行优先（取最后一处，正文复述模板不会误判）→ 末尾两行 → 全文兜底；存疑标记先于认可检查（「不认可」「未通过」含肯定词子串），并剔除「存疑已解决」「仍未解决项：无」等消解性表述。**无法判定时保守按「仍存疑」**——把决定权交回用户，而不是直接关掉竞技场。判定结果存进侧文件新字段 `verdictOutcome`（`approved` / `disputed`；新一轮、收尾、派发失败时复位）。

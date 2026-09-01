@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-arena-v2",
-  "version": "0.31.0",
+  "version": "0.33.0",
   "description": "arena v2：类 plan 的 chip 入口 + 新对话空白页 hero 开关（模仿 model-arena v1，开启后开关右侧显示场景分段控件：业务探索/知识沉淀/测试用例，无模型选择与 skill）开启竞技场（/arena 命令，与预设无关），开启后主代理自动创建可接续子代理作为挑战者，多轮对话用 send_message 复用同一个挑战者；业务探索结构化回合：主代理（Technical Expert）先作答（歧义先澄清）后调用 arena_compose 工具（用户问题/回答/文件/工具记录四字段全部宿主侧机器提取）组装质疑轮/终评轮消息送挑战者（Business Analyst）逐条质疑并终评。双 persona 独立注入，挑战者固定 deepseek-v4-pro · max 推理深度，与父代理解耦；chip/hero 开关样式与 command-setting/竞技场 v1 一致，开关态与场景经 /arena-v2/state 从侧文件恢复（场景当前仅存状态，行为接入见 README「场景」）。",
   "type": "module",
   "main": "lib/index.js",
@@ -40,6 +40,38 @@
     "@deepseek-ai/dsh-subagent": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-tools": "^0.1.1-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-remotes": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subagent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
   },
   "license": "MIT"
 }

@@ -8,6 +8,8 @@ arena v2：**双入口开启竞技场**——输入栏 "Arena" chip，或**新�
 
 **主代理与挑战者分别注入完全不同的 persona**（参考 model-arena 业务探索场景）：主代理被注入「Technical Expert（技术专家）」persona；挑战者被注入「Business Analyst（业务分析师，质疑 + 终评）」persona。两套 persona 互相独立，且都覆盖（阴影）掉预设的 coding-agent persona；未开启竞技场的会话与其它子代理不受影响。
 
+**知识沉淀场景（Theseus workflow 对抗流程）**：与业务探索完全不同——**主控者（主代理）**持 Theseus CLI（`mode/judge/record`）与**全部** `ask_user_question`，**探索者子代理**（`arena-explorer:knowledge`）执行 theseus-explore / theseus-propose / theseus-user-readiness-review（requirement-report 经 subagent_fork 派生 reporter 后台执行），**挑战者子代理**（`arena-challenger:knowledge`）执行 theseus-review-spec、**只写 review.md、只返回 `Done`**。判定一律读文件：review.md 的 `Overall Verdict`（READY → 报告询问 → user-readiness → CLEARED 后主控者 apply；NEEDS_REVISION → 问用户是否再来一轮修订，无轮次上限；NOT_READY → 列出不通过项后直接结束）与 `openspec/states/<id>.json` 的 currentStage（record 生效验证）。两子代理均固定 `deepseek-v4-pro · max`、独立上下文、可接续复用。详见「知识沉淀场景」一节。
+
 **竞技流程（业务探索，结构化回合，宿主驱动）**：开启竞技场后，**回合完全由宿主自动推进**（不依赖主代理自觉）——用户发消息 → 主代理（Technical Expert）作答（歧义先澄清）→ 回合结束 → **宿主**组装**结构化消息**（用户问题、回答正文（不含思维链）、提到的文件、工具操作记录**四字段全部由宿主侧从会话事件机器提取**）→ 宿主创建/复用挑战者 → 挑战者（Business Analyst）逐条质疑 → 结算回传 → 主代理呈现质疑、逐条回应并修正（质疑指出指代未确认时先回问用户）→ 回合结束 → **宿主**组装终评稿续聊挑战者 → 挑战者终评 → 结算回传 → 主代理呈现终评并按结论分支收尾（见下）→ 回合结束 → **宿主关闭竞技场**。多轮对话可接续：始终复用同一个挑战者。
 
 **终评收尾（用户决定是否再来一轮）**：宿主从终评正文机器判定结论（终评模板要求最后单独一行输出 `结论：认可` / `结论：仍存疑`；无标记时回退扫描末尾两行与全文；**无法判定时保守按「仍存疑」**处理，把决定权交回用户）——
@@ -39,38 +41,75 @@ arena v2：**双入口开启竞技场**——输入栏 "Arena" chip，或**新�
    - 主代理回合结束（`turn/end`，phase=present）→ 结论为 `disputed` 且 `collectAnotherRoundChoice` 从会话事件读到用户选了「再来一轮」→ 回到 phase=verdict 再派发一次终评；否则（认可 / 用户拒绝 / 没问 / 无法判定）→ **宿主**关闭竞技场。
    系统提示按 phase 注入「当前竞技阶段」指示（作答/质疑中/修正/终评中/终评呈现），主代理只负责当前阶段的动作；**派发失败（如 provider 未注册）时回退 awaiting，下一条消息可重试**。phase 与 pendingDispatch 持久化，重启后按状态恢复推进。
 6. **竞技工具按会话注册（宿主侧）**：`arena_compose` / `arena_finish` **不全局注册**，而是随竞技场开启注册到该会话作用域（`agent.ctx.tools`）、关闭即卸载（宿主驱动下主代理默认不再调用它们，仅作兼容保留）。同时**竞技场模式下禁用 `goal` 工具**（`tools.restrict({ deny: ['goal'] })`，关闭即恢复）——防止主代理经 goal 绕过竞技场门控。
-8. **挑战者固定模型（宿主侧）**：插件用 `ctx.subagents.registerContinuableSetup` 在挑战者子代理的创建窗口（新建与冷恢复都会走）里，按 label（`arena-challenger:<scene>`）识别挑战者并安装固定的模型选择（`installModelSelection`，与 api-proxy 给 Web 会话固定模型是同一机制）。它在 `agent/request` 瀑布里把挑战者每次请求的 `provider` / `model` / `reasoningEffort` 覆盖为固定值——不依赖继承父代理路由，父代理完全自由；同父会话的其它子代理、其它会话的子代理也不受影响。
+8. **竞技场子代理固定模型（宿主侧）**：插件用 `ctx.subagents.registerContinuableSetup` 在子代理的创建窗口（新建与冷恢复都会走）里，按 label（`arena-challenger:<scene>` / `arena-explorer:<scene>`）识别竞技场子代理并安装固定的模型选择（`installModelSelection`，与 api-proxy 给 Web 会话固定模型是同一机制）。它在 `agent/request` 瀑布里把子代理每次请求的 `provider` / `model` / `reasoningEffort` 覆盖为固定值——不依赖继承父代理路由，父代理完全自由；同父会话的其它子代理、其它会话的子代理也不受影响。
 9. **挑战者与主代理上下文隔离**：挑战者是**独立会话**（`Session.create` 全新日志，父代理历史不进入）；系统提示 = 同一 preset 组成 + 挑战者 persona（`deployment:persona`，子作用域阴影覆盖 preset persona）+ subagent 上下文。**主代理的运行时注册不泄漏**：主 persona 注册在主代理自己的 `agent.ctx`、自动竞技指令 section 显式排除子代理会话（`origin === 'subagent'` 返回空）、arena_compose/arena_finish 工具注册在主代理 `ctx.tools`。挑战者只收到**组装好的回合消息**（用户问题 + 主代理回答正文 + 提到的文件 + 工具摘要，不含思考/推理与完整工具结果）与同工作区上下文（读文件所需）；组装文本中的 `dsh-session:` 会话引用会被中和（全角冒号）——既防止 session-reference 预处理器对截断 URI 抛错，也防止挑战者解引用主会话上下文。
 10. **挑战者 id 追踪（宿主侧）**：宿主派发时自己记录 (会话, 场景) → 挑战者 id；另监听 `subagent/start` 并用 `ctx.subagents.listChildren` 按 label（`arena-challenger:<scene>`）找回，供重启/冷恢复对齐。
 
 ### 场景与挑战者（按场景复用/新建）
 
-场景键：**业务探索 / 知识沉淀 / 测试用例**（`business` / `knowledge` / `qa`，存于 `~/.dsh/arena-v2` 侧文件）。挑战者身份**携带场景**（label = `arena-challenger:<scene>`，旧版无后缀视为 business）：
+场景键：**业务探索 / 知识沉淀 / 测试用例**（`business` / `knowledge` / `qa`，存于 `~/.dsh/arena-v2` 侧文件）。子代理身份**携带场景与角色**（label = `arena-challenger:<scene>` / `arena-explorer:<scene>`，旧版无后缀挑战者视为 business）：
 
-- **会话已有挑战者** → 场景锁定（原场景）：任何入口（chip / hero / 命令 / 路由）都不允许切换场景，开启即复用该场景挑战者；
-- **会话无挑战者** → 开启时选择场景（chip hover 展开 / hero 常显 / `/arena <scene>`），首条消息创建该场景挑战者；此后场景锁定，同一场景的挑战者跨轮次、跨开关复用（`send_message` 接续）。
+- **会话已有竞技场子代理** → 场景锁定（原场景）：任何入口（chip / hero / 命令 / 路由）都不允许切换场景，开启即复用该场景子代理；
+- **会话无子代理** → 开启时选择场景（chip hover 展开 / hero 常显 / `/arena <scene>`），首条消息创建该场景子代理；此后场景锁定，同一场景的子代理跨轮次、跨开关复用（`followup` 接续）；
+- **knowledge 场景两个子代理**：探索者 `arena-explorer:knowledge` + 挑战者 `arena-challenger:knowledge`，各自独立上下文、都固定 deepseek-v4-pro · max。
 
-当前 persona 内容仍是业务探索一套（结构已按场景：身份/固定模型/persona 安装均按场景 label 识别）；三场景专属 persona / 回合模板待后续接入。
+business/qa 沿用质疑-修正-终评双回合；knowledge 走 Theseus workflow 对抗流程（见下）。
 
-**多源检索指引（`sceneSearchGuide`）**：向主代理注入「回答前主动检索的知识源」策略——**目前只注入业务探索（business）场景**：**Jira**（`mcp__jira__*` 工具查 issue/需求/缺陷）、**git**（bash `git log`/`branch`/`show` 查历史与分支）、**openspec**（读工作区 `openspec/` 规格/状态/决策）、代码库（grep/read）交叉验证，并在回答中注明来源。knowledge / qa 默认不注入；可按场景在 `sceneSearchGuide` 里覆盖或置空（空 = 该场景不注入）。开启竞技场后，主代理在系统提示里看到这段检索指引，主动搜索对应知识源而不是只查代码库。
+**多源检索指引（`sceneSearchGuide`）**：向主代理注入「回答前主动检索的知识源」策略——**business**：Jira / git / openspec / 代码库交叉验证并注明来源；**knowledge**：Theseus 知识源（`openspec/specs/**`、`openspec/changes/**`、`openspec/drafts/**`、`openspec/states/`、`scripts/spec-meta.ts`、Jira、explore-master worktree）——**与工作区 theseus 技能对齐**：按 frontmatter 真实状态词汇判定可信度（`status: active` 可采信 / `status: draft` 先对代码验证，与 `theseus-retrieve-specs` 的 Trust Handling 一致）、spec-meta 用 `node "$(git rev-parse --show-toplevel)/scripts/spec-meta.ts"` 调用、explore-master 标注只读基线且 **apply 写代码走 feature worktree**、末尾声明「冲突时以工作区 SKILL.md 为准」；qa 默认不注入。可按场景在 `sceneSearchGuide` 里覆盖或置空（空 = 该场景不注入）。
+
+**历史会话检索指引（`sessionHistoryGuide`）**：与场景检索指引并列的独立段落，**全场景共用、只注入主代理**（挑战者/探索者是独立会话，回捞父会话历史既无意义又会污染对抗，故不注入）。**能力式条件**：正文以「若你具备检索本地 dsh 历史会话的能力（例如技能列表中有 `session-search` 或其它等价技能/工具）…」开头——没有该能力的部署整段自然失效，宿主不做技能探测。触发场景（用户提到当前会话之外的过往内容 / 复用本会话没有出处的结论 / 质疑里出现「这个之前定过」类争议）、用法（短查询定位候选 → 拉完整上下文 → 再作答，引用注明 session id 与日期）与边界（字面子串匹配、**搜不到不等于没发生过**、当前会话内的内容直接回看上文）都写在指引里。`''` = 不注入。
+
+### 知识沉淀场景（Theseus workflow 对抗流程）
+
+主控者（主代理）持 Theseus CLI 与全部 ask_user_question；探索者子代理执行阶段 skill 并产出工件（**除 review.md 与 Theseus 运行时外的一切工件**）；挑战者子代理执行 theseus-review-spec，**只写 review.md、只返回 `Done`**。判定一律读文件，不依赖子代理自述。宿主阶段机（phase 持久化侧文件）：
+
+```
+用户消息 → k_init（主控者绑定 workflow + judge）
+  → k_explore（探索者 theseus-explore）→ 结算：
+       STAGE_DONE explore CONFIRMED → k_gate（主控者 judge+record，宿主验证 states=propose）
+       NEED_QUESTION <JSON> → k_ask（主控者 ask_user_question，宿主回传答案 → 回到原阶段）
+       BLOCKED <原因> → 告警回等待态
+  → k_propose（探索者 theseus-propose，Metadata Interview 经 NEED_QUESTION 中继）
+  → k_gate（record propose.completed，宿主验证 states=review）
+  → k_review（挑战者 theseus-review-spec 写 review.md，返回 Done）
+  → k_verdict（主控者读 review.md Overall Verdict）：
+       READY          → 问用户是否生成领导层报告（arena_k_report）
+                        → k_readiness（探索者 user-readiness-review；生成报告时先 fork reporter 后台执行）
+                        → CLEARED → k_gate（record）→ k_apply（主控者 theseus-apply-change，worktree 实现 + 测试报告）
+                          NOT_CLEARED / NEEDS_REVISION → 主控者总结后关闭
+       NEEDS_REVISION → 问用户是否再来一轮修订（arena_k_revision）
+                        同意 → 重新 k_propose（读 review.md Action Items）→ 再送审（无轮次上限）
+                        拒绝 → 主控者总结 + record NEEDS_REVISION → 关闭
+       NOT_READY      → 主控者列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，
+                        record NOT_READY → 关闭（workflow 停在 review 待人工处理）
+关闭 → 注入收尾提醒：T7 worktree-commit-push / T8 openspec-impl-doc / T9 theseus-archive-change 需用户明确指示
+```
+
+- **绑定**：knowledge 场景假定工作区已装 dsh-plugin-theseus；主控者 `k_init` 回合结束时宿主读 `openspec/.runtime/sessions/dsh__<sessionId>.json` 取 workflow id，未绑定则告警回等待态。
+- **record 生效验证**：每个 k_gate 回合结束后宿主读 `openspec/states/<workflowId>.json` 的 currentStage 必须推进到预期阶段，否则注入提醒留场重试——子代理不碰 CLI，record 只属于主控者。
+- **探索者返回协议**：`STAGE_DONE <stage> <result>` / `NEED_QUESTION <问题JSON>` / `BLOCKED <原因>`（一行，宿主机器解析；无法解析保守回等待态）。
+- **派发失败 / 中断**：派发失败注入告警回等待态可重试；子代理中断按产物已满足的 gate 幂等重放（阶段 skill 产物落盘、覆盖式写）。
+- **file ownership**：探索者禁写 review.md、`openspec/states/`、`openspec/.runtime/`；挑战者只写 review.md；主控者只经 CLI 变更运行时状态（k_apply 在 worktree 写代码）。
 
 ## 配置（settings.yaml 命名空间 `arena-v2`）
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 总开关 |
-| `challengerModel.provider` | `deepseek-official` | 挑战者固定模型提供方 |
-| `challengerModel.model` | `deepseek-v4-pro` | 挑战者固定模型 |
-| `challengerModel.reasoningEffort` | `max` | 挑战者固定推理深度 |
+| `challengerModel.provider` | `deepseek-official` | 竞技场子代理（挑战者/探索者）固定模型提供方 |
+| `challengerModel.model` | `deepseek-v4-pro` | 竞技场子代理固定模型 |
+| `challengerModel.reasoningEffort` | `max` | 竞技场子代理固定推理深度 |
 | `mainPersona` | 见 lib/index.js | 主代理 persona（`''` = 保留预设 persona） |
 | `challengerPrompt` | 见 lib/index.js | 挑战者 persona（作为挑战者的系统 persona 注入） |
 | `challengePrompt` | 见 lib/index.js | 质疑轮模板（占位符 `{question}`/`{answer}`/`{files}`/`{tools}`） |
 | `verdictPrompt` | 见 lib/index.js | 终评轮模板（占位符 `{answer}`/`{files}`/`{tools}`；要求最后单独一行输出 `结论：认可`/`结论：仍存疑` 供宿主判定） |
 | `conclusionPrompt` | 见 lib/index.js | 收尾时的【结论输出要求】（终评认可 / 用户拒绝再来一轮时注入，要求整理完整结论而非概览；`''` = 不注入） |
 | `maxVerdictRounds` | `3` | **保留但不参与判定**：终评轮不记录、不累加、不设上限，是否再来一轮由用户逐轮决定 |
-| `sceneSearchGuide` | 见 lib/index.js | 按场景注入主代理的检索指引（`scene -> 文本`，空 = 不注入；**目前默认只注入 business**：Jira/git/openspec/代码库） |
-| `scenePersonas` | `{}` | 各场景 persona 覆盖：`{ business|knowledge|qa: { mainPersona?, challengerPrompt?, challengePrompt?, verdictPrompt? } }`，缺省回落场景默认/顶层（business）值 |
-| `subagentProvider` | `spawn` | 宿主创建挑战者子代理使用的 provider（对应预设 delegation 组的 subagent provider） |
+| `sceneSearchGuide` | 见 lib/index.js | 按场景注入主代理的检索指引（`scene -> 文本`，空 = 不注入；business 多源检索，knowledge Theseus 知识源，qa 空） |
+| `sessionHistoryGuide` | 见 lib/index.js | 历史会话检索指引：全场景共用、**只注入主代理**（子代理不注入），能力式条件（有 `session-search` 等能力才生效）；`''` = 不注入 |
+| `scenePersonas` | `{}` | 各场景 persona 覆盖：`{ business|knowledge|qa: { mainPersona?, challengerPrompt?, challengePrompt?, verdictPrompt?, explorerPrompt?, explorePrompt?, proposePrompt?, reviewPrompt?, readinessPrompt?, reportPrompt? } }`，缺省回落场景默认/顶层（business）值；knowledge 后六字段为探索者 persona 与阶段委派模板 |
+| `knowledgeInstruction` | 见 lib/index.js | knowledge 场景注入主代理的自动竞技指令（Theseus 对抗流程，主控者视角；占位符 `{workflowId}`/`{explorePrompt}`/…） |
+| `subagentProvider` | `spawn` | 宿主创建竞技场子代理使用的 provider（对应预设 delegation 组的 subagent provider） |
 | `intent.enabled` | `true` | 是否启用 flash 意图识别（false = 始终按 need_answer 进入竞技） |
 | `intent.provider` | `deepseek-official` | 意图模型 provider |
 | `intent.model` | `deepseek-v4-flash` | 意图模型（flash 轻量、关思考） |
@@ -152,6 +191,8 @@ cordis.patch.yml（顶层数组）：
 
 ## 使用
 
+**业务探索 / 测试用例：**
+
 1. 任意预设（standard / PTC / BOTH / …都行，只要预设带 `subagent` 工具；minimal 不适用）——父代理用什么模型都行，挑战者固定 deepseek-v4-pro · max
 2. 开启竞技场（未开启时一切照常）：
    - **空白页**：点击 "Arena" hero 开关，开启后其右侧显示场景分段控件（业务探索/知识沉淀/测试用例），点场景即开启；
@@ -161,6 +202,17 @@ cordis.patch.yml（顶层数组）：
 4. 挑战者逐条质疑 → 主代理原样呈现质疑，逐条回应并修正回答（不认可的可用 ask_user_question 提出）→ 按【终评轮模板】再送挑战者终评 → 呈现终评：**认可**则整理并输出本轮完整结论后关闭；**仍存疑**则用 ask_user_question 问你要不要再来一轮「修正 → 终评」——同意就再跑一轮（不限次数），拒绝则整理输出完整结论并关闭
 5. 继续发送内容：主代理用 `send_message` 复用**同一场景的同一个挑战者**，每轮「质疑轮 → 修正 → 终评轮」可接续；关闭后再次开启（原场景）仍复用
 6. 结束竞技：再点 chip / hero 开关或输入 `/arena off`——主代理 persona 与竞技指令随之卸载（挑战者保留）
+
+**知识沉淀（Theseus workflow 对抗流程）：**
+
+1. 在 intranet-aio 等工作区（已装 dsh-plugin-theseus、openspec 就位）开新会话，`/arena knowledge` 开启（空白页 hero 选「知识沉淀」同理）；
+2. 发送主题（或 `/theseus on --init <主题>` 先绑定已有 workflow）——主控者绑定/判定门控后，宿主自动派发**探索者**执行 explore → propose（Metadata Interview 问题由主控者代问）；
+3. 探索者完成 propose 后宿主自动派发**挑战者**执行 theseus-review-spec（写 review.md，返回 Done），主控者按 review.md 结论分支：
+   - READY → 问你「生成领导层报告？」→ 探索者 fork reporter 后台出 PPT + 继续 user-readiness（预测题逐道经主控者代问）→ CLEARED 后**主控者自己执行 apply**（worktree 实现 + 测试报告）；
+   - NEEDS_REVISION → 问你「再来一轮修订？」——同意就重新 propose 再送审（不限次数），拒绝则总结关闭；
+   - NOT_READY → 列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace 后关闭（workflow 停在 review）。
+4. 结束时会列出后续步骤：T7 worktree-commit-push、T8 openspec-impl-doc、T9 theseus-archive-change——按你明确指示执行，不自动 commit/push/archive。
+5. **中断/重启续跑**：会话焦点已绑定 workflow 时，重开会话发任意消息（如「继续」）即可——宿主读 `openspec/states/<id>.json` 的 currentStage 自动跳到对应阶段（propose/review/user-readiness-review/apply）续跑，跳过已完成阶段、不重跑 explore、不重复 record；workflow 已 `archive/done` 则直接收尾。
 
 ## 测试
 
@@ -175,7 +227,8 @@ npm test   # node test/smoke.mjs
 - **终评仍存疑的续轮依赖提问格式**：宿主从 `ask_user_question` 的工具结果里机器提取用户选择（认固定问题 id `arena_another_round` 与固定选项文案，也兼容含「继续/同意」「结束/不继续」等词的自定义回答）；主代理若没问、或选择无法判定，宿主一律按「结束」收尾关闭——不会卡在 present 阶段
 - 挑战者创建走 `subagents.startContinuable`（provider 默认 `spawn`，配置 `subagentProvider` 可覆盖）；若该 provider 未在宿主注册，派发失败会回退等待态（日志可见），下一条消息可重试
 - 竞技场模式是会话级状态（`~/.dsh/arena-v2` 侧文件）：`/arena` 切换立即落盘，下一条消息起生效；chip 挂载时经 `/arena-v2/state` 路由恢复开关态，刷新页面不丢（样式与 command-setting 的 plan 开关一致）
-- 挑战者 id 的宿主侧追踪、固定模型与 persona 注入都按场景 label（`arena-challenger:<scene>`）识别；同父会话的其它子代理不会污染提示里的 id，也不会被装上固定模型/挑战者 persona
+- 挑战者 id 的宿主侧追踪、固定模型与 persona 注入都按场景 label（`arena-challenger:<scene>` / `arena-explorer:<scene>`）识别；同父会话的其它子代理不会污染提示里的 id，也不会被装上固定模型/竞技场 persona
+- **知识沉淀场景**：依赖工作区已装 dsh-plugin-theseus（绑定/门控/record 均由主控者经 Theseus CLI 执行，宿主只读文件验证）；主控者若未绑定 workflow（k_init 结束未产出绑定）会告警回等待态；主控者 record 未生效（states 未推进）会注入提醒留场重试；探索者返回不可解析、review.md 缺失或 Overall Verdict 不可判定时保守处理（回等待态 / 按 NOT_READY 关闭）；探索者/挑战者 persona 只是职责契约，阶段 skill 的细节仍以 intranet-aio 的 SKILL.md 为准（skill 调整不影响 persona）
 - 主代理 persona（`mainPersona`）与挑战者 persona 在各自作用域阴影覆盖预设 persona；未开启竞技场的会话与其它子代理保留预设 persona
 - 挑战者固定模型在创建/冷恢复时安装；若配置里改了 `challengerModel`，已存在的挑战者会话要等下次冷恢复才生效
 - 与预设无关，只看开关：竞技指令与主代理 persona 仅在竞技场模式开启（chip 或空白页 hero 开关）的顶层会话注入；会话没有 `subagent` 工具（如 minimal）时自动跳过；子代理会话本身不会注入（避免递归竞技）

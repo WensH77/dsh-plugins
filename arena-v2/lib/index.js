@@ -42,13 +42,38 @@ const inject = ['settings', 'systemPrompt'];
 /** 挑战者子代理的 durable label（subagent 工具的 description 参数）。 */
 const CHALLENGER_LABEL = 'arena-challenger';
 
+/** 知识沉淀场景探索者子代理的 durable label。 */
+const EXPLORER_LABEL = 'arena-explorer';
+
 /** 场景中文名（宿主侧提示用）。 */
 const SCENE_NAMES = { business: '业务探索', knowledge: '知识沉淀', qa: '测试用例' };
 
+// ── 知识沉淀场景（knowledge）：Theseus workflow 对抗流程的固定交互协议 ──────
+// 主控者（主代理）持有 Theseus CLI（mode/judge/record）与全部 ask_user_question；
+// 探索者子代理执行 explore/propose/user-readiness/requirement-report 并产出工件；
+// 挑战者子代理执行 theseus-review-spec、只写 review.md、只返回 "Done"。
+// 判定一律读文件（review.md / openspec/states/*），不依赖子代理自述。
+
+/** 探索者/挑战者返回协议的行前缀（宿主机器解析子代理结算消息）。 */
+const K_STAGE_DONE = 'STAGE_DONE';
+const K_NEED_QUESTION = 'NEED_QUESTION';
+const K_BLOCKED = 'BLOCKED';
+
+/** 主控者在终评 READY 后询问「是否生成领导层报告」的固定问题 id 与选项文案。 */
+const ARENA_K_REPORT_QUESTION_ID = 'arena_k_report';
+const ARENA_K_REPORT_YES = '生成报告（截图 + PPT）';
+const ARENA_K_REPORT_NO = '跳过';
+
+/** 主控者在终评 NEEDS_REVISION 后询问「是否再来一轮修订」的固定问题 id 与选项文案。 */
+const ARENA_K_REVISION_QUESTION_ID = 'arena_k_revision';
+const ARENA_K_REVISION_YES = '再来一轮修订（重新 propose + 送审）';
+const ARENA_K_REVISION_NO = '结束并保留当前工件';
+
 /**
- * 默认多源检索指引：注入主代理「回答前主动检索的知识源」策略——所有场景默认
- * 共用同一份（Jira / git / openspec / 代码库），不按场景绑定；可按场景在
- * sceneSearchGuide 里覆盖或置空（空字符串 = 该场景不注入）。
+ * 默认多源检索指引：注入主代理「回答前主动检索的知识源」策略（Jira / git /
+ * openspec / 代码库），不按场景绑定；可按场景在 sceneSearchGuide 里覆盖或置空
+ * （空字符串 = 该场景不注入）。历史会话检索已拆为独立的
+ * DEFAULT_SESSION_HISTORY_GUIDE（全场景、能力式条件、只给主代理）。
  */
 const DEFAULT_SEARCH_GUIDE = [
   '[arena-v2 多源检索]',
@@ -57,15 +82,48 @@ const DEFAULT_SEARCH_GUIDE = [
   '2. git：用 bash 查提交历史与分支（git log --oneline -20、git branch -a、git show <commit>、git log --all --grep=<关键词>），定位相关提交 / 分支 / PR。',
   '3. openspec：读工作区 openspec/ 目录（specs/ 规格、states/ 状态、decisions/ 决策、.runtime/sessions/ 会话状态），把相关规格作为回答依据。',
   '4. 代码库：grep / read 照常，与以上来源交叉验证。',
-  '回答中注明每个结论的来源（Jira 条目 / commit / openspec 规格 / 代码路径）；无法从任何来源证实的判断标明「推断」。'
+  '回答中注明每个结论的来源（Jira 条目 / commit / openspec 规格 / 代码路径 / 历史会话）；无法从任何来源证实的判断标明「推断」。'
 ].join('\n');
 
-/** 默认场景检索指引：目前只注入业务探索（business）；knowledge / qa 默认不注入（空 = 不注入），后续需要再按场景扩展。 */
+/** 知识沉淀场景检索指引：Theseus workflow 知识源（主控者绑定/门控/apply 时检索）。 */
+const KNOWLEDGE_SEARCH_GUIDE = [
+  '[arena-v2 知识沉淀检索]',
+  '执行 Theseus workflow 相关动作前，先检索以下知识源（按需交叉验证，注明来源）：',
+  '1. openspec 规格与变更：openspec/specs/**/spec.md（frontmatter 的 anchors/scope/triggers + 正文）、openspec/changes/**（proposal/design/tasks/review/decision-log）、openspec/drafts/**（exploration handoff）；按 frontmatter 的 status 判定可信度——status: active 可直接采信，status: draft 须先对当前代码/工件验证再采信（与 theseus-retrieve-specs 的 Trust Handling 一致）。',
+  '2. workflow 运行时：openspec/states/<id>.json（当前阶段/artifacts/lanes）、openspec/.runtime/sessions/*.json（会话绑定）——只读，经 Theseus CLI（judge/status）查询。',
+  '3. 检索工具：node "$(git rev-parse --show-toplevel)/scripts/spec-meta.ts" search --term "<term>"（或 list 查看已解析元数据）——与 theseus-retrieve-specs 同一入口；helper 不可用时回退直接文件搜索，并在 trace/摘要里声明该回退。',
+  '4. Jira：mcp__jira__* 查 issue/需求/缺陷作为提案与审查的源上下文（Theseus skill 只把 JIRA key 当检索输入、未声明接入方式，此项由本指引补充）。',
+  '5. 代码库：grep / read 照常——探索/审查优先读 worktrees/<project>/explore-master/（**只读基线，不得修改**）；apply 阶段写代码必须用该 change 的 feature worktree（worktrees/<project>/<branch>/，见 AGENTS.md 的强制 worktree 约定），不要在 explore-master 或子项目主 checkout 里改。',
+  '以上只是知识源清单；检索的**执行细节与输出契约**以工作区 SKILL.md 为准（theseus-retrieve-specs 的 Search Order 与 `Relevant specs consulted` / `Trust notes` 块），冲突时一律以 SKILL.md 为准。'
+].join('\n');
+
+/** 默认场景检索指引：business 多源检索；knowledge Theseus 知识源；qa 不注入（空 = 不注入）。 */
 const DEFAULT_SCENE_SEARCH_GUIDE = {
   business: DEFAULT_SEARCH_GUIDE,
-  knowledge: '',
+  knowledge: KNOWLEDGE_SEARCH_GUIDE,
   qa: ''
 };
+
+/**
+ * 默认历史会话检索指引（`sessionHistoryGuide`，全场景共用，'' = 不注入）。
+ *
+ * **只注入主代理**：它随竞技指令段落（arena-v2:auto-arena）渲染，而该段落对子代理
+ * 会话直接返回空——挑战者/探索者是独立会话（父代理历史本就不进入），让它们回捞
+ * 历史会话既无意义，也会污染对抗（它们只该基于收到的回合材料与工作区文件判断）。
+ *
+ * **能力式条件**：正文以「若你具备…」开头，会话没有历史检索技能/工具时整段自然
+ * 失效，不需要宿主侧探测技能目录，也不影响没有该能力的部署。
+ */
+const DEFAULT_SESSION_HISTORY_GUIDE = [
+  '[arena-v2 历史会话检索]',
+  '若你具备检索本地 dsh 历史会话的能力（例如技能列表中有 session-search，或其它等价的会话检索技能/工具），遇到下列情况**先检索再作答**，不要凭印象回答：',
+  '1. 用户提到**当前会话之外**的过往内容（「我们之前聊过」「上次那个方案」「我记得讨论过」「之前那个数字/文件/决定/报错」）；',
+  '2. 你要复用一个在本会话里没有出处的结论、数字、文件路径或历史决定；',
+  '3. 质疑/审查里出现「这个之前定过」「与既有决定冲突」类争议，需要原始出处来裁决。',
+  '用法：先用短查询（2–4 字或一个词）拿候选会话，再拉取该会话完整上下文，然后才回答；引用过往结论时注明 session id 与日期，让用户可自行核对。',
+  '边界：它是字面子串匹配、不做语义联想——**搜不到不等于没发生过**，换同义词重试；仍无结果就如实说「没搜到」，不要断言「我们没讨论过」。内容就在当前会话里时不要用它，直接回看上文。',
+  '没有该能力则整段跳过，不影响其它检索源。'
+].join('\n');
 
 /** 意图识别默认配置：flash 轻量模型、关思考、快速超时。 */
 const DEFAULT_INTENT_CONFIG = {
@@ -119,6 +177,24 @@ function sceneFromLabel(label) {
     return SCENES.includes(scene) ? scene : null;
   }
   return null;
+}
+
+/** 场景对应的探索者 label：arena-explorer:<scene>。 */
+function explorerLabelFor(scene) {
+  return EXPLORER_LABEL + ':' + normalizeScene(scene);
+}
+
+/** 是否为知识沉淀探索者 label。 */
+function isExplorerLabel(label) {
+  if (typeof label === 'string' && label.startsWith(EXPLORER_LABEL + ':')) {
+    return SCENES.includes(label.slice(EXPLORER_LABEL.length + 1));
+  }
+  return false;
+}
+
+/** 从任意竞技场子代理 label（挑战者/探索者）提取场景；其它 label → null。 */
+function sceneFromAnyLabel(label) {
+  return sceneFromLabel(label) ?? (isExplorerLabel(label) ? label.slice(EXPLORER_LABEL.length + 1) : null);
 }
 
 /**
@@ -304,6 +380,123 @@ function parseAnotherRoundAnswer(text) {
   return null;
 }
 
+// ── 知识沉淀（knowledge）场景：探索者/挑战者返回协议与 review.md 判定 ────────
+
+/**
+ * 解析探索者子代理的结算消息（返回协议）：
+ * - `STAGE_DONE <stage> <result>` → { kind:'stage_done', stage, result }
+ * - `NEED_QUESTION <JSON>`      → { kind:'need_question', question:<原始JSON文本> }
+ * - `BLOCKED <原因>`             → { kind:'blocked', reason }
+ * **全文搜索**协议标记（dsh 结算包装文本会把协议拼在行中间，如
+ * "…more.Its closing message:STAGE_DONE explore CONFIRMED"——不要求行首）；
+ * 同一消息出现多个协议标记时取**最后一个**。
+ * @param text - 子代理结算消息正文。
+ */
+function parseStageResult(text) {
+  if (typeof text !== 'string') return null;
+  const t = text.trim();
+  if (t === '') return null;
+  let best = null;
+  let bestAt = -1;
+  const take = (at, value) => {
+    if (at >= 0 && at >= bestAt) {
+      bestAt = at;
+      best = value;
+    }
+  };
+  const done = t.lastIndexOf(K_STAGE_DONE);
+  if (done >= 0) {
+    const m = t.slice(done + K_STAGE_DONE.length).trim().match(/^(\S+)\s+(\S+)/);
+    if (m) take(done, { kind: 'stage_done', stage: m[1], result: m[2] });
+  }
+  const q = t.lastIndexOf(K_NEED_QUESTION);
+  if (q >= 0) take(q, { kind: 'need_question', question: t.slice(q + K_NEED_QUESTION.length).trim() });
+  const b = t.lastIndexOf(K_BLOCKED);
+  if (b >= 0) take(b, { kind: 'blocked', reason: t.slice(b + K_BLOCKED.length).trim() });
+  return best;
+}
+
+/** 知识沉淀固定提问的回答解析（report / revision 两种，否定优先）。 */
+function parseKnowledgeChoice(text, kind) {
+  if (typeof text !== 'string' || text.trim() === '') return null;
+  let picked = '';
+  try {
+    const answers = JSON.parse(text)?.answers;
+    if (Array.isArray(answers) && answers.length > 0) {
+      const id = kind === 'report' ? ARENA_K_REPORT_QUESTION_ID : ARENA_K_REVISION_QUESTION_ID;
+      const target = answers.find((a) => a?.id === id) ?? answers[answers.length - 1];
+      picked = [...(Array.isArray(target?.selected) ? target.selected : []), target?.custom ?? '']
+        .filter((s) => typeof s === 'string')
+        .join(' ');
+    }
+  } catch {}
+  const probe = picked.trim() !== '' ? picked : text;
+  if (kind === 'report') {
+    if (['跳过', '不生成', '不需要', '不用'].some((m) => probe.includes(m))) return 'skip';
+    if (['生成', '报告', '要'].some((m) => probe.includes(m))) return 'generate';
+    return null;
+  }
+  if (['结束', '不继续', '不再', '拒绝', '保留', '算了'].some((m) => probe.includes(m))) return 'stop';
+  if (['再来一轮', '再来', '继续', '同意', '重新'].some((m) => probe.includes(m))) return 'continue';
+  return null;
+}
+
+/**
+ * 解析 review.md 的 Overall Verdict 行 → 'ready' | 'needs_revision' | 'not_ready' | null。
+ * 兼容 `READY` / `NEEDS REVISION` / `NEEDS_REVISION` / `NOT READY` / `NOT_READY` 及 `:：` 分隔。
+ * @param text - review.md 正文。
+ */
+function parseReviewFileVerdict(text) {
+  if (typeof text !== 'string') return null;
+  for (const line of text.split('\n')) {
+    const m = line.match(/Overall\s*Verdict\s*\**\s*[:：]\s*([A-Za-z][A-Za-z _-]*)/i);
+    if (!m) continue;
+    const v = m[1].trim().toUpperCase().replaceAll('_', ' ').replaceAll(/\s+/g, ' ');
+    if (v === 'READY') return 'ready';
+    if (v === 'NEEDS REVISION') return 'needs_revision';
+    if (v === 'NOT READY') return 'not_ready';
+    return null;
+  }
+  return null;
+}
+
+/**
+ * 机器提取主会话里**最后一次挑战者/探索者结算之后**的 ask_user_question 工具结果原文
+ * （JSON 文本）。知识沉淀场景的「中继提问」与固定提问都靠它：主控者提问 → 用户作答 →
+ * 宿主提取答案回传给探索者 / 判定分支。没有提问 → ''。
+ * @param events - 会话事件数组。
+ * @returns ask_user_question 结果原文（空串 = 没问）。
+ */
+function collectAskAnswerText(events) {
+  if (!Array.isArray(events)) return '';
+  let start = 0;
+  for (let i = 0; i < events.length; i += 1) {
+    const e = events[i];
+    if (e?.type === 'user/message' && e.data?.source?.kind === 'subagent-settled') start = i;
+  }
+  const askCallIds = new Set();
+  let answer = '';
+  for (let i = start; i < events.length; i += 1) {
+    const e = events[i];
+    if (e?.type === 'tool/call') {
+      if (e.data?.name === 'ask_user_question' && typeof e.data?.callId === 'string') askCallIds.add(e.data.callId);
+      continue;
+    }
+    if (e?.type !== 'tool/result') continue;
+    const blocks = e.data?.message?.content;
+    if (!Array.isArray(blocks)) continue;
+    for (const block of blocks) {
+      if (block?.type !== 'tool-result' || !askCallIds.has(block.toolCallId)) continue;
+      const text = (Array.isArray(block.content) ? block.content : [])
+        .filter((b) => b?.type === 'text')
+        .map((b) => b.text ?? '')
+        .join('');
+      if (text.trim() !== '') answer = text; // 同一回合多次询问时以最后一次为准
+    }
+  }
+  return answer;
+}
+
 /**
  * 默认挑战者 persona：业务探索（Business Analyst，质疑 + 终评）。作为挑战者
  * 子代理的**系统 persona** 注入（阴影覆盖预设 persona），不再作为 user 消息正文
@@ -320,42 +513,98 @@ const DEFAULT_CHALLENGER_PROMPT = [
 // challengePrompt/verdictPrompt）即 business 默认；其余场景可用 `scenePersonas`
 // 配置覆盖（缺省回落顶层值）。
 
-/** 知识沉淀场景默认 persona 集（main=Knowledge Expert，challenger=审查者）。 */
+/**
+ * 知识沉淀场景默认 persona 集（三代理：主控者 / 探索者 / 挑战者）。
+ * 与业务探索完全不同：这是 Theseus workflow 对抗流程——主控者持 CLI 与用户交互，
+ * 探索者执行 explore/propose/user-readiness/requirement-report 并产出工件，
+ * 挑战者执行 theseus-review-spec 只写 review.md 并返回 "Done"。判定一律读文件。
+ */
 const KNOWLEDGE_PERSONAS = {
   mainPersona: [
-    '[arena-v2 host]',
-    '你是 Knowledge Expert（知识专家），竞技场主答者，负责产出结构化方案。',
-    '【答题时】',
-    '1. 先回答用户问题，输出结构化方案（现状/依据/结论/行动项）。',
-    '2. 用户问题含指代性口语词或多义术语时，必须先 ask_user_question 向用户澄清指代，再回答；调查只用于列出候选与依据，不替代澄清。',
-    '【面对质疑时】',
-    '1. 收到审查者的逐条质疑后，逐条修正你的方案。',
-    '2. 不认可的条目用 ask_user_question 提出异议。',
+    '[arena-v2 host:knowledge]',
+    '你是竞技场知识沉淀场景的主控者（Workflow Controller）。会话已绑定 Theseus workflow，竞技场回合由系统按阶段推进。你负责路由、把关与用户交互，阶段产出由两个可接续子代理完成。',
+    '',
+    '【分工】',
+    '- 探索者子代理：执行 theseus-explore / theseus-propose / theseus-user-readiness-review，并可用 subagent_fork 派生 reporter 后台执行 requirement-report；产出全部 openspec 工件（review.md 与 Theseus 运行时状态文件除外）。',
+    '- 挑战者子代理：执行 theseus-review-spec，只写 review.md，回复只输出一行 Done。',
+    '- 你：执行 Theseus CLI（mode/judge/record）与 T6 apply；你是唯一向用户提问、唯一推进 workflow 状态的代理。',
+    '',
+    '【流程】',
+    '1. 开启竞技场即完成绑定与门控判定（judge --current），按当前阶段委派子代理。',
+    '2. 子代理返回结构化「问题意图」{question, options}（不含答案/规则）→ 你调 ask_user_question 提问，把回答回传给同一子代理继续。所有 ask_user_question 只能由你提出。',
+    '3. 子代理返回结构化「阶段完成结果」→ 你 judge --current 验证产物后 record <stage>.completed <result>。',
+    '4. 挑战者返回 Done 后，读取 review.md 的 Overall Verdict：',
+    '   - READY → 先问用户是否生成领导层报告（生成 → 委派探索者 fork reporter 后台执行 requirement-report，探索者随即继续）→ 委派探索者 user-readiness-review（其预测题逐道经你中继提问）→ CLEARED 后你执行 apply（theseus-apply-change）。',
+    '   - NEEDS_REVISION → 问用户是否再来一轮修订；同意则委派探索者重新 propose，完成后再次送审。循环不设轮次上限，每轮由用户决定。',
+    '   - NOT_READY → 不再送审：读 review.md 列出五维 FAIL 项、Action Items 与未完成/无证据的 Anchor Trace 行，record review.completed NOT_READY，然后关闭竞技场（workflow 停在 review，待人工处理）。',
+    '5. 全部阶段完成后，汇总本轮产出，并列出后续步骤（不自动执行）：T7 worktree-commit-push、T8 openspec-impl-doc、T9 theseus-archive-change。',
+    '',
+    '【执行边界】',
+    '- 除 T6 apply 外，不直接写 openspec 工件；不替子代理写 review.md / proposal / specs / decision-log；openspec/states/ 与 openspec/.runtime/ 只经 Theseus CLI 变更。',
+    '- T6 apply 以 tasks.md 为唯一依据，在对应 worktree 中实现，跑测试报告（strongCoverage ≥ 80%）后停下——不自动 commit / push / archive。',
+    '- 子代理派发失败回到等待态，可重试；子代理中断按产物已满足的 gate 幂等重放。',
+    '',
     '用中文回答，禁止辩论。'
   ].join('\n'),
+  explorerPrompt: [
+    '[arena-v2 explorer:knowledge]',
+    '你是竞技场知识沉淀场景的探索者子代理，Theseus workflow 的阶段执行者。主控者会以「阶段名 + 上下文」委派你，你加载并完整执行对应 skill，回合结束时只返回结构化结果。',
+    '',
+    '【执行】',
+    '- 按委派加载 skill：theseus-explore / theseus-propose / theseus-user-readiness-review / requirement-report。',
+    '- 按 skill 产出工件：drafts/、decision-log、proposal/design/tasks/metadata-plan、specs/**、user-readiness.review.md、requirement-report.pptx。',
+    '- 收到生成报告的委派时：用 subagent_fork 派生 reporter（继承你上下文）后台执行 requirement-report，你随即继续主线；报告结果非阻塞。会话无 subagent_fork 时，在主线阶段完成后顺序补做。',
+    '- 修订轮次先读 review.md 的 Action Items 再动手。',
+    '',
+    '【边界】',
+    '- 永远不执行 Theseus CLI（mode/judge/record/status/bind）——skill 正文里的 judge/record 步骤跳过，工作流状态只由主控者推进。',
+    '- 永远不写 review.md；不写 openspec/states/ 与 openspec/.runtime/ 下的任何文件。',
+    '- 永远不直接向用户提问：需要用户输入（澄清、Metadata Interview、预测式 readiness 题、确认）时，返回结构化「问题意图」{question, options, 正确项位置, why}，由主控者提问并把答案回传给你。预测题不得在问题意图里泄露答案或规则。',
+    '- 工件语言按 skill 约定（契约英文、decision-log 中文），硬信息不翻译。',
+    '',
+    '【返回协议】（回合结束必含其一，一行内）',
+    '- STAGE_DONE <stage> <result>（如 STAGE_DONE explore CONFIRMED）',
+    '- NEED_QUESTION <问题JSON>（不含答案与规则）',
+    '- BLOCKED <原因>'
+  ].join('\n'),
   challengerPrompt: [
-    '[arena-v2 challenger]',
-    '你是方案审查者（Challenger），身份高于 Knowledge Expert。你将审查主答者的方案，逐条指出问题或漏洞，并给出审查结论（READY / NEEDS_REVISION）。禁止辩论，只按指示输出。'
-  ].join('\n'),
-  challengePrompt: [
-    '[审查轮]',
-    '用户问题：「{question}」',
-    'Knowledge Expert的方案：「{answer}」',
-    '提到的文件：「{files}」',
-    'Knowledge Expert 的工具操作记录：',
-    '「{tools}」',
+    '[arena-v2 challenger:knowledge]',
+    '你是竞技场知识沉淀场景的挑战者子代理，独立审查者，身份高于探索者。收到审查委派后，加载并完整执行 theseus-review-spec，把审查结论写入 openspec/changes/<change>/review.md（含 Overall Verdict 与 Action Items）。',
+    '审查完成后，回复只输出一行：Done（判定由主控者读 review.md 完成，不要输出其它内容）。',
     '',
-    '请用中文对上述方案**逐条审查**：逐点检查方案中的每个观点、结论、依据与行动项，指出问题或漏洞；最后给出一行审查结论（READY 或 NEEDS_REVISION）。禁止辩论，只输出你的审查意见。'
+    '【边界】',
+    '- 只写 review.md，不修改任何其它工件；不执行 Theseus CLI；不向用户提问；不修代码。',
+    '- 禁止辩论，只按指示输出。'
   ].join('\n'),
-  verdictPrompt: [
-    '[终审轮]',
-    'Knowledge Expert修正后的方案：「{answer}」',
-    '提到的文件：「{files}」',
-    'Knowledge Expert 的工具操作记录：',
-    '「{tools}」',
-    '',
-    '修正已完成。请先**逐条核对**你上一轮提出的审查意见是否在修正后的方案中被逐一回应；然后仅给出最终审查结论（认可或仍存疑）。禁止辩论，只输出你的结论。',
-    '**最后单独一行**输出结论标记（供系统判定，不要加其它文字）：`结论：认可` 或 `结论：仍存疑`。'
+  // ── 阶段委派模板（宿主派发给探索者/挑战者的 user 消息）──────────────
+  explorePrompt: [
+    '[arena-v2 委派：explore]',
+    '执行 theseus-explore skill，为 Theseus workflow `{workflowId}`（工作区 `{cwd}`）做探索。',
+    '用户原始表述：',
+    '「{question}」',
+    '（以上为派发方机器提取的用户原文，含范围/背景/约束；探索以它为输入，需要澄清时按返回协议发 NEED_QUESTION。）',
+    '完成后按返回协议输出（一行）：STAGE_DONE explore CONFIRMED，或 NEED_QUESTION <问题JSON>，或 BLOCKED <原因>。'
+  ].join('\n'),
+  proposePrompt: [
+    '[arena-v2 委派：propose]',
+    '执行 theseus-propose skill，为 Theseus workflow `{workflowId}`（工作区 `{cwd}`）生成提案工件（以已确认的 exploration.md 为输入）。{reviewNote}',
+    '完成后按返回协议输出（一行）：STAGE_DONE propose ARTIFACTS_CREATED，或 NEED_QUESTION <问题JSON>，或 BLOCKED <原因>。'
+  ].join('\n'),
+  reviewPrompt: [
+    '[arena-v2 委派：review]',
+    '执行 theseus-review-spec skill，审查 Theseus workflow `{workflowId}` 的提案工件，把审查结论写入 openspec/changes/{workflowId}/review.md。',
+    '完成后回复只输出一行：Done。'
+  ].join('\n'),
+  readinessPrompt: [
+    '[arena-v2 委派：user-readiness-review]',
+    '执行 theseus-user-readiness-review skill，为 Theseus workflow `{workflowId}` 做用户就绪评审。',
+    '每道预测题以 NEED_QUESTION <问题JSON> 返回（问题JSON不含答案与规则），由主控者代问后回传答案；',
+    '全部完成后输出：STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION；受阻输出 BLOCKED <原因>。'
+  ].join('\n'),
+  reportPrompt: [
+    '[arena-v2 委派：requirement-report（后台）]',
+    '用 subagent_fork 派生 reporter 子代理（继承你的上下文）后台执行 requirement-report skill，为 Theseus workflow `{workflowId}` 生成领导层报告；',
+    '派发完成后立即继续主线阶段，无需等待报告结果（报告非阻塞）。会话无 subagent_fork 工具时跳过并在主线完成后顺序补做。'
   ].join('\n')
 };
 
@@ -407,7 +656,9 @@ const DEFAULT_SCENE_PERSONAS = {
 
 /**
  * 会话场景的**有效 persona 集**：场景默认 > 顶层（business）默认；`scenePersonas`
- * 配置可逐字段覆盖。返回 { mainPersona, challengerPrompt, challengePrompt, verdictPrompt }。
+ * 配置可逐字段覆盖。business/qa 返回 { mainPersona, challengerPrompt, challengePrompt,
+ * verdictPrompt }；knowledge 额外返回 { explorerPrompt, explorePrompt, proposePrompt,
+ * reviewPrompt, readinessPrompt, reportPrompt }（其它场景为空字符串，不使用）。
  */
 function scenePersonasOf(cfg, scene) {
   const s = normalizeScene(scene);
@@ -415,24 +666,43 @@ function scenePersonasOf(cfg, scene) {
     mainPersona: typeof cfg?.mainPersona === 'string' ? cfg.mainPersona : DEFAULT_MAIN_PERSONA,
     challengerPrompt: typeof cfg?.challengerPrompt === 'string' ? cfg.challengerPrompt : DEFAULT_CHALLENGER_PROMPT,
     challengePrompt: typeof cfg?.challengePrompt === 'string' ? cfg.challengePrompt : DEFAULT_CHALLENGE_PROMPT,
-    verdictPrompt: typeof cfg?.verdictPrompt === 'string' ? cfg.verdictPrompt : DEFAULT_VERDICT_PROMPT
+    verdictPrompt: typeof cfg?.verdictPrompt === 'string' ? cfg.verdictPrompt : DEFAULT_VERDICT_PROMPT,
+    explorerPrompt: '',
+    explorePrompt: '',
+    proposePrompt: '',
+    reviewPrompt: '',
+    readinessPrompt: '',
+    reportPrompt: ''
   };
   const sceneDefault = DEFAULT_SCENE_PERSONAS[s];
   const sceneBase = sceneDefault !== null && sceneDefault !== void 0
     ? {
-        mainPersona: sceneDefault.mainPersona,
-        challengerPrompt: sceneDefault.challengerPrompt,
-        challengePrompt: sceneDefault.challengePrompt,
-        verdictPrompt: sceneDefault.verdictPrompt
+        mainPersona: typeof sceneDefault.mainPersona === 'string' ? sceneDefault.mainPersona : base.mainPersona,
+        challengerPrompt: typeof sceneDefault.challengerPrompt === 'string' ? sceneDefault.challengerPrompt : base.challengerPrompt,
+        challengePrompt: typeof sceneDefault.challengePrompt === 'string' ? sceneDefault.challengePrompt : base.challengePrompt,
+        verdictPrompt: typeof sceneDefault.verdictPrompt === 'string' ? sceneDefault.verdictPrompt : base.verdictPrompt,
+        explorerPrompt: typeof sceneDefault.explorerPrompt === 'string' ? sceneDefault.explorerPrompt : '',
+        explorePrompt: typeof sceneDefault.explorePrompt === 'string' ? sceneDefault.explorePrompt : '',
+        proposePrompt: typeof sceneDefault.proposePrompt === 'string' ? sceneDefault.proposePrompt : '',
+        reviewPrompt: typeof sceneDefault.reviewPrompt === 'string' ? sceneDefault.reviewPrompt : '',
+        readinessPrompt: typeof sceneDefault.readinessPrompt === 'string' ? sceneDefault.readinessPrompt : '',
+        reportPrompt: typeof sceneDefault.reportPrompt === 'string' ? sceneDefault.reportPrompt : ''
       }
     : base;
   const over = cfg?.scenePersonas?.[s];
   if (over !== null && typeof over === 'object') {
+    const pick = (key) => typeof over[key] === 'string' && over[key] !== '' ? over[key] : sceneBase[key];
     return {
-      mainPersona: typeof over.mainPersona === 'string' && over.mainPersona !== '' ? over.mainPersona : sceneBase.mainPersona,
-      challengerPrompt: typeof over.challengerPrompt === 'string' && over.challengerPrompt !== '' ? over.challengerPrompt : sceneBase.challengerPrompt,
-      challengePrompt: typeof over.challengePrompt === 'string' && over.challengePrompt !== '' ? over.challengePrompt : sceneBase.challengePrompt,
-      verdictPrompt: typeof over.verdictPrompt === 'string' && over.verdictPrompt !== '' ? over.verdictPrompt : sceneBase.verdictPrompt
+      mainPersona: pick('mainPersona'),
+      challengerPrompt: pick('challengerPrompt'),
+      challengePrompt: pick('challengePrompt'),
+      verdictPrompt: pick('verdictPrompt'),
+      explorerPrompt: pick('explorerPrompt'),
+      explorePrompt: pick('explorePrompt'),
+      proposePrompt: pick('proposePrompt'),
+      reviewPrompt: pick('reviewPrompt'),
+      readinessPrompt: pick('readinessPrompt'),
+      reportPrompt: pick('reportPrompt')
     };
   }
   return sceneBase;
@@ -459,6 +729,36 @@ const DEFAULT_INSTRUCTION = [
   '',
   '【终评轮模板】（系统组装时使用的模板）：',
   '{verdictPrompt}'
+].join('\n');
+
+/**
+ * 默认知识沉淀自动竞技指令（system prompt 段落，宿主驱动）。知识沉淀场景走
+ * Theseus workflow 对抗流程：主控者（主代理）持 Theseus CLI 与全部用户提问，
+ * 探索者子代理执行 explore/propose/user-readiness/requirement-report，挑战者子代理
+ * 执行 theseus-review-spec 只写 review.md 返回 Done；判定一律读文件。
+ * 占位符 {workflowId} 由宿主渲染（绑定后才有值，未绑定时显示「（未绑定）」）。
+ */
+const DEFAULT_KNOWLEDGE_INSTRUCTION = [
+  '[arena-v2 知识沉淀]',
+  '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，子代理的创建/复用与派发由系统完成——你不调用 subagent 工具创建它们。你只按当前「竞技阶段」行事：',
+  '1. **绑定/续跑阶段**：judge --current 确认 Theseus workflow 绑定（未绑定则 mode on --bind <id> 或 --init <主题>）。**已绑定且阶段已推进时，系统按 openspec/states 自动续跑对应阶段（跳过已完成阶段）**；只需向用户简报当前阶段后结束回合。',
+  '2. **记录阶段**：judge --current 验证产物后 record 对应 stage.completed，简要向用户汇报，结束回合——系统会按 gate 自动推进下一阶段。',
+  '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，把其中的问题 JSON 原样转成 ask_user_question 提问（question/options 照抄；**绝不向用户展示答案或规则**），拿到回答后结束回合——系统会把回答回传给探索者。',
+  '4. **终评分支**：收到挑战者的 Done 后按 review.md 的 Overall Verdict 行事——READY 先问用户是否生成领导层报告（问题 id 固定 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项固定「' + ARENA_K_REPORT_YES + '」/「' + ARENA_K_REPORT_NO + '」）；NEEDS_REVISION 问用户是否再来一轮修订（问题 id 固定 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项固定「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」，用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION）；NOT_READY 列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，record review.completed NOT_READY 后总结。',
+  '5. **apply 阶段**：按 theseus-apply-change 在 worktree 中实现 tasks.md、跑测试报告、record apply.completed IMPLEMENTED，然后结束回合。',
+  '6. 每个「记录阶段」都必须真的执行 Theseus CLI 并确认 record 生效；任何阶段完成后向用户简报一句。',
+  '所有 ask_user_question 都只能由你提出；子代理不直接问用户。用中文回答，禁止辩论。',
+  '',
+  '【阶段委派模板】（系统派发给子代理时使用的模板，供你了解子代理收到的内容）：',
+  'explore：{explorePrompt}',
+  '',
+  'propose：{proposePrompt}',
+  '',
+  'review：{reviewPrompt}',
+  '',
+  'readiness：{readinessPrompt}',
+  '',
+  'report：{reportPrompt}'
 ].join('\n');
 
 const Config = z.object({
@@ -488,12 +788,20 @@ const Config = z.object({
   conclusionPrompt: z.string().default(DEFAULT_CONCLUSION_PROMPT),
   /** 按场景注入主代理的「检索指引」（scene -> 文本，空 = 不注入）。 */
   sceneSearchGuide: z.dict(z.string()).default(DEFAULT_SCENE_SEARCH_GUIDE),
-  /** 各场景 persona 覆盖：{ business|knowledge|qa: { mainPersona?, challengerPrompt?, challengePrompt?, verdictPrompt? } }，缺省回落场景默认/顶层（business）值。 */
+  /** 历史会话检索指引：全场景共用，**只注入主代理**（子代理不需要），能力式条件（'' = 不注入）。 */
+  sessionHistoryGuide: z.string().default(DEFAULT_SESSION_HISTORY_GUIDE),
+  /** 各场景 persona 覆盖：{ business|knowledge|qa: { mainPersona?, challengerPrompt?, challengePrompt?, verdictPrompt?, explorerPrompt?, explorePrompt?, proposePrompt?, reviewPrompt?, readinessPrompt?, reportPrompt? } }，缺省回落场景默认/顶层（business）值。knowledge 专属六字段用于 Theseus 对抗流程。 */
   scenePersonas: z.dict(z.object({
     mainPersona: z.string(),
     challengerPrompt: z.string(),
     challengePrompt: z.string(),
-    verdictPrompt: z.string()
+    verdictPrompt: z.string(),
+    explorerPrompt: z.string(),
+    explorePrompt: z.string(),
+    proposePrompt: z.string(),
+    reviewPrompt: z.string(),
+    readinessPrompt: z.string(),
+    reportPrompt: z.string()
   })).default({}),
   /** 宿主创建挑战者子代理使用的 provider（对应预设 delegation 组的 subagent provider，默认 spawn）。 */
   subagentProvider: z.string().default('spawn'),
@@ -506,8 +814,10 @@ const Config = z.object({
     timeoutMs: z.number().min(100).max(15000).default(3000),
     maxTokens: z.number().min(1).max(512).default(16)
   }).default(DEFAULT_INTENT_CONFIG),
-  /** 注入到会话 system prompt 的自动竞技指令。 */
-  instruction: z.string().default(DEFAULT_INSTRUCTION)
+  /** 注入到会话 system prompt 的自动竞技指令（业务探索/测试用例场景）。 */
+  instruction: z.string().default(DEFAULT_INSTRUCTION),
+  /** 知识沉淀场景的自动竞技指令（Theseus workflow 对抗流程，主控者视角）。 */
+  knowledgeInstruction: z.string().default(DEFAULT_KNOWLEDGE_INSTRUCTION)
 });
 
 /** 生效的挑战者模型：配置优先，否则默认 deepseek-v4-pro · max。 */
@@ -726,17 +1036,39 @@ const ARENA_PHASE_CHALLENGE = 'challenge';
 const ARENA_PHASE_REVISE = 'revise';
 const ARENA_PHASE_VERDICT = 'verdict';
 const ARENA_PHASE_PRESENT = 'present';
+// 知识沉淀场景（Theseus workflow 对抗流程）的竞技阶段。
+const ARENA_PHASE_K_INIT = 'k_init';          // 主控者：绑定 workflow + judge
+const ARENA_PHASE_K_GATE = 'k_gate';          // 主控者：judge + record 阶段完成
+const ARENA_PHASE_K_ASK = 'k_ask';            // 主控者：中继提问（ask_user_question）
+const ARENA_PHASE_K_EXPLORE = 'k_explore';    // 探索者：theseus-explore
+const ARENA_PHASE_K_PROPOSE = 'k_propose';    // 探索者：theseus-propose
+const ARENA_PHASE_K_REVIEW = 'k_review';      // 挑战者：theseus-review-spec
+const ARENA_PHASE_K_VERDICT = 'k_verdict';    // 主控者：按 review.md 结论分支
+const ARENA_PHASE_K_READINESS = 'k_readiness'; // 探索者：theseus-user-readiness-review
+const ARENA_PHASE_K_APPLY = 'k_apply';        // 主控者：theseus-apply-change（T6）
 const ARENA_PHASES = new Set([
   ARENA_PHASE_AWAITING,
   ARENA_PHASE_ANSWER,
   ARENA_PHASE_CHALLENGE,
   ARENA_PHASE_REVISE,
   ARENA_PHASE_VERDICT,
-  ARENA_PHASE_PRESENT
+  ARENA_PHASE_PRESENT,
+  ARENA_PHASE_K_INIT,
+  ARENA_PHASE_K_GATE,
+  ARENA_PHASE_K_ASK,
+  ARENA_PHASE_K_EXPLORE,
+  ARENA_PHASE_K_PROPOSE,
+  ARENA_PHASE_K_REVIEW,
+  ARENA_PHASE_K_VERDICT,
+  ARENA_PHASE_K_READINESS,
+  ARENA_PHASE_K_APPLY
 ]);
 
 /** 终评结论取值（present 阶段据此分支：认可 → 整理结论；仍存疑 → 问用户是否再来一轮）。 */
 const ARENA_VERDICT_OUTCOMES = new Set(['approved', 'disputed']);
+
+/** 知识沉淀 review.md 判定取值。 */
+const ARENA_K_OUTCOMES = new Set(['ready', 'needs_revision', 'not_ready']);
 
 /** 竞技场场景键（空白页 hero 开关右侧的分段控件：业务探索/知识沉淀/测试用例）。 */
 const SCENES = ['business', 'knowledge', 'qa'];
@@ -761,22 +1093,40 @@ function readArenaState(sessionId) {
       phase: ARENA_PHASES.has(parsed?.phase) ? parsed.phase : ARENA_PHASE_AWAITING,
       verdictRounds: Number.isFinite(parsed?.verdictRounds) && parsed.verdictRounds >= 0 ? parsed.verdictRounds : 0,
       scene: normalizeScene(parsed?.scene),
-      pendingDispatch: pending === ARENA_PHASE_CHALLENGE || pending === ARENA_PHASE_VERDICT ? pending : null,
-      verdictOutcome: ARENA_VERDICT_OUTCOMES.has(parsed?.verdictOutcome) ? parsed.verdictOutcome : null
+      pendingDispatch: pending === ARENA_PHASE_CHALLENGE || pending === ARENA_PHASE_VERDICT
+        || pending === 'explore' || pending === 'propose' || pending === 'review' || pending === 'readiness'
+        ? pending
+        : null,
+      verdictOutcome: ARENA_VERDICT_OUTCOMES.has(parsed?.verdictOutcome) ? parsed.verdictOutcome : null,
+      // 知识沉淀场景字段（旧文件兼容缺省）。
+      workflowId: typeof parsed?.workflowId === 'string' ? parsed.workflowId : '',
+      kStage: typeof parsed?.kStage === 'string' ? parsed.kStage : '',
+      kNext: typeof parsed?.kNext === 'string' ? parsed.kNext : '',
+      kPrev: ARENA_PHASES.has(parsed?.kPrev) ? parsed.kPrev : '',
+      kResult: typeof parsed?.kResult === 'string' ? parsed.kResult : '',
+      reviewOutcome: ARENA_K_OUTCOMES.has(parsed?.reviewOutcome) ? parsed.reviewOutcome : null,
+      kQuestion: typeof parsed?.kQuestion === 'string' ? parsed.kQuestion : ''
     };
   } catch {
-    return { active: false, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, scene: 'business', pendingDispatch: null, verdictOutcome: null };
+    return {
+      active: false, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, scene: 'business', pendingDispatch: null,
+      verdictOutcome: null, workflowId: '', kStage: '', kNext: '', kPrev: '', kResult: '', reviewOutcome: null, kQuestion: ''
+    };
   }
 }
 
-/** 写入会话的竞技状态（侧文件，同会话内下一条消息生效；未指定 scene/verdictOutcome 时保留既有值）。 */
+/** 写入会话的竞技状态（侧文件，同会话内下一条消息生效；未指定字段保留既有值，显式 null 清空）。 */
 function writeArenaState(sessionId, state) {
   const prev = readArenaState(sessionId);
   const pending = state.pendingDispatch === ARENA_PHASE_CHALLENGE || state.pendingDispatch === ARENA_PHASE_VERDICT
+    || state.pendingDispatch === 'explore' || state.pendingDispatch === 'propose' || state.pendingDispatch === 'review'
+    || state.pendingDispatch === 'readiness'
     ? state.pendingDispatch
     : null;
   // undefined = 保留既有值；显式 null = 清空（新一轮/收尾时复位）。
   const outcome = state.verdictOutcome === void 0 ? prev.verdictOutcome : state.verdictOutcome;
+  const reviewOutcome = state.reviewOutcome === void 0 ? prev.reviewOutcome : state.reviewOutcome;
+  const str = (v) => (typeof v === 'string' ? v : '');
   mkdirSync(ARENA_STATE_DIR, { recursive: true });
   writeFileSync(arenaStatePath(sessionId), JSON.stringify({
     active: state.active === true,
@@ -784,7 +1134,14 @@ function writeArenaState(sessionId, state) {
     verdictRounds: Number.isFinite(state.verdictRounds) && state.verdictRounds >= 0 ? state.verdictRounds : 0,
     scene: normalizeScene(state.scene ?? prev.scene),
     pendingDispatch: pending,
-    verdictOutcome: ARENA_VERDICT_OUTCOMES.has(outcome) ? outcome : null
+    verdictOutcome: ARENA_VERDICT_OUTCOMES.has(outcome) ? outcome : null,
+    workflowId: state.workflowId === void 0 ? prev.workflowId : str(state.workflowId),
+    kStage: state.kStage === void 0 ? prev.kStage : str(state.kStage),
+    kNext: state.kNext === void 0 ? prev.kNext : str(state.kNext),
+    kPrev: state.kPrev === void 0 ? prev.kPrev : str(state.kPrev),
+    kResult: state.kResult === void 0 ? prev.kResult : str(state.kResult),
+    reviewOutcome: ARENA_K_OUTCOMES.has(reviewOutcome) ? reviewOutcome : null,
+    kQuestion: state.kQuestion === void 0 ? prev.kQuestion : str(state.kQuestion)
   }), 'utf8');
 }
 
@@ -814,6 +1171,7 @@ function apply(ctx) {
           maxVerdictRounds: 3,
           conclusionPrompt: DEFAULT_CONCLUSION_PROMPT,
           sceneSearchGuide: DEFAULT_SCENE_SEARCH_GUIDE,
+          sessionHistoryGuide: DEFAULT_SESSION_HISTORY_GUIDE,
           scenePersonas: {},
           subagentProvider: 'spawn',
           intent: DEFAULT_INTENT_CONFIG,
@@ -843,25 +1201,29 @@ function apply(ctx) {
           if (!cfg.enabled) return () => {};
           const events = childCtx?.agent?.session?.events;
           if (!events) return () => {};
-          // 挑战者子代理的 descriptor 在创建种子（seedDescriptorTurn）里，
-          // 冷恢复时也在会话日志里——按场景 label 精确识别（含旧版无后缀兼容）。
+          // 竞技场子代理（挑战者/知识沉淀探索者）的 descriptor 在创建种子
+          // （seedDescriptorTurn）里，冷恢复时也在会话日志里——按 label 精确识别
+          // （含旧版无后缀挑战者兼容）。
           const descriptor = foldSubagentDescriptor(events);
-          if (!descriptor || descriptor.mode !== 'continuable' || !isChallengerLabel(descriptor.label)) {
-            return () => {};
-          }
-          const challengerScene = sceneFromLabel(descriptor.label) ?? 'business';
+          if (!descriptor || descriptor.mode !== 'continuable') return () => {};
+          const isChallenger = isChallengerLabel(descriptor.label);
+          const isExplorer = isExplorerLabel(descriptor.label);
+          if (!isChallenger && !isExplorer) return () => {};
+          const role = isExplorer ? 'explorer' : 'challenger';
+          const subScene = sceneFromAnyLabel(descriptor.label) ?? 'business';
           const model = challengerModelOf(cfg);
           const fixed = {
             provider: model.provider,
             model: model.model,
             ...model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}
           };
-          ctx.logger?.info?.('arena-v2: challenger fixed model -> ' + JSON.stringify(fixed));
+          ctx.logger?.info?.('arena-v2: ' + role + ' fixed model -> ' + JSON.stringify(fixed));
           const disposers = [];
-          // 挑战者 persona：按挑战者所属场景取（场景默认 > 顶层 business 默认 > 配置覆盖）。
+          // 子代理 persona：按角色与场景取（场景默认 > 顶层 business 默认 > 配置覆盖）。
           // 创建时注入。阴影覆盖预设 persona（deployment:persona 是命名槽，子代理作用域
-          // 注册的段落最近、优先）。
-          const persona = scenePersonasOf(cfg, challengerScene).challengerPrompt;
+          // 注册的段落最近、优先）。探索者=explorerPrompt；挑战者=challengerPrompt。
+          const personas = scenePersonasOf(cfg, subScene);
+          const persona = isExplorer ? personas.explorerPrompt : personas.challengerPrompt;
           if (persona !== '') {
             const d = childCtx.systemPrompt?.section?.({
               name: PERSONA_SECTION,
@@ -869,7 +1231,7 @@ function apply(ctx) {
               text: persona
             });
             if (typeof d === 'function') disposers.push(d);
-            ctx.logger?.info?.('arena-v2: challenger persona injected');
+            ctx.logger?.info?.('arena-v2: ' + role + ' persona injected');
           }
           // selection 对象只需 current（快照源）与 assembled（快照槽）；
           // installModelSelection 会在每次 system-prompt/assemble 与
@@ -899,16 +1261,18 @@ function apply(ctx) {
       } catch {}
     });
 
-    // ── 挑战者 id 追踪 ────────────────────────────────────────────────────
-    // challengers: `${父会话 id}::${scene}` -> 该场景挑战者子代理 id（durable，
-    //   跨轮次/重启有效；一个会话可因命令切场景而有多个场景的挑战者）。
-    // resolving:   `${父会话 id}::${scene}` -> 最近一次 listChildren 尝试时间（节流）。
+    // ── 竞技场子代理 id 追踪 ────────────────────────────────────────────────
+    // subagents: `${父会话 id}::${label}` -> 子代理 id（durable，跨轮次/重启有效；
+    //   business/qa 一个挑战者 label；knowledge 有 explorer 与 challenger 两个 label）。
+    // resolving:  同键 -> 最近一次 listChildren 尝试时间（节流）。
     // mainPersonas: 会话 id -> 主代理 persona 段落的 disposer。
-    const challengers = new Map();
+    const subagents = new Map();
     const resolving = new Map();
     const mainPersonas = new Map();
     const RESOLVE_THROTTLE_MS = 10_000;
-    const challengerKey = (sessionId, scene) => sessionId + '::' + normalizeScene(scene);
+    const subagentKey = (sessionId, label) => sessionId + '::' + label;
+    const challengerKey = (sessionId, scene) => subagentKey(sessionId, challengerLabelFor(scene));
+    const explorerKey = (sessionId, scene) => subagentKey(sessionId, explorerLabelFor(scene));
 
     /** 顶层会话（非子代理会话）——竞技场只作用于顶层会话。 */
     const isTopLevelAgent = (agent) => {
@@ -924,80 +1288,81 @@ function apply(ctx) {
     };
 
     /**
-     * 按 (父会话, 场景) 找回挑战者子代理并缓存。listChildren 是只读枚举，不加载
+     * 按 (父会话, label) 找回竞技场子代理并缓存。listChildren 是只读枚举，不加载
      * Agent；label 是子代理 descriptor 里的 durable 字段（= subagent 工具的
-     * description），因此只命中该场景的挑战者，不会被同父会话的其它子代理污染。
+     * description），因此只命中该 label 的子代理，不会被同父会话的其它子代理污染。
      */
-    const resolveChallenger = async (parentSessionId, scene, { force = false } = {}) => {
+    const resolveSubagent = async (parentSessionId, label, { force = false } = {}) => {
       try {
-        if (!parentSessionId) return;
-        const s = normalizeScene(scene);
-        const key = challengerKey(parentSessionId, s);
-        const subagents = settingsCtx.get('subagents');
-        if (!subagents || typeof subagents.listChildren !== 'function') return;
+        if (!parentSessionId || typeof label !== 'string' || label === '') return;
+        const key = subagentKey(parentSessionId, label);
+        const subagentsSvc = settingsCtx.get('subagents');
+        if (!subagentsSvc || typeof subagentsSvc.listChildren !== 'function') return;
         const now = Date.now();
         const last = resolving.get(key);
         if (!force && last !== void 0 && now - last < RESOLVE_THROTTLE_MS) return;
         resolving.set(key, now);
-        const entries = await subagents.listChildren(parentSessionId);
-        const label = challengerLabelFor(s);
+        const entries = await subagentsSvc.listChildren(parentSessionId);
         const found = (entries ?? []).find((entry) => (
           entry?.kind === 'child'
           && entry?.mode === 'continuable'
-          && (entry?.label === label || (s === 'business' && entry?.label === CHALLENGER_LABEL))
+          && (entry?.label === label || (label === CHALLENGER_LABEL + ':business' && entry?.label === CHALLENGER_LABEL))
         ));
-        if (found?.id) challengers.set(key, String(found.id));
+        if (found?.id) subagents.set(key, String(found.id));
       } catch (error) {
-        ctx.logger?.warn?.('arena-v2: resolve challenger failed: ' + String(error?.message ?? error));
+        ctx.logger?.warn?.('arena-v2: resolve subagent failed: ' + String(error?.message ?? error));
       }
     };
+    const resolveChallenger = (parentSessionId, scene, opts) => resolveSubagent(parentSessionId, challengerLabelFor(scene), opts);
+    const resolveExplorer = (parentSessionId, scene, opts) => resolveSubagent(parentSessionId, explorerLabelFor(scene), opts);
 
-    /** 该会话是否已有任意场景的挑战者（枚举子代理，按 label 判断；用于命令/路由的场景锁定）。 */
-    const findChallengerEntry = async (sessionId) => {
+    /** 该会话是否已有任意场景的竞技场子代理（枚举子代理，按 label 判断；用于命令/路由的场景锁定）。 */
+    const findArenaChildEntry = async (sessionId) => {
       try {
-        const subagents = settingsCtx.get('subagents');
-        if (!subagents || typeof subagents.listChildren !== 'function') return null;
-        const entries = await subagents.listChildren(sessionId);
+        const subagentsSvc = settingsCtx.get('subagents');
+        if (!subagentsSvc || typeof subagentsSvc.listChildren !== 'function') return null;
+        const entries = await subagentsSvc.listChildren(sessionId);
         return (entries ?? []).find((entry) => (
-          entry?.kind === 'child' && entry?.mode === 'continuable' && isChallengerLabel(entry?.label)
+          entry?.kind === 'child' && entry?.mode === 'continuable'
+          && (isChallengerLabel(entry?.label) || isExplorerLabel(entry?.label))
         )) ?? null;
       } catch {
         return null;
       }
     };
 
-    /** 同步快路径：challengers 内存缓存已知该会话有挑战者（listChildren 懒解析的命中）。 */
-    const hasKnownChallenger = (sessionId) => {
+    /** 同步快路径：subagents 内存缓存已知该会话有竞技场子代理（listChildren 懒解析的命中）。 */
+    const hasKnownChild = (sessionId) => {
       const prefix = sessionId + '::';
-      for (const k of challengers.keys()) {
+      for (const k of subagents.keys()) {
         if (k.startsWith(prefix)) return true;
       }
       return false;
     };
 
-    // 挑战者存在性结果缓存（正负缓存，TTL 10s）——场景锁定检查在用户可见路径上
+    // 子代理存在性结果缓存（正负缓存，TTL 10s）——场景锁定检查在用户可见路径上
     // （命令 /arena <scene>、路由 ?scene=），避免每次点击都打一次 listChildren。
     // statePayload（每次状态拉取）顺带预热本缓存：挂载/轮询先查一次，随后的场景
     // 点击基本命中缓存，无需再等 listChildren。
-    const challengerCheckCache = new Map();
-    const CHALLENGER_CHECK_TTL_MS = 10_000;
-    /** 缓存化的挑战者 entry 查询（无挑战者 = null）。 */
-    const cachedChallengerEntry = async (sessionId) => {
+    const childCheckCache = new Map();
+    const CHILD_CHECK_TTL_MS = 10_000;
+    /** 缓存化的竞技场子代理 entry 查询（无子代理 = null）。 */
+    const cachedChildEntry = async (sessionId) => {
       try {
-        const cached = challengerCheckCache.get(sessionId);
-        if (cached !== void 0 && Date.now() - cached.at < CHALLENGER_CHECK_TTL_MS) return cached.entry;
-        const entry = await findChallengerEntry(sessionId);
-        challengerCheckCache.set(sessionId, { entry, at: Date.now() });
+        const cached = childCheckCache.get(sessionId);
+        if (cached !== void 0 && Date.now() - cached.at < CHILD_CHECK_TTL_MS) return cached.entry;
+        const entry = await findArenaChildEntry(sessionId);
+        childCheckCache.set(sessionId, { entry, at: Date.now() });
         return entry;
       } catch {
         return null;
       }
     };
-    /** 场景锁定快速判断：内存 Map 已知有挑战者 → true；否则走缓存化查询。 */
+    /** 场景锁定快速判断：内存 Map 已知有子代理 → true；否则走缓存化查询。 */
     const hasChallengerCached = async (sessionId) => {
       try {
-        if (hasKnownChallenger(sessionId)) return true; // 已解析过的会话，同步快路径
-        const entry = await cachedChallengerEntry(sessionId);
+        if (hasKnownChild(sessionId)) return true; // 已解析过的会话，同步快路径
+        const entry = await cachedChildEntry(sessionId);
         return entry !== null;
       } catch {
         return false;
@@ -1136,8 +1501,11 @@ function apply(ctx) {
         const sceneChanged = active && scene !== void 0 && normalizeScene(scene) !== st.scene;
         if (st.active === active && !sceneChanged) return 'noop';
         if (active) {
-          // 开启：重置竞技阶段为「等用户问题」。
-          writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, scene, verdictOutcome: null });
+          // 开启：重置竞技阶段为「等用户问题」，并清空知识沉淀场景的会话字段。
+          writeArenaState(sessionId, {
+            active: true, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, scene, verdictOutcome: null,
+            workflowId: '', kStage: '', kNext: '', kPrev: '', kResult: '', reviewOutcome: null, kQuestion: ''
+          });
         } else {
           writeArenaMode(sessionId, false);
         }
@@ -1152,20 +1520,28 @@ function apply(ctx) {
       }
     };
 
-    /** 结束本轮完整对抗：关闭竞技场（active=false + phase 重置）+ 卸载主代理 persona + 注入执行边界提醒。 */
+    /** 结束本轮完整对抗：关闭竞技场（active=false + phase 重置）+ 卸载主代理 persona + 注入场景化收尾提醒。 */
     const finishArenaRound = (sessionId) => {
       try {
-        writeArenaState(sessionId, { active: false, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, verdictOutcome: null });
+        const st = readArenaState(sessionId);
+        writeArenaState(sessionId, {
+          active: false, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, verdictOutcome: null,
+          workflowId: '', kStage: '', kNext: '', kPrev: '', kResult: '', reviewOutcome: null, kQuestion: ''
+        });
         disposeMainPersona(sessionId);
-        // 执行边界兜底：评审已结束，压住「认可后顺手改代码/文档」的历史惯性——
-        // 修改必须等用户明确指示（评审结论不等于用户授权）。
+        // 场景化收尾提醒：
+        // - business/qa：评审已结束，压住「认可后顺手改代码/文档」的历史惯性——修改必须等用户明确指示；
+        // - knowledge：apply 改动在 worktree 中，commit/push/archive（T7-T9）需用户明确指示。
+        const note = st.scene === 'knowledge'
+          ? '[arena-v2] 知识沉淀竞技场已结束。apply 改动位于对应 worktree 中；T7 worktree-commit-push、T8 openspec-impl-doc、T9 theseus-archive-change 请等待用户明确指示后再执行，不要自动 commit / push / archive。'
+          : '[arena-v2] 竞技场评审已结束并关闭。若需修改代码或文档，请等待用户明确指示后再执行；不要自动执行任何写操作。';
         try {
           const agent = settingsCtx.get('agents')?.get(sessionId);
           if (agent && typeof agent.inject === 'function') {
             agent.inject(createUserMessage({
               content: [{
                 type: 'text',
-                text: '[arena-v2] 竞技场评审已结束并关闭。若需修改代码或文档，请等待用户明确指示后再执行；不要自动执行任何写操作。'
+                text: note
               }],
               source: { kind: 'plugin', form: 'notice' }
             }));
@@ -1185,6 +1561,7 @@ function apply(ctx) {
         const id = String(agent.id);
         const st = readArenaState(id);
         void resolveChallenger(id, st.scene, { force: true });
+        if (st.scene === 'knowledge') void resolveExplorer(id, st.scene, { force: true });
         if (st.active) installMainPersona(agent);
       } catch {}
     });
@@ -1204,8 +1581,9 @@ function apply(ctx) {
         if (parent.header.origin === 'subagent') return;
         // 按父会话当前场景找回挑战者（label 校正，避免把同父会话的其它子代理当成挑战者）。
         const st = readArenaState(parentId);
-        challengerCheckCache.delete(parentId); // 挑战者出现，失效存在性缓存
+        childCheckCache.delete(parentId); // 子代理出现，失效存在性缓存
         void resolveChallenger(parentId, st.scene, { force: true });
+        if (st.scene === 'knowledge') void resolveExplorer(parentId, st.scene, { force: true });
       } catch {}
     });
 
@@ -1215,13 +1593,13 @@ function apply(ctx) {
         if (agent?.id) {
           const id = String(agent.id);
           const prefix = id + '::';
-          for (const k of [...challengers.keys()]) {
-            if (k.startsWith(prefix)) challengers.delete(k);
+          for (const k of [...subagents.keys()]) {
+            if (k.startsWith(prefix)) subagents.delete(k);
           }
           for (const k of [...resolving.keys()]) {
             if (k.startsWith(prefix)) resolving.delete(k);
           }
-          challengerCheckCache.delete(id);
+          childCheckCache.delete(id);
           intentBySession.delete(id);
           disposeMainPersona(id);
         }
@@ -1312,8 +1690,8 @@ function apply(ctx) {
         }
         const text = composeRoundText(cfg, round, events, scene);
         const content = [{ type: 'text', text }];
-        const subagents = settingsCtx.get('subagents');
-        if (!subagents || typeof subagents.startContinuable !== 'function' || typeof subagents.followup !== 'function') {
+        const subagentsSvc = settingsCtx.get('subagents');
+        if (!subagentsSvc || typeof subagentsSvc.startContinuable !== 'function' || typeof subagentsSvc.followup !== 'function') {
           const msg = '⚠ 竞技场' + (round === 'verdict' ? '终评' : '质疑') + '轮派发失败：subagents 服务不可用（已回到等待态，可重试）。';
           ctx.logger?.warn?.('arena-v2: dispatch ' + round + ' aborted — subagents service unavailable');
           steerArenaNote(mainAgent, msg);
@@ -1321,18 +1699,18 @@ function apply(ctx) {
           return;
         }
         const key = challengerKey(sessionId, scene);
-        const childId = challengers.get(key);
+        const childId = subagents.get(key);
         if (childId) {
-          await subagents.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
+          await subagentsSvc.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
           ctx.logger?.info?.('arena-v2: dispatch ' + round + ' -> followup ' + childId);
         } else {
-          const res = await subagents.startContinuable({
+          const res = await subagentsSvc.startContinuable({
             provider: subagentProviderOf(cfg),
             label: challengerLabelFor(scene),
             request: { parent: mainAgent, prompt: content, maxDepth: 1 },
             signal: dispatchAbort.signal
           });
-          if (res?.childId) challengers.set(key, String(res.childId));
+          if (res?.childId) subagents.set(key, String(res.childId));
           ctx.logger?.info?.('arena-v2: dispatch ' + round + ' -> create ' + String(res?.childId ?? ''));
         }
       } catch (error) {
@@ -1347,6 +1725,123 @@ function apply(ctx) {
       }
     };
 
+    // ── 知识沉淀（knowledge）场景：Theseus workflow 对抗流程 ────────────────
+    // 主控者（主代理）持 Theseus CLI（mode/judge/record）与全部 ask_user_question；
+    // 探索者子代理执行 explore/propose/user-readiness/requirement-report；
+    // 挑战者子代理执行 theseus-review-spec 只写 review.md 返回 Done。
+    // 判定一律读文件（openspec/.runtime、openspec/states、review.md），不依赖子代理自述。
+
+    /** 会话工作区 cwd（Theseus 运行时与工件都在会话工作区下）。 */
+    const sessionCwd = (session) => {
+      try {
+        const cwd = session?.header?.cwd ?? resolveMainAgent(String(session?.id ?? ''))?.session?.header?.cwd;
+        return typeof cwd === 'string' ? cwd : '';
+      } catch {
+        return '';
+      }
+    };
+
+    const readOptionalJsonFile = (path) => {
+      try {
+        return JSON.parse(readFileSync(path, 'utf8'));
+      } catch {
+        return null;
+      }
+    };
+
+    /** 读主会话绑定的 Theseus workflow id（dsh 上下文键 dsh:<sessionId> → 会话焦点文件）。 */
+    const readKnowledgeWorkflowId = (cwd, sessionId) => {
+      try {
+        if (!cwd) return '';
+        const focus = readOptionalJsonFile(join(cwd, 'openspec', '.runtime', 'sessions', 'dsh__' + String(sessionId) + '.json'));
+        const id = focus?.activeWorkflowId;
+        return typeof id === 'string' ? id : '';
+      } catch {
+        return '';
+      }
+    };
+
+    /** 读 Theseus workflow 的当前阶段（record 生效验证用；文件不存在/损坏 → ''）。 */
+    const readWorkflowStage = (cwd, workflowId) => {
+      try {
+        if (!cwd || !workflowId) return '';
+        const state = readOptionalJsonFile(join(cwd, 'openspec', 'states', String(workflowId) + '.json'));
+        const stage = state?.currentStage;
+        return typeof stage === 'string' ? stage : '';
+      } catch {
+        return '';
+      }
+    };
+
+    /** 读 review.md 的 Overall Verdict → 'ready' | 'needs_revision' | 'not_ready' | null。 */
+    const readReviewOutcome = (cwd, workflowId) => {
+      try {
+        if (!cwd || !workflowId) return null;
+        return parseReviewFileVerdict(readFileSync(join(cwd, 'openspec', 'changes', String(workflowId), 'review.md'), 'utf8'));
+      } catch {
+        return null;
+      }
+    };
+
+    /** 渲染知识沉淀阶段委派模板（{workflowId}/{cwd}/{reviewNote}/{question} 占位符）。 */
+    const renderKnowledgeTemplate = (template, st, cwd, reviewNote, question) => (template ?? '')
+      .replaceAll('{workflowId}', st.workflowId || '（未绑定）')
+      .replaceAll('{cwd}', cwd || '（未知工作区）')
+      .replaceAll('{reviewNote}', reviewNote ?? '')
+      .replaceAll('{question}', typeof question === 'string' && question !== '' ? question : '（无）');
+
+    /**
+     * 宿主派发知识沉淀子代理（探索者 / 挑战者）：按 label 创建/复用，失败注入会话
+     * 可见告警并回退等待态可重试。
+     * @param role - 'explorer' | 'challenger'
+     * @param noteName - 告警文案里的中文角色名
+     */
+    const dispatchKnowledge = async (sessionId, role, stage, text, noteName) => {
+      try {
+        const mainAgent = resolveMainAgent(sessionId);
+        const fail = (msg) => {
+          steerArenaNote(mainAgent, msg);
+          writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
+        };
+        if (!mainAgent) {
+          ctx.logger?.warn?.('arena-v2: k-dispatch ' + stage + ' aborted — live main agent unavailable for ' + sessionId);
+          fail('⚠ 竞技场' + noteName + '派发失败：无法取得当前会话的 live 主代理（已回到等待态，可重试）。');
+          return;
+        }
+        const st = readArenaState(sessionId);
+        const cfg = scope?.get?.() ?? {};
+        const subagentsSvc = settingsCtx.get('subagents');
+        if (!subagentsSvc || typeof subagentsSvc.startContinuable !== 'function' || typeof subagentsSvc.followup !== 'function') {
+          ctx.logger?.warn?.('arena-v2: k-dispatch ' + stage + ' aborted — subagents service unavailable');
+          fail('⚠ 竞技场' + noteName + '派发失败：subagents 服务不可用（已回到等待态，可重试）。');
+          return;
+        }
+        const label = role === 'explorer' ? explorerLabelFor(st.scene) : challengerLabelFor(st.scene);
+        const key = subagentKey(sessionId, label);
+        const childId = subagents.get(key);
+        const content = [{ type: 'text', text: sanitizeSessionRefs(text) }];
+        if (childId) {
+          await subagentsSvc.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
+          ctx.logger?.info?.('arena-v2: k-dispatch ' + stage + ' -> followup ' + childId);
+        } else {
+          const res = await subagentsSvc.startContinuable({
+            provider: subagentProviderOf(cfg),
+            label,
+            request: { parent: mainAgent, prompt: content, maxDepth: 1 },
+            signal: dispatchAbort.signal
+          });
+          if (res?.childId) subagents.set(key, String(res.childId));
+          ctx.logger?.info?.('arena-v2: k-dispatch ' + stage + ' -> create ' + String(res?.childId ?? ''));
+        }
+      } catch (error) {
+        const errText = String(error?.message ?? error);
+        ctx.logger?.warn?.('arena-v2: k-dispatch ' + stage + ' failed: ' + errText);
+        try {
+          steerArenaNote(resolveMainAgent(sessionId), '⚠ 竞技场' + noteName + '派发失败：' + errText + '（已回到等待态，可重试）。');
+          writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
+        } catch {}
+      }
+    };
     // ── 意图识别（flash LLM）：判断用户消息 need_answer / no_need_answer ────
     // 并行预判：用户消息到达即进入作答阶段（主代理零延迟作答），同时用 flash 轻量
     // 模型（reasoningEffort=off）判定该消息是否需要竞技；turn/end 时取结果——
@@ -1446,74 +1941,280 @@ function apply(ctx) {
         }
         if (!isArenaTopLevelSession(session)) return;
         const st = readArenaState(sessionId);
-        // 用户新消息：空闲时开启新一轮（作答阶段）；回合进行中不打断。
-        // 并行预判意图（flash），turn/end 时据此决定是否派发挑战者。
+        const isKnowledge = st.scene === 'knowledge';
+        const cwd = sessionCwd(session);
+        // 用户新消息：空闲时开启新一轮——knowledge → 绑定阶段（k_init），business/qa → 作答阶段。
+        // 并行预判意图（flash），turn/end 时据此决定是否继续。
         if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
           if (st.phase === ARENA_PHASE_AWAITING) {
             const userText = eventText(event);
-            writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_ANSWER, verdictRounds: 0, verdictOutcome: null });
+            writeArenaState(sessionId, {
+              active: true,
+              phase: isKnowledge ? ARENA_PHASE_K_INIT : ARENA_PHASE_ANSWER,
+              verdictRounds: 0,
+              verdictOutcome: null,
+              reviewOutcome: null,
+              workflowId: isKnowledge ? '' : st.workflowId
+            });
             void seedIntent(sessionId, userText);
-            ctx.logger?.info?.('arena-v2: user msg -> phase answer for ' + sessionId);
+            ctx.logger?.info?.('arena-v2: user msg -> phase ' + (isKnowledge ? 'k_init' : 'answer') + ' for ' + sessionId);
           } else {
             ctx.logger?.info?.('arena-v2: user msg ignored (phase=' + st.phase + ') for ' + sessionId);
           }
           return;
         }
-        // 挑战者结算回传（质疑/终评到达父会话）。
+        // 子代理结算回传。
         if (event.type === 'user/message' && event.data?.source?.kind === 'subagent-settled') {
-          if (st.phase === ARENA_PHASE_CHALLENGE && st.pendingDispatch === ARENA_PHASE_CHALLENGE) {
-            writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_REVISE, pendingDispatch: null });
-          } else if (st.phase === ARENA_PHASE_VERDICT && st.pendingDispatch === ARENA_PHASE_VERDICT) {
-            // 终评回传：机器判定结论（认可 / 仍存疑），present 阶段据此分支。
-            // 无法判定时保守按「仍存疑」处理——把决定权交回用户（问是否再来一轮），
-            // 而不是直接关闭竞技场。
-            const parsedOutcome = parseVerdictOutcome(eventText(event));
+          if (!isKnowledge) {
+            if (st.phase === ARENA_PHASE_CHALLENGE && st.pendingDispatch === ARENA_PHASE_CHALLENGE) {
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_REVISE, pendingDispatch: null });
+            } else if (st.phase === ARENA_PHASE_VERDICT && st.pendingDispatch === ARENA_PHASE_VERDICT) {
+              // 终评回传：机器判定结论（认可 / 仍存疑），present 阶段据此分支。
+              // 无法判定时保守按「仍存疑」处理——把决定权交回用户（问是否再来一轮），
+              // 而不是直接关闭竞技场。
+              const parsedOutcome = parseVerdictOutcome(eventText(event));
+              writeArenaState(sessionId, {
+                active: true,
+                phase: ARENA_PHASE_PRESENT,
+                pendingDispatch: null,
+                verdictOutcome: parsedOutcome ?? 'disputed'
+              });
+              ctx.logger?.info?.('arena-v2: verdict outcome=' + String(parsedOutcome ?? 'unparsed→disputed') + ' for ' + sessionId);
+            }
+            return;
+          }
+          // ── knowledge：探索者/挑战者结算 ──
+          const settleText = eventText(event);
+          if (st.phase === ARENA_PHASE_K_EXPLORE || st.phase === ARENA_PHASE_K_PROPOSE || st.phase === ARENA_PHASE_K_READINESS) {
+            if (st.pendingDispatch !== st.kStage) return; // 错轮结算忽略
+            const parsed = parseStageResult(settleText);
+            if (parsed?.kind === 'need_question') {
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_ASK, pendingDispatch: null, kPrev: st.phase, kQuestion: parsed.question });
+              ctx.logger?.info?.('arena-v2: k question relay from ' + st.phase + ' for ' + sessionId);
+              return;
+            }
+            if (parsed?.kind === 'blocked') {
+              steerArenaNote(resolveMainAgent(sessionId), '⚠ 探索者受阻：' + (parsed.reason || '未说明原因') + '。竞技场已回到等待态，可重试。');
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
+              return;
+            }
+            if (parsed?.kind === 'stage_done') {
+              const stage = st.kStage;
+              let next = '';
+              if (stage === 'explore') next = 'propose';
+              else if (stage === 'propose') next = 'review';
+              else if (stage === 'readiness') next = parsed.result === 'CLEARED' ? 'apply' : 'close';
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_GATE, pendingDispatch: null, kNext: next, kResult: parsed.result });
+              ctx.logger?.info?.('arena-v2: k stage done ' + stage + ' result=' + parsed.result + ' next=' + next + ' for ' + sessionId);
+              return;
+            }
+            steerArenaNote(resolveMainAgent(sessionId), '⚠ 探索者返回内容无法解析（期望 STAGE_DONE / NEED_QUESTION / BLOCKED 协议行）。竞技场已回到等待态，可重试。');
+            writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
+            return;
+          }
+          if (st.phase === ARENA_PHASE_K_REVIEW && st.pendingDispatch === 'review') {
+            // 挑战者返回 Done；判定读 review.md 文件（文件为唯一真相）。
+            const outcome = readReviewOutcome(cwd, st.workflowId);
             writeArenaState(sessionId, {
               active: true,
-              phase: ARENA_PHASE_PRESENT,
+              phase: ARENA_PHASE_K_VERDICT,
               pendingDispatch: null,
-              verdictOutcome: parsedOutcome ?? 'disputed'
+              reviewOutcome: outcome ?? 'not_ready'
             });
-            ctx.logger?.info?.('arena-v2: verdict outcome=' + String(parsedOutcome ?? 'unparsed→disputed') + ' for ' + sessionId);
+            ctx.logger?.info?.('arena-v2: k review outcome=' + String(outcome ?? 'unparsed→not_ready') + ' for ' + sessionId);
           }
           return;
         }
-        // 主代理回合结束：按阶段派发质疑轮/终评轮，或关闭竞技场。
+        // 主代理回合结束：按阶段派发或关闭竞技场。
         if (event.type === 'turn/end') {
-          if (st.phase === ARENA_PHASE_ANSWER) {
-            // 意图门控：no_need_answer（纯测试/问候/确认）不派发、静默复位；need_answer
-            // 或判定失败（保守放行）→ 照常派发质疑轮。
-            const intent = await awaitIntent(sessionId);
-            if (intent === 'no_need_answer') {
-              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, pendingDispatch: null });
-              ctx.logger?.info?.('arena-v2: skip dispatch (no_need_answer) for ' + sessionId);
-              return;
-            }
-            writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_CHALLENGE, pendingDispatch: ARENA_PHASE_CHALLENGE });
-            void dispatchArenaRound(sessionId, 'challenge');
-          } else if (st.phase === ARENA_PHASE_REVISE) {
-            writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_VERDICT, pendingDispatch: ARENA_PHASE_VERDICT });
-            void dispatchArenaRound(sessionId, 'verdict');
-          } else if (st.phase === ARENA_PHASE_PRESENT) {
-            // 终评呈现回合结束：仅当终评「仍存疑」且用户明确选择再来一轮时，
-            // 再派发一次终评轮（主代理已在本回合内完成修正）；其余情况——终评认可、
-            // 用户拒绝、或没问/无法判定——都收尾关闭（主代理按【结论输出要求】
-            // 已整理并输出完整结论）。不记录轮次、不设上限：由用户逐轮决定。
-            const choice = st.verdictOutcome === 'disputed' ? readAnotherRoundChoice(sessionId) : null;
-            if (choice === 'continue') {
-              writeArenaState(sessionId, {
-                active: true,
-                phase: ARENA_PHASE_VERDICT,
-                pendingDispatch: ARENA_PHASE_VERDICT,
-                verdictOutcome: null
-              });
-              ctx.logger?.info?.('arena-v2: another round requested by user -> verdict for ' + sessionId);
+          if (!isKnowledge) {
+            if (st.phase === ARENA_PHASE_ANSWER) {
+              // 意图门控：no_need_answer（纯测试/问候/确认）不派发、静默复位；need_answer
+              // 或判定失败（保守放行）→ 照常派发质疑轮。
+              const intent = await awaitIntent(sessionId);
+              if (intent === 'no_need_answer') {
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, pendingDispatch: null });
+                ctx.logger?.info?.('arena-v2: skip dispatch (no_need_answer) for ' + sessionId);
+                return;
+              }
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_CHALLENGE, pendingDispatch: ARENA_PHASE_CHALLENGE });
+              void dispatchArenaRound(sessionId, 'challenge');
+            } else if (st.phase === ARENA_PHASE_REVISE) {
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_VERDICT, pendingDispatch: ARENA_PHASE_VERDICT });
               void dispatchArenaRound(sessionId, 'verdict');
+            } else if (st.phase === ARENA_PHASE_PRESENT) {
+              // 终评呈现回合结束：仅当终评「仍存疑」且用户明确选择再来一轮时，
+              // 再派发一次终评轮（主代理已在本回合内完成修正）；其余情况——终评认可、
+              // 用户拒绝、或没问/无法判定——都收尾关闭（主代理按【结论输出要求】
+              // 已整理并输出完整结论）。不记录轮次、不设上限：由用户逐轮决定。
+              const choice = st.verdictOutcome === 'disputed' ? readAnotherRoundChoice(sessionId) : null;
+              if (choice === 'continue') {
+                writeArenaState(sessionId, {
+                  active: true,
+                  phase: ARENA_PHASE_VERDICT,
+                  pendingDispatch: ARENA_PHASE_VERDICT,
+                  verdictOutcome: null
+                });
+                ctx.logger?.info?.('arena-v2: another round requested by user -> verdict for ' + sessionId);
+                void dispatchArenaRound(sessionId, 'verdict');
+                return;
+              }
+              ctx.logger?.info?.('arena-v2: finish round (outcome=' + String(st.verdictOutcome)
+                + ' choice=' + String(choice) + ') for ' + sessionId);
+              finishArenaRound(sessionId);
+            }
+            return;
+          }
+          // ── knowledge：主控者回合结束，按阶段推进 ──
+          const cfgK = scope?.get?.() ?? {};
+          const personasK = scenePersonasOf(cfgK, 'knowledge');
+          const eventsK = resolveMainAgent(sessionId)?.session?.events;
+          if (st.phase === ARENA_PHASE_K_INIT) {
+            // 续跑优先：会话焦点文件已有绑定时，以 Theseus 状态文件为真相跳到对应阶段
+            // （跳过意图门控——重启/重开后用户发「继续」即可续跑，不会重跑已完成的阶段）。
+            const workflowId = readKnowledgeWorkflowId(cwd, sessionId);
+            if (workflowId === '') {
+              const intent = await awaitIntent(sessionId);
+              if (intent === 'no_need_answer') {
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, verdictRounds: 0, pendingDispatch: null });
+                ctx.logger?.info?.('arena-v2: k skip dispatch (no_need_answer) for ' + sessionId);
+                return;
+              }
+              steerArenaNote(resolveMainAgent(sessionId), '⚠ 未检测到 Theseus workflow 绑定：请先 /theseus on --bind <id> 或 --init <主题>，再重新开始。竞技场已回到等待态。');
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
               return;
             }
-            ctx.logger?.info?.('arena-v2: finish round (outcome=' + String(st.verdictOutcome)
-              + ' choice=' + String(choice) + ') for ' + sessionId);
+            const stageNow = readWorkflowStage(cwd, workflowId) || 'explore';
+            const resumeFrom = (phase, kStage, pending, template, role, noteName, extra) => {
+              const text = renderKnowledgeTemplate(template, { ...st, workflowId }, cwd, '', extra ?? '');
+              writeArenaState(sessionId, { active: true, phase, pendingDispatch: pending, kStage, kNext: '', kResult: '', workflowId });
+              void dispatchKnowledge(sessionId, role, pending, text, noteName);
+            };
+            if (stageNow === 'propose') {
+              // explore 已记录：跳过重复 record，直接派发 propose。
+              ctx.logger?.info?.('arena-v2: k resume at propose for ' + sessionId);
+              resumeFrom(ARENA_PHASE_K_PROPOSE, 'propose', 'propose', personasK.proposePrompt, 'explorer', '探索者');
+            } else if (stageNow === 'review') {
+              // propose 已记录：直接送审（review.md 尚未产出时挑战者会照常审查现有工件）。
+              ctx.logger?.info?.('arena-v2: k resume at review for ' + sessionId);
+              resumeFrom(ARENA_PHASE_K_REVIEW, '', 'review', personasK.reviewPrompt, 'challenger', '挑战者');
+            } else if (stageNow === 'user-readiness-review') {
+              // review READY 已记录：直接续 readiness（报告是否生成已无法回放，按跳过处理；需要报告可事后补）。
+              ctx.logger?.info?.('arena-v2: k resume at readiness for ' + sessionId);
+              resumeFrom(ARENA_PHASE_K_READINESS, 'readiness', 'readiness', personasK.readinessPrompt, 'explorer', '探索者');
+            } else if (stageNow === 'apply') {
+              // readiness CLEARED 已记录：主控者直接执行 apply。
+              ctx.logger?.info?.('arena-v2: k resume at apply for ' + sessionId);
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_APPLY, pendingDispatch: null, kStage: '', kNext: '', kResult: '', workflowId });
+              steerArenaNote(resolveMainAgent(sessionId), '[arena-v2] 宿主：workflow 已处于 apply 阶段（readiness 已 CLEARED）。请按当前「竞技阶段」执行 apply（theseus-apply-change）。');
+            } else if (stageNow === 'archive' || stageNow === 'done') {
+              // workflow 已完成/归档：无需再跑竞技场。
+              ctx.logger?.info?.('arena-v2: k resume sees ' + stageNow + ' -> close for ' + sessionId);
+              steerArenaNote(resolveMainAgent(sessionId), '[arena-v2] Theseus workflow 已处于 ' + stageNow + ' 阶段，本轮竞技场无需继续。');
+              finishArenaRound(sessionId);
+            } else {
+              // explore（首次或仍在 explore 阶段）。
+              const question = collectUserQuestion(eventsK);
+              resumeFrom(ARENA_PHASE_K_EXPLORE, 'explore', 'explore', personasK.explorePrompt, 'explorer', '探索者', question);
+            }
+            return;
+          }
+          if (st.phase === ARENA_PHASE_K_GATE) {
+            if (st.kNext === 'close') {
+              finishArenaRound(sessionId); // readiness NOT_CLEARED / NEEDS_REVISION：主控者已总结
+              return;
+            }
+            const expected = st.kNext === 'propose' || st.kNext === 'review' || st.kNext === 'apply' ? st.kNext : '';
+            const actual = expected === '' ? '' : readWorkflowStage(cwd, st.workflowId);
+            if (expected !== '' && actual === expected) {
+              if (st.kNext === 'propose') {
+                const text = renderKnowledgeTemplate(personasK.proposePrompt, st, cwd, '');
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_PROPOSE, pendingDispatch: 'propose', kStage: 'propose', kNext: '', kResult: '' });
+                void dispatchKnowledge(sessionId, 'explorer', 'propose', text, '探索者');
+              } else if (st.kNext === 'review') {
+                const text = renderKnowledgeTemplate(personasK.reviewPrompt, st, cwd, '');
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_REVIEW, pendingDispatch: 'review', kStage: '', kNext: '', kResult: '' });
+                void dispatchKnowledge(sessionId, 'challenger', 'review', text, '挑战者');
+              } else if (st.kNext === 'apply') {
+                // readiness CLEARED：主控者已 record；steer 一条宿主提示开启 apply 回合
+                // （k_gate 回合刚结束，必须注入新消息触发主控者的 k_apply 回合）。
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_APPLY, pendingDispatch: null, kNext: '' });
+                steerArenaNote(resolveMainAgent(sessionId), '[arena-v2] 宿主：user-readiness 已 CLEARED。请按当前「竞技阶段」执行 apply（theseus-apply-change）。');
+              }
+              return;
+            }
+            steerArenaNote(resolveMainAgent(sessionId), '⚠ record 未生效：Theseus workflow 阶段未推进（期望 ' + (expected || '—') + '，实际 ' + (actual || '未知') + '）。请 judge --current 排查并完成 record 后再结束回合。');
+            return; // 留在 k_gate 重试
+          }
+          if (st.phase === ARENA_PHASE_K_ASK) {
+            const answer = collectAskAnswerText(eventsK);
+            if (answer === '') {
+              steerArenaNote(resolveMainAgent(sessionId), '⚠ 未取到用户对中继提问的回答。竞技场已回到等待态，可重试。');
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
+              return;
+            }
+            const resumePhase = st.kPrev === ARENA_PHASE_K_EXPLORE || st.kPrev === ARENA_PHASE_K_PROPOSE || st.kPrev === ARENA_PHASE_K_READINESS
+              ? st.kPrev
+              : ARENA_PHASE_K_EXPLORE;
+            const resumeStage = st.kStage !== '' ? st.kStage
+              : (resumePhase === ARENA_PHASE_K_EXPLORE ? 'explore' : resumePhase === ARENA_PHASE_K_PROPOSE ? 'propose' : 'readiness');
+            writeArenaState(sessionId, { active: true, phase: resumePhase, pendingDispatch: resumeStage, kStage: resumeStage, kPrev: '', kQuestion: '' });
+            void dispatchKnowledge(sessionId, 'explorer', resumeStage, '[中继答案] ' + answer + '\n\n继续你当前阶段，按返回协议输出。', '探索者');
+            return;
+          }
+          if (st.phase === ARENA_PHASE_K_VERDICT) {
+            if (st.reviewOutcome === 'ready') {
+              const choice = parseKnowledgeChoice(collectAskAnswerText(eventsK), 'report');
+              const reportNote = choice === 'generate' ? renderKnowledgeTemplate(personasK.reportPrompt, st, cwd, '') : '';
+              const text = (reportNote === '' ? '' : reportNote + '\n\n') + renderKnowledgeTemplate(personasK.readinessPrompt, st, cwd, '');
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_READINESS, pendingDispatch: 'readiness', kStage: 'readiness', kNext: '', reviewOutcome: null });
+              void dispatchKnowledge(sessionId, 'explorer', 'readiness', text, '探索者');
+              return;
+            }
+            if (st.reviewOutcome === 'needs_revision') {
+              const choice = parseKnowledgeChoice(collectAskAnswerText(eventsK), 'revision');
+              if (choice === 'continue') {
+                const text = renderKnowledgeTemplate(personasK.proposePrompt, st, cwd, '本轮为修订轮：先读 review.md 的 Action Items 逐条回应，再生成/更新工件。');
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_PROPOSE, pendingDispatch: 'propose', kStage: 'propose', kNext: '', reviewOutcome: null });
+                void dispatchKnowledge(sessionId, 'explorer', 'propose', text, '探索者');
+              } else {
+                finishArenaRound(sessionId); // 用户选择结束（或未问）：主控者已总结并 record NEEDS_REVISION
+              }
+              return;
+            }
+            // not_ready（含无法判定）：主控者已列出不通过项并 record NOT_READY → 关闭。
             finishArenaRound(sessionId);
+            return;
+          }
+          if (st.phase === ARENA_PHASE_K_APPLY) {
+            const actual = readWorkflowStage(cwd, st.workflowId);
+            if (actual === 'archive') {
+              finishArenaRound(sessionId);
+            } else {
+              steerArenaNote(resolveMainAgent(sessionId), '⚠ apply 未完成记录：Theseus workflow 仍处于 ' + (actual || '未知') + ' 阶段。请按 theseus-apply-change 完成任务与测试报告，record apply.completed IMPLEMENTED 后再结束回合。');
+            }
+            return;
+          }
+          // ── 自愈续跑：结算协议解析失败曾被回退 awaiting，但主代理已按结算消息
+          // judge+record、Theseus 状态文件已推进（kStage 残留、workflowId 仍在）。
+          // 以状态文件为真相恢复推进——文件推进到哪就派发哪个下一阶段（跳过重复 record）。
+          if (st.phase === ARENA_PHASE_AWAITING && st.kStage !== '' && st.workflowId !== '') {
+            const stageNow = readWorkflowStage(cwd, st.workflowId);
+            if (st.kStage === 'explore' && stageNow === 'propose') {
+              const text = renderKnowledgeTemplate(personasK.proposePrompt, st, cwd, '');
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_PROPOSE, pendingDispatch: 'propose', kStage: 'propose', kNext: '', kResult: '' });
+              ctx.logger?.info?.('arena-v2: k resume (explore done) -> propose for ' + sessionId);
+              void dispatchKnowledge(sessionId, 'explorer', 'propose', text, '探索者');
+            } else if (st.kStage === 'propose' && stageNow === 'review') {
+              const text = renderKnowledgeTemplate(personasK.reviewPrompt, st, cwd, '');
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_REVIEW, pendingDispatch: 'review', kStage: '', kNext: '', kResult: '' });
+              ctx.logger?.info?.('arena-v2: k resume (propose done) -> review for ' + sessionId);
+              void dispatchKnowledge(sessionId, 'challenger', 'review', text, '挑战者');
+            } else if (st.kStage === 'readiness' && stageNow === 'apply') {
+              writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_APPLY, pendingDispatch: null, kNext: '', kStage: '' });
+              ctx.logger?.info?.('arena-v2: k resume (readiness done) -> apply for ' + sessionId);
+              steerArenaNote(resolveMainAgent(sessionId), '[arena-v2] 宿主：user-readiness 已完成并通过记录。请按当前「竞技阶段」执行 apply（theseus-apply-change）。');
+            }
           }
         }
       } catch {}
@@ -1591,10 +2292,10 @@ function apply(ctx) {
       let hasChallenger = false;
       let challengerScene = st.scene;
       try {
-        const entry = await cachedChallengerEntry(sessionId);
+        const entry = await cachedChildEntry(sessionId);
         if (entry !== null) {
           hasChallenger = true;
-          const s = sceneFromLabel(entry.label);
+          const s = sceneFromAnyLabel(entry.label);
           if (s !== null) challengerScene = s;
         }
       } catch {}
@@ -1706,8 +2407,12 @@ function apply(ctx) {
           // 兜底（历史里查 subagentId 或新建），下一轮提示就位。
           const state = readArenaState(sessionId);
           const scene = state.scene;
-          const challengerId = challengers.get(challengerKey(sessionId, scene));
+          const challengerId = subagents.get(challengerKey(sessionId, scene));
           if (!challengerId) void resolveChallenger(sessionId, scene);
+          if (scene === 'knowledge') {
+            const explorerId = subagents.get(explorerKey(sessionId, scene));
+            if (!explorerId) void resolveExplorer(sessionId, scene);
+          }
           const instruction = typeof cfg.instruction === 'string' ? cfg.instruction : '';
           // 回合模板按当前场景取（场景默认 > 顶层 business 默认 > 配置覆盖）。
           const personas = scenePersonasOf(cfg, scene);
@@ -1720,6 +2425,74 @@ function apply(ctx) {
           // 结论输出要求：终评收尾（认可 / 用户拒绝再来一轮）时要求整理完整结论
           // （'' = 不注入）。
           const conclusion = typeof cfg.conclusionPrompt === 'string' ? cfg.conclusionPrompt : DEFAULT_CONCLUSION_PROMPT;
+          // 历史会话检索指引：全场景共用一份（'' = 不注入）。只会出现在主代理的
+          // 提示里——本段落对子代理会话早已返回空（见上面的 origin/depth 门控）。
+          const sessionGuide = typeof cfg.sessionHistoryGuide === 'string'
+            ? cfg.sessionHistoryGuide
+            : DEFAULT_SESSION_HISTORY_GUIDE;
+          // ── knowledge 场景：Theseus workflow 对抗流程的注入体与阶段指示 ──
+          if (scene === 'knowledge') {
+            const knowledgeInstruction = typeof cfg.knowledgeInstruction === 'string' && cfg.knowledgeInstruction !== ''
+              ? cfg.knowledgeInstruction
+              : DEFAULT_KNOWLEDGE_INSTRUCTION;
+            const explorerId = subagents.get(explorerKey(sessionId, scene));
+            const kNext = state.kNext;
+            const gateText = kNext === 'close'
+              ? '[arena-v2 竞技阶段]\n当前阶段：记录——user-readiness 未 CLEARED。按实际结果 record user-readiness-review.completed（NOT_CLEARED / NEEDS_REVISION），向用户总结评估结论与后续建议，然后结束回合（本轮竞技随之结束）。'
+              : kNext === 'propose'
+                ? '[arena-v2 竞技阶段]\n当前阶段：记录——探索者已返回 STAGE_DONE explore。judge --current 验证产物后 record explore.completed CONFIRMED，向用户简报探索结论，然后结束回合。'
+                : kNext === 'review'
+                  ? '[arena-v2 竞技阶段]\n当前阶段：记录——探索者已返回 STAGE_DONE propose。judge --current 验证产物后 record propose.completed ARTIFACTS_CREATED，向用户简报方案要点，然后结束回合。'
+                  : kNext === 'apply'
+                    ? '[arena-v2 竞技阶段]\n当前阶段：记录——探索者已返回 STAGE_DONE user-readiness CLEARED。judge --current 验证产物后 record user-readiness-review.completed CLEARED，然后结束回合。'
+                    : '';
+            const phaseText = state.phase === ARENA_PHASE_K_INIT
+              ? '[arena-v2 竞技阶段]\n当前阶段：绑定/续跑——judge --current 确认 Theseus workflow 绑定（未绑定则用 bash 执行 mode on --bind <id> 或 --init <主题>）。**已绑定且 Theseus 阶段已推进（propose/review/user-readiness-review/apply）时，宿主会按 openspec/states 状态文件自动跳到对应阶段续跑，跳过已完成阶段**——你只需向用户简报当前阶段，然后结束回合。'
+              : state.phase === ARENA_PHASE_K_GATE
+                ? gateText
+                : state.phase === ARENA_PHASE_K_ASK
+                  ? '[arena-v2 竞技阶段]\n当前阶段：中继提问——从对话中最近一条 NEED_QUESTION 消息提取问题 JSON，**原样**用 ask_user_question 提问（question/options 照抄；绝不向用户展示答案或规则），拿到回答后结束回合（系统会把回答回传给探索者）。'
+                  : state.phase === ARENA_PHASE_K_EXPLORE
+                    ? '[arena-v2 竞技阶段]\n当前阶段：探索中——探索者正在执行 theseus-explore，无需操作。'
+                    : state.phase === ARENA_PHASE_K_PROPOSE
+                      ? '[arena-v2 竞技阶段]\n当前阶段：提案中——探索者正在执行 theseus-propose，无需操作。'
+                      : state.phase === ARENA_PHASE_K_REVIEW
+                        ? '[arena-v2 竞技阶段]\n当前阶段：审查中——挑战者正在执行 theseus-review-spec，无需操作。'
+                        : state.phase === ARENA_PHASE_K_READINESS
+                          ? '[arena-v2 竞技阶段]\n当前阶段：就绪评审中——探索者正在执行 theseus-user-readiness-review，无需操作。'
+                          : state.phase === ARENA_PHASE_K_VERDICT
+                            ? (state.reviewOutcome === 'ready'
+                              ? '[arena-v2 竞技阶段]\n当前阶段：终评（READY）——先向用户汇报审查通过，然后**必须调用 ask_user_question** 询问是否生成领导层报告：问题 id 固定填 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项固定为「' + ARENA_K_REPORT_YES + '」与「' + ARENA_K_REPORT_NO + '」。拿到回答后结束回合（系统随后派发探索者执行 user-readiness）。'
+                              : state.reviewOutcome === 'needs_revision'
+                                ? '[arena-v2 竞技阶段]\n当前阶段：终评（NEEDS_REVISION）——读 review.md 的 Action Items 向用户汇报，然后**必须调用 ask_user_question** 询问是否再来一轮修订：问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项固定为「' + ARENA_K_REVISION_YES + '」与「' + ARENA_K_REVISION_NO + '」。用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION；用户选「' + ARENA_K_REVISION_YES + '」→ 直接结束回合（系统会自动重新派发 propose）。'
+                                : '[arena-v2 竞技阶段]\n当前阶段：终评（NOT_READY）——读 review.md：逐条列出五维 FAIL 项、Action Items 与未完成/无证据的 Anchor Trace 行，record review.completed NOT_READY，向用户总结不通过项，然后结束回合（本轮竞技随之结束，workflow 停在 review）。')
+                            : state.phase === ARENA_PHASE_K_APPLY
+                              ? '[arena-v2 竞技阶段]\n当前阶段：apply——按 theseus-apply-change skill 执行：读 tasks.md，在对应 worktree 实现（可建议开启 test-case lane 并 record lane.open），跑测试报告（strongCoverage ≥ 80%），record apply.completed IMPLEMENTED，向用户总结产出与后续步骤 T7 worktree-commit-push / T8 openspec-impl-doc / T9 theseus-archive-change（不自动执行），然后结束回合。'
+                              : '';
+            const body = knowledgeInstruction
+              .replaceAll('{workflowId}', state.workflowId || '（未绑定）')
+              .replaceAll('{explorePrompt}', personas.explorePrompt)
+              .replaceAll('{proposePrompt}', personas.proposePrompt)
+              .replaceAll('{reviewPrompt}', personas.reviewPrompt)
+              .replaceAll('{readinessPrompt}', personas.readinessPrompt)
+              .replaceAll('{reportPrompt}', personas.reportPrompt);
+            if (body === '') return '';
+            const guide = cfg.sceneSearchGuide && typeof cfg.sceneSearchGuide === 'object'
+              && typeof cfg.sceneSearchGuide[scene] === 'string'
+              ? cfg.sceneSearchGuide[scene]
+              : '';
+            const parts = [
+              `[arena-v2 竞技场]\n当前场景：${SCENE_NAMES[scene] ?? scene}\nTheseus workflow：${state.workflowId || '（未绑定）'}\n探索者子代理 id：${explorerId || '（无，需要时创建）'}\n挑战者子代理 id：${challengerId || '（无，需要时创建）'}`,
+              body,
+              guide,
+              sessionGuide,
+              phaseText
+            ].filter((p) => p !== '');
+            ctx.logger?.info?.('arena-v2: section injected agent=' + sessionId + ' scene=' + scene
+              + ' workflow=' + (state.workflowId || 'none') + ' explorer=' + (explorerId || 'none') + ' challenger=' + (challengerId || 'none'));
+            return parts.join('\n\n');
+          }
+          // ── business / qa：质疑轮 → 修正 → 终评轮 ──
           // 竞技阶段：从侧文件读取（宿主驱动状态机维护），按当前阶段给主代理
           // 明确的回合指示——它只负责当前阶段的动作，节奏由宿主推进。
           const presentText = state.verdictOutcome === 'disputed'
@@ -1763,6 +2536,7 @@ function apply(ctx) {
             `[arena-v2 竞技场]\n当前场景：${SCENE_NAMES[scene] ?? scene}\n当前挑战者子代理 id：${challengerId || '（无，需要时创建）'}`,
             body,
             guide,
+            sessionGuide,
             phaseText
           ].filter((p) => p !== '');
           ctx.logger?.info?.('arena-v2: section injected agent=' + sessionId + ' scene=' + scene + ' challenger=' + (challengerId || 'none'));
@@ -1821,6 +2595,12 @@ export {
   ARENA_ANOTHER_ROUND_NO,
   ARENA_ANOTHER_ROUND_QUESTION_ID,
   ARENA_ANOTHER_ROUND_YES,
+  ARENA_K_REPORT_NO,
+  ARENA_K_REPORT_QUESTION_ID,
+  ARENA_K_REPORT_YES,
+  ARENA_K_REVISION_NO,
+  ARENA_K_REVISION_QUESTION_ID,
+  ARENA_K_REVISION_YES,
   CHALLENGER_LABEL,
   Config,
   DEFAULT_CHALLENGER_MODEL,
@@ -1828,10 +2608,14 @@ export {
   DEFAULT_CHALLENGE_PROMPT,
   DEFAULT_CONCLUSION_PROMPT,
   DEFAULT_INSTRUCTION,
+  DEFAULT_KNOWLEDGE_INSTRUCTION,
   DEFAULT_MAIN_PERSONA,
   DEFAULT_SCENE_SEARCH_GUIDE,
   DEFAULT_SEARCH_GUIDE,
+  DEFAULT_SESSION_HISTORY_GUIDE,
   DEFAULT_VERDICT_PROMPT,
+  EXPLORER_LABEL,
+  KNOWLEDGE_SEARCH_GUIDE,
   SCENES,
   SCENE_NAMES,
   apply,
@@ -1839,20 +2623,27 @@ export {
   challengerModelOf,
   collectAnswer,
   collectAnotherRoundChoice,
+  collectAskAnswerText,
   collectFiles,
   collectToolRecords,
   collectUserQuestion,
   composeRoundText,
+  explorerLabelFor,
   foldArenaMode,
   inject,
   isChallengerLabel,
+  isExplorerLabel,
   name,
   normalizeScene,
   parseArenaCommand,
   parseAnotherRoundAnswer,
   parseIntentOutput,
+  parseKnowledgeChoice,
+  parseReviewFileVerdict,
+  parseStageResult,
   parseVerdictOutcome,
   sanitizeSessionRefs,
+  sceneFromAnyLabel,
   sceneFromLabel,
   scenePersonasOf,
   subagentProviderOf

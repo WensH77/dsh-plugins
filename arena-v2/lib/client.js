@@ -247,6 +247,12 @@ window.__ModuleLoader__.load({
 			"settings.challenger": "挑战者 persona",
 			"settings.challenge": "质疑轮模板",
 			"settings.verdict": "终评轮模板",
+			"settings.explorer": "探索者 persona",
+			"settings.explore": "explore 委派模板",
+			"settings.propose": "propose 委派模板",
+			"settings.review": "review 委派模板",
+			"settings.readiness": "readiness 委派模板",
+			"settings.report": "report 委派模板",
 			"settings.shared": "（与 business 共用默认）",
 			"settings.loading": "加载中…",
 			"settings.error": "persona 加载失败"
@@ -272,6 +278,12 @@ window.__ModuleLoader__.load({
 			"settings.challenger": "Challenger persona",
 			"settings.challenge": "Challenge round template",
 			"settings.verdict": "Verdict round template",
+			"settings.explorer": "Explorer persona",
+			"settings.explore": "Explore delegation template",
+			"settings.propose": "Propose delegation template",
+			"settings.review": "Review delegation template",
+			"settings.readiness": "Readiness delegation template",
+			"settings.report": "Report delegation template",
 			"settings.shared": "(shared with business default)",
 			"settings.loading": "Loading…",
 			"settings.error": "Failed to load personas"
@@ -621,12 +633,23 @@ window.__ModuleLoader__.load({
 						cancelled = true;
 					};
 				}, []);
-				const blocks = (scene) => [
-					["settings.main", scene?.mainPersona],
-					["settings.challenger", scene?.challengerPrompt],
-					["settings.challenge", scene?.challengePrompt],
-					["settings.verdict", scene?.verdictPrompt]
-				];
+				const blocks = (scene, tabKey) => tabKey === "knowledge"
+					? [
+						["settings.main", scene?.mainPersona],
+						["settings.explorer", scene?.explorerPrompt],
+						["settings.challenger", scene?.challengerPrompt],
+						["settings.explore", scene?.explorePrompt],
+						["settings.propose", scene?.proposePrompt],
+						["settings.review", scene?.reviewPrompt],
+						["settings.readiness", scene?.readinessPrompt],
+						["settings.report", scene?.reportPrompt]
+					]
+					: [
+						["settings.main", scene?.mainPersona],
+						["settings.challenger", scene?.challengerPrompt],
+						["settings.challenge", scene?.challengePrompt],
+						["settings.verdict", scene?.verdictPrompt]
+					];
 				const nodes = [];
 				nodes.push((0, react_jsx_runtime.jsx)("h2", { className: "ra2-settingsHead", children: heroT("settings.title") }, "head"));
 				nodes.push((0, react_jsx_runtime.jsx)("p", { className: "ra2-settingsDesc", children: heroT("settings.desc") }, "desc"));
@@ -663,7 +686,7 @@ window.__ModuleLoader__.load({
 						sceneNodes.push((0, react_jsx_runtime.jsx)("p", { className: "ra2-settingsShared", children: heroT("settings.shared") }, "shared"));
 					}
 				}
-				for (const [labelKey, value] of blocks(sc)) {
+				for (const [labelKey, value] of blocks(sc, tab)) {
 					sceneNodes.push((0, react_jsx_runtime.jsx)("span", { className: "ra2-settingsPromptLabel", children: heroT(labelKey) }, labelKey + "-label"));
 					sceneNodes.push((0, react_jsx_runtime.jsx)("pre", { className: "ra2-settingsPrompt", children: typeof value === "string" ? value : "" }, labelKey));
 				}
