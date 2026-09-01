@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-market",
   "description": "插件市场基础版：设置→插件页新增「插件市场」tab，展示已安装插件、管理可编辑保存的 GitHub 插件源、检查更新并更新插件（走 dsh 自己的 patch/pnpm 机制，HMR/重启生效）；侧边栏 DeepSeek Harness 下方新增 dsh 版本状态灯（启动+每小时检测 deepseek-harness 新版本，点击开新会话分析破坏性更新）",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

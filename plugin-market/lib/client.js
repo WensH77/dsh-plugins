@@ -240,6 +240,7 @@ window.__ModuleLoader__.load({
 			dshBreakingShort: "破坏性更新",
 			dshReportChanges: "变更要点",
 			dshReportAffected: "可能受影响的插件",
+			dshReportAffectedNone: "（未发现可能受影响的插件）",
 			dshReportDetails: "详情",
 			dshReportVersions: "版本变更明细（当前 → 最新，共 {count} 个版本，不跳版本）",
 			dshReportVersionBreaking: "破坏性变更",
@@ -365,6 +366,7 @@ window.__ModuleLoader__.load({
 			dshBreakingShort: "breaking update",
 			dshReportChanges: "Changes",
 			dshReportAffected: "Possibly affected plugins",
+			dshReportAffectedNone: "(no possibly affected plugins found)",
 			dshReportDetails: "Details",
 			dshReportVersions: "Version-by-version changes (current → latest, {count} versions, no version skipped)",
 			dshReportVersionBreaking: "breaking change",
@@ -1158,6 +1160,17 @@ window.__ModuleLoader__.load({
 							ul.className = "pm-reviewRisks";
 							d.affectedPlugins.forEach((c) => { const li = document.createElement("li"); li.textContent = c; ul.appendChild(li); });
 							body.appendChild(ul);
+						} else {
+							const h = document.createElement("p");
+							h.className = "pm-modalText";
+							h.style.fontWeight = "600";
+							h.textContent = t("dshReportAffected") + "：";
+							body.appendChild(h);
+							const p = document.createElement("p");
+							p.className = "pm-modalText";
+							p.style.opacity = "0.7";
+							p.textContent = t("dshReportAffectedNone");
+							body.appendChild(p);
 						}
 						if (d.details) {
 							const h = document.createElement("p");

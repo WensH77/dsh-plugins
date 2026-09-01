@@ -2659,8 +2659,17 @@ async function analyzeDshUpdate(ctx) {
   if (state === null || state.hasUpdate !== true || !state.installed || !state.latest) {
     return { ok: false, skipped: true, error: '当前已是最新版本或未能检测到更新', ...state }
   }
-  // 已分析且远端版本未变：直接复用已有判定，不重复分析
-  if ((state.verdict === 'safe' || state.verdict === 'breaking') && typeof state.analyzedAt === 'number') {
+  // 已分析且远端版本未变：直接复用已有判定，不重复分析。
+  // 仅当判定是「新格式」（versions 数组非空）时复用——旧格式（无逐版本明细，如旧版英文聚合报告）
+  // 不复用，点击即强制重新分析，让用户拿到中文逐版本报告。
+  const analyzedFresh = (state.verdict === 'safe' || state.verdict === 'breaking') && typeof state.analyzedAt === 'number'
+  const hasPerVersion = Array.isArray(state.versions) && state.versions.length > 0
+  if (analyzedFresh && hasPerVersion) {
+    return { ok: true, reopened: true, ...state }
+  }
+  // 新格式但版本明细为空（如拉取 release 列表失败）：短窗口内复用避免限流时反复重分析，超窗后重试；
+  // 旧格式（versions 不是数组）不在此列——直接落入下方重新分析，保证用户拿到中文逐版本报告
+  if (Array.isArray(state.versions) && analyzedFresh && Date.now() - state.analyzedAt < 10 * 60 * 1000) {
     return { ok: true, reopened: true, ...state }
   }
   // 分析进行中：不并发起第二次分析
