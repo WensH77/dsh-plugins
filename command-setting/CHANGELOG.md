@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.4.1
+
+- **补上 `repository` 字段**（`WensH77/dsh-plugins#path:command-setting`）：插件市场的「检查更新 / 更新 / 帮我更新」按 *市场安装记录 > 包内 repository > profile 依赖的 `github:` spec* 三级回退取仓库地址。此前本包缺第二级，若不是用 `github:` spec 安装（例如 `git+https://`、tarball、`link:`），更新通道会直接报「git 通道需要 GitHub 仓库地址（repository 字段缺失）」。
+
 ## 0.4.0
 
 - **修复归档清理误删有效隐藏（隐藏的命令重新可见）**——0.3.2 的 sweep 存在两条误删路径：
