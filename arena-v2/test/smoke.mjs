@@ -5,6 +5,9 @@ import {
   ARENA_ANOTHER_ROUND_NO,
   ARENA_ANOTHER_ROUND_QUESTION_ID,
   ARENA_ANOTHER_ROUND_YES,
+  ARENA_K_ADVANCE_NO,
+  ARENA_K_ADVANCE_QUESTION_ID,
+  ARENA_K_ADVANCE_YES,
   ARENA_K_REPORT_NO,
   ARENA_K_REPORT_QUESTION_ID,
   ARENA_K_REPORT_YES,
@@ -45,6 +48,7 @@ import {
   isExplorerLabel,
   name,
   normalizeScene,
+  parseAdvanceChoice,
   parseArenaCommand,
   parseAnotherRoundAnswer,
   parseIntentOutput,
@@ -500,6 +504,30 @@ assert.equal(parseKnowledgeChoice(kReportJson(ARENA_K_REPORT_NO), 'report'), 'sk
 assert.equal(parseKnowledgeChoice(kRevisionJson(ARENA_K_REVISION_YES), 'revision'), 'continue', '选再来一轮');
 assert.equal(parseKnowledgeChoice(kRevisionJson(ARENA_K_REVISION_NO), 'revision'), 'stop', '选结束（否定优先）');
 assert.equal(parseKnowledgeChoice('garbage', 'report'), null, '无法判定 null（按 skip/stop 兜底）');
+// 阶段推进确认门（arena_k_advance）：确认才推进；暂停/没问 → 不推进
+assert.equal(ARENA_K_ADVANCE_QUESTION_ID, 'arena_k_advance', '推进确认提问 id 固定');
+const kAdvanceJson = (sel) => JSON.stringify({ answers: [{ id: ARENA_K_ADVANCE_QUESTION_ID, selected: [sel] }] });
+assert.equal(parseAdvanceChoice(kAdvanceJson(ARENA_K_ADVANCE_YES)), 'continue', '确认进入下一阶段');
+assert.equal(parseAdvanceChoice(kAdvanceJson(ARENA_K_ADVANCE_NO)), 'stop', '暂停不推进（否定优先）');
+assert.equal(parseAdvanceChoice(JSON.stringify({ answers: [{ id: 'other', selected: ['确认'] }] })), 'continue', '非固定 id 回落最后一条答案');
+assert.equal(parseAdvanceChoice(''), null, '空回答 null（宿主按不推进关闭）');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes(ARENA_K_ADVANCE_QUESTION_ID), 'knowledge 指令含推进确认提问 id');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('原文原样'), 'knowledge 指令要求子代理结论原文呈现');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('一切问题与答案都由你原样转述'), 'knowledge 指令：子代理问题与答案一律原样转述');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('允许用 read 等工具'), 'knowledge 指令：允许用工具读工件原文引用');
+assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('答案是否正确'), '探索者 persona 要求输出对账（答案正确与否）');
+assert.ok(!scenePersonasOf({}, 'knowledge').explorerPrompt.includes('正确项位置, why'), '问题意图不再携带答案线索字段');
+assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('correctIndex'), '探索者 persona 明确禁止 correctIndex 等线索字段');
+assert.ok(scenePersonasOf({}, 'knowledge').readinessPrompt.includes('correctIndex'), 'readiness 委派模板同样禁止答案线索字段');
+// 工作语言只在三套 persona 各声明一次（其它位置不重复）
+for (const key of ['mainPersona', 'explorerPrompt', 'challengerPrompt']) {
+  const text = scenePersonasOf({}, 'knowledge')[key];
+  assert.ok(text.includes('【工作语言】'), key + ' 含工作语言段');
+  assert.ok(text.includes('工作语言用中文'), key + ' 声明工作语言为中文');
+  assert.ok(text.includes('保持英文原文不翻译'), key + ' 声明硬信息不翻译');
+}
+assert.ok(!scenePersonasOf({}, 'knowledge').readinessPrompt.includes('工作语言'), '委派模板不重复语言约束');
+assert.ok(!DEFAULT_KNOWLEDGE_INSTRUCTION.includes('用中文回答'), 'knowledge 指令不再重复语言约束');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes(ARENA_K_REPORT_QUESTION_ID), 'knowledge 指令含报告提问 id');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes(ARENA_K_REVISION_QUESTION_ID), 'knowledge 指令含修订提问 id');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('Theseus CLI'), 'knowledge 指令声明主控者持 CLI');
@@ -530,5 +558,33 @@ assert.equal(
   '结算前的提问不计入'
 );
 assert.equal(collectAskAnswerText([]), '', '没问 = 空串');
+// session-cceff284 事故回归：主控者被 subagent-report 提前唤醒、在结算消息到达**之前**提问——
+// 答案在 turn/start 之后必须仍能被提取（旧实现锚定「最后一次结算之后」会漏掉 → 误判未确认 → 关场）。
+const kTurnEvents = [
+  { type: 'turn/start' },
+  { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } },
+  kAskResult('c1', '{"answers":[{"id":"arena_k_advance","selected":["确认，进入下一阶段 (Recommended)"]}]}'),
+  { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [{ type: 'text', text: 'STAGE_DONE explore CONFIRMED' }] } }
+];
+assert.equal(
+  collectAskAnswerText(kTurnEvents),
+  '{"answers":[{"id":"arena_k_advance","selected":["确认，进入下一阶段 (Recommended)"]}]}',
+  '提问早于结算（同一回合内）仍能提取答案'
+);
+assert.equal(
+  parseAdvanceChoice(collectAskAnswerText(kTurnEvents)),
+  'continue',
+  '提前提问的确认也能被宿主判定为 continue'
+);
+// 跨回合污染防护：上一回合的提问不计入本回合
+const kCrossTurn = [
+  { type: 'turn/start' },
+  { type: 'tool/call', data: { name: 'ask_user_question', callId: 'old' } },
+  kAskResult('old', '{"answers":[{"id":"arena_k_advance","selected":["暂停，先不推进"]}]}'),
+  { type: 'turn/end' },
+  { type: 'turn/start' },
+  { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [] } }
+];
+assert.equal(collectAskAnswerText(kCrossTurn), '', '上一回合的提问不计入本回合');
 
 console.log('arena-v2 smoke OK');

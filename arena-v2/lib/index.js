@@ -69,6 +69,11 @@ const ARENA_K_REVISION_QUESTION_ID = 'arena_k_revision';
 const ARENA_K_REVISION_YES = '再来一轮修订（重新 propose + 送审）';
 const ARENA_K_REVISION_NO = '结束并保留当前工件';
 
+/** 阶段推进确认门：进入下一阶段（propose/review/readiness/apply）前询问用户的固定问题 id 与选项文案。 */
+const ARENA_K_ADVANCE_QUESTION_ID = 'arena_k_advance';
+const ARENA_K_ADVANCE_YES = '确认，进入下一阶段';
+const ARENA_K_ADVANCE_NO = '暂停，先不推进';
+
 /**
  * 默认多源检索指引：注入主代理「回答前主动检索的知识源」策略（Jira / git /
  * openspec / 代码库），不按场景绑定；可按场景在 sceneSearchGuide 里覆盖或置空
@@ -441,6 +446,25 @@ function parseKnowledgeChoice(text, kind) {
   return null;
 }
 
+/** 阶段推进确认（arena_k_advance）解析：暂停/不推进 = stop；确认/进入 = continue。 */
+function parseAdvanceChoice(text) {
+  if (typeof text !== 'string' || text.trim() === '') return null;
+  let picked = '';
+  try {
+    const answers = JSON.parse(text)?.answers;
+    if (Array.isArray(answers) && answers.length > 0) {
+      const target = answers.find((a) => a?.id === ARENA_K_ADVANCE_QUESTION_ID) ?? answers[answers.length - 1];
+      picked = [...(Array.isArray(target?.selected) ? target.selected : []), target?.custom ?? '']
+        .filter((v) => typeof v === 'string')
+        .join(' ');
+    }
+  } catch {}
+  const probe = picked.trim() !== '' ? picked : text;
+  if (['暂停', '先不', '不推进', '不进入', '停止', '结束'].some((m) => probe.includes(m))) return 'stop';
+  if (['确认', '进入', '推进', '继续'].some((m) => probe.includes(m))) return 'continue';
+  return null;
+}
+
 /**
  * 解析 review.md 的 Overall Verdict 行 → 'ready' | 'needs_revision' | 'not_ready' | null。
  * 兼容 `READY` / `NEEDS REVISION` / `NEEDS_REVISION` / `NOT READY` / `NOT_READY` 及 `:：` 分隔。
@@ -469,10 +493,19 @@ function parseReviewFileVerdict(text) {
  */
 function collectAskAnswerText(events) {
   if (!Array.isArray(events)) return '';
-  let start = 0;
+  // 锚点：当前回合的 turn/start。提问必然发生在结算触发的同一回合内——即使主控者
+  // 被 subagent-report 提前唤醒、在结算消息到达前就提问（session-cceff284 事故），
+  // 答案仍在 turn/start 之后可命中；无 turn/start 事件时回退到「最后一次结算之后」。
+  let start = -1;
   for (let i = 0; i < events.length; i += 1) {
-    const e = events[i];
-    if (e?.type === 'user/message' && e.data?.source?.kind === 'subagent-settled') start = i;
+    if (events[i]?.type === 'turn/start') start = i;
+  }
+  if (start < 0) {
+    start = 0;
+    for (let i = 0; i < events.length; i += 1) {
+      const e = events[i];
+      if (e?.type === 'user/message' && e.data?.source?.kind === 'subagent-settled') start = i;
+    }
   }
   const askCallIds = new Set();
   let answer = '';
@@ -544,7 +577,10 @@ const KNOWLEDGE_PERSONAS = {
     '- T6 apply 以 tasks.md 为唯一依据，在对应 worktree 中实现，跑测试报告（strongCoverage ≥ 80%）后停下——不自动 commit / push / archive。',
     '- 子代理派发失败回到等待态，可重试；子代理中断按产物已满足的 gate 幂等重放。',
     '',
-    '用中文回答，禁止辩论。'
+    '【工作语言】',
+    '工作语言用中文（Theseus 约定：对话、评审讨论、就绪面试均属工作语言）；契约工件按 skill 约定用英文，业务硬信息（代码、枚举值、字段名、路径、API 名、spec id）一律保持英文原文不翻译。',
+    '',
+    '禁止辩论。'
   ].join('\n'),
   explorerPrompt: [
     '[arena-v2 explorer:knowledge]',
@@ -559,13 +595,17 @@ const KNOWLEDGE_PERSONAS = {
     '【边界】',
     '- 永远不执行 Theseus CLI（mode/judge/record/status/bind）——skill 正文里的 judge/record 步骤跳过，工作流状态只由主控者推进。',
     '- 永远不写 review.md；不写 openspec/states/ 与 openspec/.runtime/ 下的任何文件。',
-    '- 永远不直接向用户提问：需要用户输入（澄清、Metadata Interview、预测式 readiness 题、确认）时，返回结构化「问题意图」{question, options, 正确项位置, why}，由主控者提问并把答案回传给你。预测题不得在问题意图里泄露答案或规则。',
-    '- 工件语言按 skill 约定（契约英文、decision-log 中文），硬信息不翻译。',
+    '- 永远不直接向用户提问：需要用户输入（澄清、Metadata Interview、预测式 readiness 题、确认）时，返回结构化「问题意图」JSON——**只含 question / header / options / multi_select 这些展示字段，绝对禁止包含 correctIndex / 正确项位置 / why / 规则 / 答案等任何线索字段**（正确项位置等只允许写进本地的 user-readiness.review.md 工件，不得出现在返回消息里），由主控者提问并把答案回传给你。',
+    '- 同一轮内语言不得漂移。',
     '',
-    '【返回协议】（回合结束必含其一，一行内）',
+    '【返回协议】（回合结束必含其一；协议行放在消息**最后**）',
     '- STAGE_DONE <stage> <result>（如 STAGE_DONE explore CONFIRMED）',
     '- NEED_QUESTION <问题JSON>（不含答案与规则）',
-    '- BLOCKED <原因>'
+    '- BLOCKED <原因>',
+    '每道题用户作答后（尤其 user-readiness 的预测题）：先把**对账正文**放在消息前部原文输出——规则揭示、用户答案、**答案是否正确**、差异说明，全部原文、不摘要——随后再接下一道 NEED_QUESTION 或最终 STAGE_DONE。对账是给用户看的内容，主控者会原样转述。',
+    '',
+    '【工作语言】',
+    '工作语言用中文（Theseus 约定：对话、评审讨论、就绪面试均属工作语言）；契约工件按 skill 约定用英文，业务硬信息（代码、枚举值、字段名、路径、API 名、spec id）一律保持英文原文不翻译。'
   ].join('\n'),
   challengerPrompt: [
     '[arena-v2 challenger:knowledge]',
@@ -574,7 +614,10 @@ const KNOWLEDGE_PERSONAS = {
     '',
     '【边界】',
     '- 只写 review.md，不修改任何其它工件；不执行 Theseus CLI；不向用户提问；不修代码。',
-    '- 禁止辩论，只按指示输出。'
+    '- 禁止辩论，只按指示输出。',
+    '',
+    '【工作语言】',
+    '工作语言用中文（Theseus 约定：对话、评审讨论、就绪面试均属工作语言）；契约工件按 skill 约定用英文，业务硬信息（代码、枚举值、字段名、路径、API 名、spec id）一律保持英文原文不翻译。'
   ].join('\n'),
   // ── 阶段委派模板（宿主派发给探索者/挑战者的 user 消息）──────────────
   explorePrompt: [
@@ -598,7 +641,7 @@ const KNOWLEDGE_PERSONAS = {
   readinessPrompt: [
     '[arena-v2 委派：user-readiness-review]',
     '执行 theseus-user-readiness-review skill，为 Theseus workflow `{workflowId}` 做用户就绪评审。',
-    '每道预测题以 NEED_QUESTION <问题JSON> 返回（问题JSON不含答案与规则），由主控者代问后回传答案；',
+    '每道预测题以 NEED_QUESTION <问题JSON> 返回，由主控者代问后回传答案。问题 JSON **只含 question / header / options / multi_select 展示字段——绝对禁止包含 correctIndex / 正确项位置 / why / 规则 / 答案等任何线索字段**（正确项位置只写进 user-readiness.review.md 工件）。',
     '全部完成后输出：STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION；受阻输出 BLOCKED <原因>。'
   ].join('\n'),
   reportPrompt: [
@@ -742,12 +785,12 @@ const DEFAULT_KNOWLEDGE_INSTRUCTION = [
   '[arena-v2 知识沉淀]',
   '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，子代理的创建/复用与派发由系统完成——你不调用 subagent 工具创建它们。你只按当前「竞技阶段」行事：',
   '1. **绑定/续跑阶段**：judge --current 确认 Theseus workflow 绑定（未绑定则 mode on --bind <id> 或 --init <主题>）。**已绑定且阶段已推进时，系统按 openspec/states 自动续跑对应阶段（跳过已完成阶段）**；只需向用户简报当前阶段后结束回合。',
-  '2. **记录阶段**：judge --current 验证产物后 record 对应 stage.completed，简要向用户汇报，结束回合——系统会按 gate 自动推进下一阶段。',
-  '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，把其中的问题 JSON 原样转成 ask_user_question 提问（question/options 照抄；**绝不向用户展示答案或规则**），拿到回答后结束回合——系统会把回答回传给探索者。',
-  '4. **终评分支**：收到挑战者的 Done 后按 review.md 的 Overall Verdict 行事——READY 先问用户是否生成领导层报告（问题 id 固定 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项固定「' + ARENA_K_REPORT_YES + '」/「' + ARENA_K_REPORT_NO + '」）；NEEDS_REVISION 问用户是否再来一轮修订（问题 id 固定 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项固定「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」，用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION）；NOT_READY 列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，record review.completed NOT_READY 后总结。',
+  '2. **阶段确认**：先把子代理结算消息**原文原样**呈现给用户（不要摘要/改写），再调用 ask_user_question 询问是否进入下一阶段（问题 id 固定 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项「' + ARENA_K_ADVANCE_YES + '」/「' + ARENA_K_ADVANCE_NO + '」）；用户确认后 judge --current 验证并 record 对应 stage.completed，结束回合——系统才会派发下一阶段。',
+  '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，先把它结算消息里 JSON 之外的**全部正文（对账、规则揭示、答案正确与否等）原文原样转述给用户**——子代理的一切问题与答案都由你原样转述，需要原文引用时允许用 read 等工具读 openspec 工件（user-readiness.review.md / review.md / decision-log）后逐行引用，禁止改写/摘要；再把问题 JSON 原样转成 ask_user_question 提问（**只取 question/options 等展示字段照抄；JSON 里的 correctIndex / 正确项位置 / why 等答案线索字段一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合——系统会把回答回传给探索者。',
+  '4. **终评分支**：收到挑战者的 Done 后，**把 review.md 的 Overall Verdict / Action Items 原文原样呈现给用户**，按结论行事——READY 一次问两道：是否生成领导层报告（问题 id 固定 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项「' + ARENA_K_REPORT_YES + '」/「' + ARENA_K_REPORT_NO + '」）+ 是否进入 user-readiness（问题 id 固定 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项「' + ARENA_K_ADVANCE_YES + '」/「' + ARENA_K_ADVANCE_NO + '」，选「' + ARENA_K_ADVANCE_NO + '」→ 系统关闭竞技场）；NEEDS_REVISION 问用户是否再来一轮修订（问题 id 固定 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」，用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION）；NOT_READY 逐条列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace 原文，record review.completed NOT_READY 后结束。',
   '5. **apply 阶段**：按 theseus-apply-change 在 worktree 中实现 tasks.md、跑测试报告、record apply.completed IMPLEMENTED，然后结束回合。',
   '6. 每个「记录阶段」都必须真的执行 Theseus CLI 并确认 record 生效；任何阶段完成后向用户简报一句。',
-  '所有 ask_user_question 都只能由你提出；子代理不直接问用户。用中文回答，禁止辩论。',
+  '所有 ask_user_question 都只能由你提出；子代理不直接问用户。禁止辩论。',
   '',
   '【阶段委派模板】（系统派发给子代理时使用的模板，供你了解子代理收到的内容）：',
   'explore：{explorePrompt}',
@@ -1699,7 +1742,12 @@ function apply(ctx) {
           return;
         }
         const key = challengerKey(sessionId, scene);
-        const childId = subagents.get(key);
+        let childId = subagents.get(key);
+        if (!childId) {
+          await resolveChallenger(sessionId, scene, { force: true });
+          childId = subagents.get(key);
+          if (childId) ctx.logger?.info?.('arena-v2: dispatch ' + round + ' recovered existing challenger ' + childId);
+        }
         if (childId) {
           await subagentsSvc.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
           ctx.logger?.info?.('arena-v2: dispatch ' + round + ' -> followup ' + childId);
@@ -1818,7 +1866,14 @@ function apply(ctx) {
         }
         const label = role === 'explorer' ? explorerLabelFor(st.scene) : challengerLabelFor(st.scene);
         const key = subagentKey(sessionId, label);
-        const childId = subagents.get(key);
+        let childId = subagents.get(key);
+        if (!childId) {
+          // 重跑/重启后内存缓存为空：派发前强制按 label 找回既有可接续子代理，
+          // 命中就直接 followup 续聊（上下文跨轮次保留），而不是新建一个丢上下文的副本。
+          await resolveSubagent(sessionId, label, { force: true });
+          childId = subagents.get(key);
+          if (childId) ctx.logger?.info?.('arena-v2: k-dispatch ' + stage + ' recovered existing ' + role + ' ' + childId);
+        }
         const content = [{ type: 'text', text: sanitizeSessionRefs(text) }];
         if (childId) {
           await subagentsSvc.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
@@ -2124,6 +2179,14 @@ function apply(ctx) {
               finishArenaRound(sessionId); // readiness NOT_CLEARED / NEEDS_REVISION：主控者已总结
               return;
             }
+            // 阶段推进确认门：用户必须选「确认，进入下一阶段」才推进；
+            // 选暂停、或主控者没问（无法判定）→ 一律不推进，关闭竞技场（Theseus 状态保留，可续跑）。
+            const advance = parseAdvanceChoice(collectAskAnswerText(eventsK));
+            if (advance !== 'continue') {
+              ctx.logger?.info?.('arena-v2: k advance gate -> close (choice=' + String(advance) + ') for ' + sessionId);
+              finishArenaRound(sessionId);
+              return;
+            }
             const expected = st.kNext === 'propose' || st.kNext === 'review' || st.kNext === 'apply' ? st.kNext : '';
             const actual = expected === '' ? '' : readWorkflowStage(cwd, st.workflowId);
             if (expected !== '' && actual === expected) {
@@ -2164,8 +2227,16 @@ function apply(ctx) {
           }
           if (st.phase === ARENA_PHASE_K_VERDICT) {
             if (st.reviewOutcome === 'ready') {
-              const choice = parseKnowledgeChoice(collectAskAnswerText(eventsK), 'report');
-              const reportNote = choice === 'generate' ? renderKnowledgeTemplate(personasK.reportPrompt, st, cwd, '') : '';
+              const answers = collectAskAnswerText(eventsK);
+              const reportChoice = parseKnowledgeChoice(answers, 'report');
+              const advance = parseAdvanceChoice(answers);
+              if (advance !== 'continue') {
+                // 用户未确认进入 user-readiness（暂停/没问）→ 不推进，关闭竞技场。
+                ctx.logger?.info?.('arena-v2: k READY advance gate -> close (choice=' + String(advance) + ') for ' + sessionId);
+                finishArenaRound(sessionId);
+                return;
+              }
+              const reportNote = reportChoice === 'generate' ? renderKnowledgeTemplate(personasK.reportPrompt, st, cwd, '') : '';
               const text = (reportNote === '' ? '' : reportNote + '\n\n') + renderKnowledgeTemplate(personasK.readinessPrompt, st, cwd, '');
               writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_READINESS, pendingDispatch: 'readiness', kStage: 'readiness', kNext: '', reviewOutcome: null });
               void dispatchKnowledge(sessionId, 'explorer', 'readiness', text, '探索者');
@@ -2437,35 +2508,36 @@ function apply(ctx) {
               : DEFAULT_KNOWLEDGE_INSTRUCTION;
             const explorerId = subagents.get(explorerKey(sessionId, scene));
             const kNext = state.kNext;
+            const kNextName = kNext === 'propose' ? 'propose' : kNext === 'review' ? 'review（挑战者审查）' : 'apply';
             const gateText = kNext === 'close'
-              ? '[arena-v2 竞技阶段]\n当前阶段：记录——user-readiness 未 CLEARED。按实际结果 record user-readiness-review.completed（NOT_CLEARED / NEEDS_REVISION），向用户总结评估结论与后续建议，然后结束回合（本轮竞技随之结束）。'
+              ? '[arena-v2 竞技阶段]\n当前阶段：收尾——探索者已返回 user-readiness 未 CLEARED。**先原样呈现探索者结算消息原文（不要摘要/改写）**，再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；然后按实际结果 record user-readiness-review.completed（NOT_CLEARED / NEEDS_REVISION），向用户总结评估结论与后续建议，然后结束回合（本轮竞技随之结束）。'
               : kNext === 'propose'
-                ? '[arena-v2 竞技阶段]\n当前阶段：记录——探索者已返回 STAGE_DONE explore。judge --current 验证产物后 record explore.completed CONFIRMED，向用户简报探索结论，然后结束回合。'
+                ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE explore。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record explore.completed CONFIRMED，简报一句，结束回合（系统会派发下一阶段）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。'
                 : kNext === 'review'
-                  ? '[arena-v2 竞技阶段]\n当前阶段：记录——探索者已返回 STAGE_DONE propose。judge --current 验证产物后 record propose.completed ARTIFACTS_CREATED，向用户简报方案要点，然后结束回合。'
+                  ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE propose。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record propose.completed ARTIFACTS_CREATED，简报一句，结束回合（系统会派发挑战者审查）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。'
                   : kNext === 'apply'
-                    ? '[arena-v2 竞技阶段]\n当前阶段：记录——探索者已返回 STAGE_DONE user-readiness CLEARED。judge --current 验证产物后 record user-readiness-review.completed CLEARED，然后结束回合。'
+                    ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE user-readiness CLEARED。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；\n2. 调用 ask_user_question 询问是否进入 apply：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record user-readiness-review.completed CLEARED，结束回合（系统进入 apply 回合）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。'
                     : '';
             const phaseText = state.phase === ARENA_PHASE_K_INIT
               ? '[arena-v2 竞技阶段]\n当前阶段：绑定/续跑——judge --current 确认 Theseus workflow 绑定（未绑定则用 bash 执行 mode on --bind <id> 或 --init <主题>）。**已绑定且 Theseus 阶段已推进（propose/review/user-readiness-review/apply）时，宿主会按 openspec/states 状态文件自动跳到对应阶段续跑，跳过已完成阶段**——你只需向用户简报当前阶段，然后结束回合。'
               : state.phase === ARENA_PHASE_K_GATE
                 ? gateText
                 : state.phase === ARENA_PHASE_K_ASK
-                  ? '[arena-v2 竞技阶段]\n当前阶段：中继提问——从对话中最近一条 NEED_QUESTION 消息提取问题 JSON，**原样**用 ask_user_question 提问（question/options 照抄；绝不向用户展示答案或规则），拿到回答后结束回合（系统会把回答回传给探索者）。'
+                  ? '[arena-v2 竞技阶段]\n当前阶段：中继提问——① 把结算消息正文里 NEED_QUESTION JSON 之外的**全部内容（含对账/规则揭示/答案正确与否）原文原样呈现给用户，不摘要、不改写**；需要原文引用时可用 read 工具读 openspec 工件（如 user-readiness.review.md / review.md）后再转述；② 再用结算消息里的问题 JSON **原样**调用 ask_user_question 提问（只取 question/options 展示字段照抄；若 JSON 里出现 correctIndex / 正确项位置 / why 等答案线索字段，**一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合（系统会把回答回传给探索者）。'
                   : state.phase === ARENA_PHASE_K_EXPLORE
-                    ? '[arena-v2 竞技阶段]\n当前阶段：探索中——探索者正在执行 theseus-explore，无需操作。'
+                    ? '[arena-v2 竞技阶段]\n当前阶段：探索中——探索者正在执行 theseus-explore，无需操作 即使收到子代理的进度报告、或 Theseus 门控显示 ready，也不要提前行动——阶段完成由系统在结算后切换指示。'
                     : state.phase === ARENA_PHASE_K_PROPOSE
-                      ? '[arena-v2 竞技阶段]\n当前阶段：提案中——探索者正在执行 theseus-propose，无需操作。'
+                      ? '[arena-v2 竞技阶段]\n当前阶段：提案中——探索者正在执行 theseus-propose，无需操作 即使收到子代理的进度报告、或 Theseus 门控显示 ready，也不要提前行动——阶段完成由系统在结算后切换指示。'
                       : state.phase === ARENA_PHASE_K_REVIEW
-                        ? '[arena-v2 竞技阶段]\n当前阶段：审查中——挑战者正在执行 theseus-review-spec，无需操作。'
+                        ? '[arena-v2 竞技阶段]\n当前阶段：审查中——挑战者正在执行 theseus-review-spec，无需操作 即使收到子代理的进度报告、或 Theseus 门控显示 ready，也不要提前行动——阶段完成由系统在结算后切换指示。'
                         : state.phase === ARENA_PHASE_K_READINESS
-                          ? '[arena-v2 竞技阶段]\n当前阶段：就绪评审中——探索者正在执行 theseus-user-readiness-review，无需操作。'
+                          ? '[arena-v2 竞技阶段]\n当前阶段：就绪评审中——探索者正在执行 theseus-user-readiness-review，无需操作 即使收到子代理的进度报告、或 Theseus 门控显示 ready，也不要提前行动——阶段完成由系统在结算后切换指示。'
                           : state.phase === ARENA_PHASE_K_VERDICT
                             ? (state.reviewOutcome === 'ready'
-                              ? '[arena-v2 竞技阶段]\n当前阶段：终评（READY）——先向用户汇报审查通过，然后**必须调用 ask_user_question** 询问是否生成领导层报告：问题 id 固定填 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项固定为「' + ARENA_K_REPORT_YES + '」与「' + ARENA_K_REPORT_NO + '」。拿到回答后结束回合（系统随后派发探索者执行 user-readiness）。'
+                              ? '[arena-v2 竞技阶段]\n当前阶段：终评（READY）——**把挑战者结算消息与 review.md 的 Overall Verdict / Action Items 原文原样呈现给用户（不要摘要/改写）**，然后**必须调用 ask_user_question 一次问两道**：① 是否生成领导层报告——问题 id 固定填 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项固定为「' + ARENA_K_REPORT_YES + '」与「' + ARENA_K_REPORT_NO + '」；② 是否进入 user-readiness——问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项固定为「' + ARENA_K_ADVANCE_YES + '（user-readiness）」与「' + ARENA_K_ADVANCE_NO + '」。拿到回答后结束回合（两道都选「进入/生成」→ 系统派发探索者执行 user-readiness；② 选「' + ARENA_K_ADVANCE_NO + '」→ 系统关闭竞技场）。'
                               : state.reviewOutcome === 'needs_revision'
-                                ? '[arena-v2 竞技阶段]\n当前阶段：终评（NEEDS_REVISION）——读 review.md 的 Action Items 向用户汇报，然后**必须调用 ask_user_question** 询问是否再来一轮修订：问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项固定为「' + ARENA_K_REVISION_YES + '」与「' + ARENA_K_REVISION_NO + '」。用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION；用户选「' + ARENA_K_REVISION_YES + '」→ 直接结束回合（系统会自动重新派发 propose）。'
-                                : '[arena-v2 竞技阶段]\n当前阶段：终评（NOT_READY）——读 review.md：逐条列出五维 FAIL 项、Action Items 与未完成/无证据的 Anchor Trace 行，record review.completed NOT_READY，向用户总结不通过项，然后结束回合（本轮竞技随之结束，workflow 停在 review）。')
+                                ? '[arena-v2 竞技阶段]\n当前阶段：终评（NEEDS_REVISION）——**把 review.md 的 Overall Verdict 与 Action Items 原文原样呈现给用户（不要摘要/改写）**，然后**必须调用 ask_user_question** 询问是否再来一轮修订：问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项固定为「' + ARENA_K_REVISION_YES + '」与「' + ARENA_K_REVISION_NO + '」。用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION；用户选「' + ARENA_K_REVISION_YES + '」→ 直接结束回合（系统会自动重新派发 propose）。'
+                                : '[arena-v2 竞技阶段]\n当前阶段：终评（NOT_READY）——**把 review.md 原文原样呈现给用户**：逐条列出五维 FAIL 项、Action Items 与未完成/无证据的 Anchor Trace 行（不要摘要/改写），record review.completed NOT_READY，然后结束回合（本轮竞技随之结束，workflow 停在 review）。')
                             : state.phase === ARENA_PHASE_K_APPLY
                               ? '[arena-v2 竞技阶段]\n当前阶段：apply——按 theseus-apply-change skill 执行：读 tasks.md，在对应 worktree 实现（可建议开启 test-case lane 并 record lane.open），跑测试报告（strongCoverage ≥ 80%），record apply.completed IMPLEMENTED，向用户总结产出与后续步骤 T7 worktree-commit-push / T8 openspec-impl-doc / T9 theseus-archive-change（不自动执行），然后结束回合。'
                               : '';
@@ -2595,6 +2667,9 @@ export {
   ARENA_ANOTHER_ROUND_NO,
   ARENA_ANOTHER_ROUND_QUESTION_ID,
   ARENA_ANOTHER_ROUND_YES,
+  ARENA_K_ADVANCE_NO,
+  ARENA_K_ADVANCE_QUESTION_ID,
+  ARENA_K_ADVANCE_YES,
   ARENA_K_REPORT_NO,
   ARENA_K_REPORT_QUESTION_ID,
   ARENA_K_REPORT_YES,
@@ -2636,6 +2711,7 @@ export {
   name,
   normalizeScene,
   parseArenaCommand,
+  parseAdvanceChoice,
   parseAnotherRoundAnswer,
   parseIntentOutput,
   parseKnowledgeChoice,

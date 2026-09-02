@@ -64,30 +64,31 @@ business/qa 沿用质疑-修正-终评双回合；knowledge 走 Theseus workflow
 主控者（主代理）持 Theseus CLI 与全部 ask_user_question；探索者子代理执行阶段 skill 并产出工件（**除 review.md 与 Theseus 运行时外的一切工件**）；挑战者子代理执行 theseus-review-spec，**只写 review.md、只返回 `Done`**。判定一律读文件，不依赖子代理自述。宿主阶段机（phase 持久化侧文件）：
 
 ```
-用户消息 → k_init（主控者绑定 workflow + judge）
+用户消息 → k_init（主控者绑定 workflow + judge；已绑定则按 states 文件续跑对应阶段）
   → k_explore（探索者 theseus-explore）→ 结算：
-       STAGE_DONE explore CONFIRMED → k_gate（主控者 judge+record，宿主验证 states=propose）
+       STAGE_DONE explore CONFIRMED → k_gate（主控者**原样呈现结算原文** + 问用户是否进入下一阶段（arena_k_advance）；确认后 judge+record，宿主验证 states=propose；暂停/未问 → 关闭竞技场）
        NEED_QUESTION <JSON> → k_ask（主控者 ask_user_question，宿主回传答案 → 回到原阶段）
        BLOCKED <原因> → 告警回等待态
   → k_propose（探索者 theseus-propose，Metadata Interview 经 NEED_QUESTION 中继）
-  → k_gate（record propose.completed，宿主验证 states=review）
+  → k_gate（原样呈现结算原文 + 问用户确认进入 review；确认后 record propose.completed，宿主验证 states=review）
   → k_review（挑战者 theseus-review-spec 写 review.md，返回 Done）
-  → k_verdict（主控者读 review.md Overall Verdict）：
-       READY          → 问用户是否生成领导层报告（arena_k_report）
-                        → k_readiness（探索者 user-readiness-review；生成报告时先 fork reporter 后台执行）
-                        → CLEARED → k_gate（record）→ k_apply（主控者 theseus-apply-change，worktree 实现 + 测试报告）
-                          NOT_CLEARED / NEEDS_REVISION → 主控者总结后关闭
+  → k_verdict（主控者读 review.md Overall Verdict，**原文呈现 verdict / Action Items**）：
+       READY          → 一次问两道：是否生成领导层报告（arena_k_report）+ 是否进入 user-readiness（arena_k_advance）
+                         → k_readiness（探索者 user-readiness-review；生成报告时先 fork reporter 后台执行）
+                         → CLEARED → k_gate（原样呈现 + 确认进入 apply）→ k_apply（主控者 theseus-apply-change，worktree 实现 + 测试报告）
+                           NOT_CLEARED / NEEDS_REVISION → 主控者原样呈现 + 总结后关闭
        NEEDS_REVISION → 问用户是否再来一轮修订（arena_k_revision）
                         同意 → 重新 k_propose（读 review.md Action Items）→ 再送审（无轮次上限）
                         拒绝 → 主控者总结 + record NEEDS_REVISION → 关闭
-       NOT_READY      → 主控者列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，
+       NOT_READY      → 主控者原文逐条列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，
                         record NOT_READY → 关闭（workflow 停在 review 待人工处理）
 关闭 → 注入收尾提醒：T7 worktree-commit-push / T8 openspec-impl-doc / T9 theseus-archive-change 需用户明确指示
 ```
 
+- **阶段推进确认门（不自动推进）**：每个阶段完成后，主控者必须**原样呈现子代理结算消息/结论原文（不摘要、不改写）**，并用固定问题 `arena_k_advance` 问用户是否进入下一阶段（propose / review / user-readiness / apply）；用户选「暂停，先不推进」或主控者没问 → 宿主**不推进**并关闭竞技场（Theseus 状态保留，可续跑）。只有用户确认后才 judge+record、宿主验证后派发下一阶段。
 - **绑定**：knowledge 场景假定工作区已装 dsh-plugin-theseus；主控者 `k_init` 回合结束时宿主读 `openspec/.runtime/sessions/dsh__<sessionId>.json` 取 workflow id，未绑定则告警回等待态。
 - **record 生效验证**：每个 k_gate 回合结束后宿主读 `openspec/states/<workflowId>.json` 的 currentStage 必须推进到预期阶段，否则注入提醒留场重试——子代理不碰 CLI，record 只属于主控者。
-- **探索者返回协议**：`STAGE_DONE <stage> <result>` / `NEED_QUESTION <问题JSON>` / `BLOCKED <原因>`（一行，宿主机器解析；无法解析保守回等待态）。
+- **探索者返回协议**：`STAGE_DONE <stage> <result>` / `NEED_QUESTION <问题JSON>` / `BLOCKED <原因>`（一行，宿主机器解析；无法解析保守回等待态）。问题 JSON **只含 question / header / options / multi_select 展示字段**（禁止 correctIndex / 正确项位置 / why 等答案线索）。语言由三套 persona 的【工作语言】段统一声明（工作语言中文、契约工件英文、业务硬信息不翻译），委派模板与指令不再重复。
 - **派发失败 / 中断**：派发失败注入告警回等待态可重试；子代理中断按产物已满足的 gate 幂等重放（阶段 skill 产物落盘、覆盖式写）。
 - **file ownership**：探索者禁写 review.md、`openspec/states/`、`openspec/.runtime/`；挑战者只写 review.md；主控者只经 CLI 变更运行时状态（k_apply 在 worktree 写代码）。
 
@@ -212,7 +213,7 @@ cordis.patch.yml（顶层数组）：
    - NEEDS_REVISION → 问你「再来一轮修订？」——同意就重新 propose 再送审（不限次数），拒绝则总结关闭；
    - NOT_READY → 列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace 后关闭（workflow 停在 review）。
 4. 结束时会列出后续步骤：T7 worktree-commit-push、T8 openspec-impl-doc、T9 theseus-archive-change——按你明确指示执行，不自动 commit/push/archive。
-5. **中断/重启续跑**：会话焦点已绑定 workflow 时，重开会话发任意消息（如「继续」）即可——宿主读 `openspec/states/<id>.json` 的 currentStage 自动跳到对应阶段（propose/review/user-readiness-review/apply）续跑，跳过已完成阶段、不重跑 explore、不重复 record；workflow 已 `archive/done` 则直接收尾。
+5. **中断/重启续跑**：会话焦点已绑定 workflow 时，重开会话发任意消息（如「继续」）即可——宿主读 `openspec/states/<id>.json` 的 currentStage 自动跳到对应阶段（propose/review/user-readiness-review/apply）续跑，跳过已完成阶段、不重跑 explore、不重复 record；workflow 已 `archive/done` 则直接收尾。续跑消息本身即视为用户确认（不再逐阶段询问）；正常推进中每阶段仍须用户确认后才进入下一阶段。
 
 ## 测试
 

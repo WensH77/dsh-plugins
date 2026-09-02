@@ -2,6 +2,56 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.8（fix：peer 范围切到 alpha 线——跟随 dsh 0.1.2-alpha 通道）
+
+- **peerDependencies 全线切到当前 alpha 线**：`@deepseek-ai/dsh-*`（agent / api-remotes / client-locale / client-ui-conversation / llm / session / subagent / system-prompt / tools）从 `^0.1.1-rc.2`（system-prompt 为 `^0.1.0-rc.7`）改为 `^0.1.2-alpha.4`，`cordis` 从 `^4.0.1` 改为 `^4.0.2`——与 alpha 通道全家桶（`alpha` dist-tag = `0.1.2-alpha.4`，且各包 peer 互相声明 `^0.1.2-alpha.4` / `cordis ^4.0.2`）对齐。
+- **为什么可以声明 alpha 范围**：semver 预发布规则下，`^0.1.2-alpha.4` 只匹配同一 `[major,minor,patch]` 元组的预发布，实测匹配 `0.1.2-alpha.4`、不匹配 `0.1.3-alpha`（上游切新元组需再 bump）、不匹配 `0.1.1-rc.2`（旧 rc 宿主）。声明它是"本插件以 0.1.2-alpha 线为开发基线"的**兼容性声明**，不参与安装/运行期强制——安装层仍由 `peerDependenciesMeta.optional` + 插件市场暂存目录 `autoInstallPeers: false` 兜底。
+- 维护成本：上游每次切新 alpha 元组（如 `0.1.3-alpha`）都要再 bump 一遍本文件；只跟 rc 线的部署会与本声明不匹配（optional 兜底使其不阻塞安装）。
+
+## 0.33.7（fix：重跑/重启后复用既有可接续子代理，不再新建副本）
+
+- **派发前强制找回既有子代理**：`dispatchKnowledge`（探索者/挑战者）与 `dispatchArenaRound`（business 挑战者）在内存 id 缓存缺失时，先 `resolveSubagent/resolveChallenger(force)` 按 label 枚举 `listChildren` 找回既有可接续子代理——命中则直接 `followup` 续聊（上下文跨轮次保留），只有确实不存在才 `startContinuable` 新建。此前找回是懒异步的（offCreated/offStart/section 注入处 fire-and-forget），重跑/重启后的首次派发可能赶在找回完成前发生 → 误建新副本、丢失旧上下文。
+- 与 0.33.6 的续跑路径（k_init 按 states 文件跳阶段）配合：重启后发「继续」→ 阶段恢复 + 同一探索者/挑战者续聊，整条链路确定性成立。
+
+## 0.33.6（fix：推进确认答案提取锚点错位——提问早于结算导致误关竞技场）
+
+- **事故（session-cceff284）**：探索者通过 `subagent-report` 提前报告「explore 阶段完成」，主控者据此在真正的 `subagent-settled`（STAGE_DONE）到达**之前**就问了 `arena_k_advance`；宿主的答案提取 `collectAskAnswerText` 旧锚点是「最后一次 subagent-settled 之后」→ 答案在结算之前 → 提取为空 → `advance === null` → 保守关闭竞技场，propose 从未派发、自然也没有 review 前的确认提问。
+- **修复**：`collectAskAnswerText` 锚点改为**当前回合的 `turn/start`**（提问必然发生在结算触发的同一回合内，无论早于/晚于结算消息都能命中；无 turn/start 事件时回退到旧锚点）。跨回合防护不变：只取最后一个 turn/start 之后的提问。
+- **护栏**：knowledge 四个「等待中」阶段指示（探索中/提案中/审查中/就绪评审中）追加「即使收到子代理进度报告、或 Theseus 门控显示 ready，也不要提前行动——阶段完成由系统在结算后切换指示」。
+- 测试：提问早于结算仍可提取并判定 continue、上一回合提问不计入本回合。
+
+## 0.33.5（chore：工作语言声明收敛到三套 persona）
+
+- knowledge 三套 persona（主控者 / 探索者 / 挑战者）各加一个统一的【工作语言】段：「工作语言用中文（Theseus 约定：对话、评审讨论、就绪面试均属工作语言）；契约工件按 skill 约定用英文，业务硬信息（代码、枚举值、字段名、路径、API 名、spec id）一律保持英文原文不翻译。」
+- 其它位置的分散语言约束全部移除：探索者 persona 的题干/工件语言两行、`readinessPrompt` 委派模板的语言句、`DEFAULT_KNOWLEDGE_INSTRUCTION` 末尾的「用中文回答」——语言只在 persona 声明一次，避免重复与漂移。
+- 测试：三套 persona 各含【工作语言】段与硬信息不翻译声明；委派模板与 knowledge 指令不再重复语言约束。
+
+## 0.33.4（fix：题干语言改对齐 Theseus 工作语言约定）
+
+- 0.33.3 把预测题题干钉成英文是**钉反方向**：`theseus-workflow-router` 的 Language & Anti-Loss Convention 明确「Working language (conversation, review discussion, **interview**) — free, typically the team's native language (e.g. Chinese)」，就绪面试属工作语言。改回：探索者 persona 与 `readinessPrompt` 规定**题干与选项用中文表述**（对账正文也用中文），题内业务硬信息（代码/枚举/字段名/API 名）保持英文原文不翻译；契约工件英文的约定不变（工件写作本就不受题干语言影响）。原生 Theseus 流程不会把中文提问当问题，语言漂移是竞技场委派/重跑强制重生成时暴露的，本版与原生约定对齐后即消除。
+- 测试：persona/readiness 模板含「工作语言」与「保持英文原文」约定。
+
+## 0.33.3（fix：预测题语言漂移 + 问题意图 JSON 答案泄露）
+
+- **问题语言钉死英文**（修复「中断重跑后题干变中文」——实测 9/1 探索者问中文、9/2 新探索者问英文，语言从未被约束，重生成即漂移，属高概率）：探索者 persona 与 `readinessPrompt` 委派模板都规定「问题意图 JSON 的题干与选项一律英文（与 delta spec 一致）；对账正文可用中文；同一轮内语言不得漂移」。
+- **问题意图 JSON 禁止答案线索字段**（修复「用户可见正确答案」——实测 9/1 输出 `正确项位置:2`、9/2 输出 `correctIndex:1`+`why`，随 subagent-settled 消息直接显示给用户）：JSON **只允许 question / header / options / multi_select 展示字段**，correctIndex / 正确项位置 / why / 规则 / 答案一律禁止（正确项位置只允许写进 user-readiness.review.md 工件）。`k_ask` 阶段指示与 `DEFAULT_KNOWLEDGE_INSTRUCTION` 第 3 条同步：主控者只照抄展示字段，发现线索字段一律忽略、不得向用户展示。
+- 测试：探索者 persona / readiness 模板不含答案线索字段约定、含英文钉死约定、明确禁止 correctIndex。
+
+## 0.33.2（feat：中继问答与对账全文原样转述）
+
+- **子代理的一切问题与答案都由主代理原样转述**：`k_ask` 阶段指示改为两步——① 把结算消息里 NEED_QUESTION JSON 之外的**全部正文（对账、规则揭示、答案正确与否）原文呈现**，需要时**允许用 read 等工具**读 openspec 工件（user-readiness.review.md / review.md / decision-log）逐行引用，禁止改写/摘要；② 再用 JSON 原样 ask_user_question 提问。`DEFAULT_KNOWLEDGE_INSTRUCTION` 第 3 条同步强化。
+- **探索者返回协议补充对账契约**：每道题用户作答后（尤其 user-readiness 预测题），先把对账正文（规则揭示、用户答案、**答案是否正确**、差异说明）原文输出在消息前部，再接下一道 NEED_QUESTION 或最终 STAGE_DONE；协议行放消息**最后**。
+- **user-readiness 对齐表原文透传**：`k_gate` 的 apply 确认与收尾两条指示都要求主控者读 `openspec/changes/<workflow>/user-readiness.review.md`，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌）**原文逐行转述**后再询问/记录。
+- 测试：指令含「一切问题与答案都由你原样转述」「允许用 read 等工具」；探索者 persona 含「答案是否正确」。
+
+## 0.33.1（feat：阶段推进用户确认门 + 子代理结论原文呈现）
+
+- **阶段推进确认门（不自动推进）**：对齐 Theseus router 的「Ask the user before delegating」——`k_gate`（explore→propose / propose→review / readiness→apply）与 `k_verdict` READY→user-readiness 前，主控者必须用固定问题 `arena_k_advance`（选项「确认，进入下一阶段」/「暂停，先不推进」）问用户；宿主用新增的 `parseAdvanceChoice` 从会话事件机器判定——**用户确认才 judge+record 并派发下一阶段；选暂停、或主控者没问（无法判定）→ 一律不推进并关闭竞技场**（Theseus 状态保留，重启后「继续」可续跑）。README 流程图为各 gate 标注确认节点。
+- **子代理结论原文呈现**：`k_gate` 与 `k_verdict` 的阶段指示全部要求主控者**原样呈现子代理结算消息 / review.md 的 Overall Verdict 与 Action Items 原文（不摘要、不改写、不省略协议行）**，之后才询问/记录；`DEFAULT_KNOWLEDGE_INSTRUCTION` 第 2/4 条同步（不再说「简报」）。
+- `k_verdict` READY 阶段改为**一次问两道**：① `arena_k_report`（生成报告/跳过）② `arena_k_advance`（是否进入 user-readiness）——② 选暂停则关闭竞技场。
+- 续跑语义不变：k_init 已绑定时的状态文件续跑**跳过确认门**（用户的「继续」消息即确认）；正常逐阶段推进仍需逐门确认。
+- 测试：`parseAdvanceChoice`（固定 id/回落/否定优先/空）、`ARENA_K_ADVANCE_*` 导出、指令含确认门与「原文原样」要求。
+
 ## 0.33.0（feat：历史会话检索指引独立成段（只给主代理）+ fix：knowledge 检索指引对齐工作区 theseus 技能）
 
 - **新增 `sessionHistoryGuide`（历史会话检索指引）**：从 `DEFAULT_SEARCH_GUIDE`（business 第 5 项）拆出为独立常量 `DEFAULT_SESSION_HISTORY_GUIDE`，**全场景共用**（business / knowledge / qa 都注入），随竞技指令段落渲染在「场景检索指引」之后、「阶段指示」之前。
