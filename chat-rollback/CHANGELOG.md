@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.2.2
+
+- **peer 范围切到 alpha 线**：`@deepseek-ai/dsh-agent-presets` 从 `^0.1.0-rc.7` 改为 `^0.1.2-alpha.4`、`cordis` 从 `^4.0.1` 改为 `^4.0.2`——跟随 dsh 0.1.2-alpha 通道（`alpha` dist-tag 全家桶互相声明 `^0.1.2-alpha.4` / `cordis ^4.0.2`）。这是"以 0.1.2-alpha 线为开发基线"的兼容性声明：semver 下 `^0.1.2-alpha.4` 只匹配同一元组的预发布（上游切 `0.1.3-alpha` 需再 bump），安装/运行期不受其强制（无强制校验，旧 rc 宿主照常运行）。
+
 ## 0.2.1
 
 - **补上 `repository` 字段**（`WensH77/dsh-plugins#path:chat-rollback`）：插件市场的「检查更新 / 更新 / 帮我更新」按 *市场安装记录 > 包内 repository > profile 依赖的 `github:` spec* 三级回退取仓库地址。此前本包缺第二级，若不是用 `github:` spec 安装（例如 `git+https://`、tarball、`link:`），更新通道会直接报「git 通道需要 GitHub 仓库地址（repository 字段缺失）」。
