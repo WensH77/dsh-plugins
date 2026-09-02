@@ -5,6 +5,7 @@ import {
   ARENA_ANOTHER_ROUND_NO,
   ARENA_ANOTHER_ROUND_QUESTION_ID,
   ARENA_ANOTHER_ROUND_YES,
+  ARENA_GOAL_BLOCK_TEXT,
   ARENA_K_ADVANCE_NO,
   ARENA_K_ADVANCE_QUESTION_ID,
   ARENA_K_ADVANCE_YES,
@@ -56,11 +57,13 @@ import {
   parseReviewFileVerdict,
   parseStageResult,
   parseVerdictOutcome,
+  planKnowledgeAdvance,
   sanitizeSessionRefs,
   sceneFromAnyLabel,
   sceneFromLabel,
   scenePersonasOf,
   scenesAllowedIn,
+  sessionEventsOf,
   subagentProviderOf
 } from '../lib/index.js';
 
@@ -541,6 +544,9 @@ assert.ok(kMainPersona.includes('均由宿主派发'), '主控者 persona 声明
 assert.ok(kMainPersona.includes('不得擅自创建子代理'), '主控者 persona 禁止擅自创建子代理');
 assert.ok(kMainPersona.includes('已有子代理优先'), '主控者 persona 声明续跑以已有代理优先');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('已对你禁用'), 'knowledge 指令声明委派工具已禁用');
+assert.ok(kMainPersona.includes('goal 工具 get_goal / create_goal / update_goal'), '主控者 persona 声明 goal 工具在开启期间禁用');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('goal 工具（get_goal / create_goal / update_goal）与 /goal 命令在竞技场开启期间同样不可用'), 'knowledge 指令声明 goal 工具与 /goal 命令不可用');
+assert.ok(ARENA_GOAL_BLOCK_TEXT.includes('/goal') && ARENA_GOAL_BLOCK_TEXT.includes('已禁用'), '/goal 影子命令返回禁用提示');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('NOT_READY 与 NEEDS_REVISION 同样处理'), 'NOT_READY 与 NEEDS_REVISION 不再区分（都问是否再来一轮修订）');
 assert.ok(kMainPersona.includes('阶段 skill 不由你执行'), '主控者 persona 声明阶段 skill 不由其执行');
 assert.ok(kMainPersona.includes('不得亲自加载/执行它们'), '主控者 persona 禁止亲自加载阶段 skill');
@@ -559,41 +565,43 @@ assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('Theseus CLI'), 'knowledge 指�
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('ask_user_question 都只能由你提出'), 'knowledge 指令声明提问独占');
 assert.ok(defaults.knowledgeInstruction, DEFAULT_KNOWLEDGE_INSTRUCTION, 'knowledgeInstruction 默认一致');
 
-// 中继答案提取：只看最后一次结算之后的 ask_user_question 结果原文
+// 中继答案提取：只看当前回合（最后一次 turn/start 之后；无 turn/start 回退最后一次
+// 结算之后）的 ask_user_question 结果原文，同一回合多次询问全部保留（数组）。
 const kAskResult = (callId, text) => ({
   type: 'tool/result',
   data: { message: { content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text }] }] } }
 });
-assert.equal(
+assert.deepEqual(
   collectAskAnswerText([
     { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [{ type: 'text', text: 'NEED_QUESTION {"question":"x"}' }] } },
     { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } },
     kAskResult('c1', '{"answers":[{"id":"q","selected":["A"]}]}')
   ]),
-  '{"answers":[{"id":"q","selected":["A"]}]}',
-  '提取结算后的回答原文'
+  ['{"answers":[{"id":"q","selected":["A"]}]}'],
+  '提取结算后的回答原文（数组）'
 );
-assert.equal(
+assert.deepEqual(
   collectAskAnswerText([
     { type: 'tool/call', data: { name: 'ask_user_question', callId: 'old' } },
     kAskResult('old', '{"answers":[]}'),
     { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [] } }
   ]),
-  '',
-  '结算前的提问不计入'
+  [],
+  '结算前（且无 turn/start 锚）的提问不计入'
 );
-assert.equal(collectAskAnswerText([]), '', '没问 = 空串');
-// session-cceff284 事故回归：主控者被 subagent-report 提前唤醒、在结算消息到达**之前**提问——
-// 答案在 turn/start 之后必须仍能被提取（旧实现锚定「最后一次结算之后」会漏掉 → 误判未确认 → 关场）。
+assert.deepEqual(collectAskAnswerText([]), [], '没问 = 空数组');
+// session-cceff284 事故回归：主控者被 subagent 实时消息提前唤醒、在结算消息到达**之前**
+// 提问——答案在 turn/start 之后必须仍能被提取（旧实现锚定「最后一次结算之后」会漏掉 →
+// 误判未确认 → 关场；运行时事件源缺失导致整条链落空，见 sessionEventsOf 用例）。
 const kTurnEvents = [
   { type: 'turn/start' },
   { type: 'tool/call', data: { name: 'ask_user_question', callId: 'c1' } },
   kAskResult('c1', '{"answers":[{"id":"arena_k_advance","selected":["确认，进入下一阶段 (Recommended)"]}]}'),
   { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [{ type: 'text', text: 'STAGE_DONE explore CONFIRMED' }] } }
 ];
-assert.equal(
+assert.deepEqual(
   collectAskAnswerText(kTurnEvents),
-  '{"answers":[{"id":"arena_k_advance","selected":["确认，进入下一阶段 (Recommended)"]}]}',
+  ['{"answers":[{"id":"arena_k_advance","selected":["确认，进入下一阶段 (Recommended)"]}]}'],
   '提问早于结算（同一回合内）仍能提取答案'
 );
 assert.equal(
@@ -610,6 +618,62 @@ const kCrossTurn = [
   { type: 'turn/start' },
   { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [] } }
 ];
-assert.equal(collectAskAnswerText(kCrossTurn), '', '上一回合的提问不计入本回合');
+assert.deepEqual(collectAskAnswerText(kCrossTurn), [], '上一回合的提问不计入本回合');
+
+// 终评 READY 一次问两道（报告 + 进入 user-readiness）：两条回答都在窗口内，
+// parse* 按各自固定 id 取用，不再「只认最后一条」。
+const kTwoAskTurn = [
+  { type: 'turn/start' },
+  { type: 'tool/call', data: { name: 'ask_user_question', callId: 'r1' } },
+  kAskResult('r1', JSON.stringify({ answers: [{ id: ARENA_K_REPORT_QUESTION_ID, selected: ['生成领导层报告'] }] })),
+  { type: 'tool/call', data: { name: 'ask_user_question', callId: 'a1' } },
+  kAskResult('a1', JSON.stringify({ answers: [{ id: ARENA_K_ADVANCE_QUESTION_ID, selected: ['确认，进入 user-readiness'] }] })),
+  { type: 'user/message', data: { source: { kind: 'subagent-settled' }, content: [{ type: 'text', text: 'Done' }] } }
+];
+const kTwoAnswers = collectAskAnswerText(kTwoAskTurn);
+assert.equal(kTwoAnswers.length, 2, '一次问两道 → 两条回答都提取到');
+assert.equal(parseKnowledgeChoice(kTwoAnswers, 'report'), 'generate', '按报告 id 判定生成报告');
+assert.equal(parseAdvanceChoice(kTwoAnswers), 'continue', '按推进 id 判定确认进入（不被报告条干扰）');
+assert.deepEqual(collectAskAnswerText(kTwoAskTurn.slice(0, 4)), [kTwoAnswers[0]], '缺推进条时只返回报告条');
+
+// sessionEventsOf：dsh 0.1.2-alpha.4 的 Session 无 .events——统一走 snapshotEvents()/log
+assert.deepEqual(sessionEventsOf(null), [], '无会话 → 空数组');
+assert.deepEqual(sessionEventsOf({}), [], '空对象 → 空数组');
+assert.deepEqual(
+  sessionEventsOf({ snapshotEvents: () => ['a', 'b'] }),
+  ['a', 'b'],
+  'snapshotEvents() 优先（alpha.4 真实 API）'
+);
+assert.deepEqual(
+  sessionEventsOf({ events: ['old'] }),
+  ['old'],
+  '旧 .events 字段兼容'
+);
+assert.deepEqual(
+  sessionEventsOf({ log: ['x'] }),
+  ['x'],
+  '.log 字段兜底'
+);
+assert.deepEqual(
+  sessionEventsOf({ snapshotEvents: () => { throw new Error('boom'); }, log: ['x'] }),
+  ['x'],
+  'snapshotEvents 抛错时回退 .log'
+);
+
+// planKnowledgeAdvance：k_gate 推进决策（文件真相兜底，杜绝「已确认却静默关场」）
+assert.deepEqual(planKnowledgeAdvance('continue', 'propose', 'propose'), { action: 'dispatch' }, '确认 + record 已生效 → 派发');
+assert.deepEqual(planKnowledgeAdvance('continue', 'explore', 'propose'), { action: 'retry' }, '确认但 record 未生效 → 停留重试');
+assert.deepEqual(planKnowledgeAdvance('stop', 'propose', 'propose'), { action: 'close', reason: 'user-paused' }, '用户暂停 → 关闭（即使已 record）');
+assert.deepEqual(
+  planKnowledgeAdvance(null, 'propose', 'propose'),
+  { action: 'dispatch', reason: 'file-truth' },
+  '确认答案未提取到但状态文件已推进（record 生效）→ 按文件真相派发（本次事故回归）'
+);
+assert.deepEqual(
+  planKnowledgeAdvance(null, 'explore', 'propose'),
+  { action: 'close', reason: 'no-confirm-no-record' },
+  '未确认且未 record → 关闭（附可见提示）'
+);
+assert.deepEqual(planKnowledgeAdvance(null, '', 'propose'), { action: 'close', reason: 'no-confirm-no-record' }, '状态文件读不到按未推进处理');
 
 console.log('arena-v2 smoke OK');

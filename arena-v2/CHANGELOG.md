@@ -2,6 +2,27 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.18（fix：`.session.events` 事件源全面适配 dsh 0.1.2-alpha.4——回答/字段提取此前全部落空）
+
+- **事故**：0.33.15 适配 subagents API 时漏掉另一处破坏性变更——dsh 0.1.2-alpha.4 的 `Session` **不再暴露 `.events`**（只有 `snapshotEvents()` 与公开的 `log`）。lib 里所有 `agent.session?.events` / `resolveMainAgent(...)?.session?.events` 运行时恒为 undefined，宿主机器提取整条失效：
+  - knowledge 阶段推进确认门（k_gate）把用户已点的「确认，进入下一阶段」判成「没确认」→ **静默关场、propose 从未派发**（session-98182034 实证：15:38:07 用户点确认、record 已把 Theseus 状态文件推进到 propose，宿主 15:38:16 turn/end 后直接关场；同一会话派发给探索者的「用户原始表述」也显示「（无）」，尽管用户写了完整消息——两处独立读取都取空）；
+  - business/qa 的质疑轮/终评轮组装（composeRoundText 四字段）、终评「再来一轮」选择读取同样受影响。
+- **修复**：新增 `sessionEventsOf(session)` 统一取事件日志——`snapshotEvents()` 优先（与持久化 jsonl 同源，含 turn/start 全部日志事件），兼容旧 `.events` / `.log`；五处读取点全部替换：`arena_compose` 工具、`readAnotherRoundChoice`（business present）、`dispatchArenaRound`（business/qa 组装）、knowledge turn/end 的 `eventsK`（session/event 处理器直接拿收到的 Session 快照，不再绕 agents 注册表）。
+- **锚点与一次多问**：
+  - `collectAskAnswerText` 改为返回**窗口内全部**回答文本（数组）——终评 READY「一次问两道」（领导层报告 + 进入 user-readiness）此前只认最后一条工具结果，必丢其一；`parseAdvanceChoice` / `parseKnowledgeChoice` 改为接受单条或数组，按各自固定 id 取用；
+  - business 的 `collectAnotherRoundChoice` 锚点与 knowledge 统一为「最后一次 turn/start 之后」（无则回退最后一次结算之后），覆盖挑战者实时消息先到、主代理提问先于 `subagent-settled` 入库的乱序（session-cceff284 同类，session-98182034 再次复现）。
+- **k_gate 文件真相兜底（不再静默误关）**：新增纯函数 `planKnowledgeAdvance` 统一推进决策——用户明确「暂停」→ 关场；确认但 record 未生效 → 注入提醒留场重试；确认回答提取不到但 Theseus 状态文件已推进到下一阶段（主控者 persona 只在用户确认后 judge+record，状态文件推进即确认的机器信号）→ **按文件真相派发**；未确认且未 record → 关场并注入**可见**提示（附「重开 + 继续」续跑指引），不再无声关闭。
+- 测试：`sessionEventsOf`（snapshotEvents / 旧 .events / .log / 抛错回退）、`collectAskAnswerText` 数组语义、同回合双问条按 id 各取、`parseAdvanceChoice`/`parseKnowledgeChoice` 数组入参、`planKnowledgeAdvance` 五分支、跨回合污染防护保持；npm test 全绿。用真实事故会话日志回放验证：乱序事件 → 提取到确认 → `advance=continue` → `dispatch`。
+
+## 0.33.17（fix：竞技场 v2 模式下真正禁用 goal——0.33.9 的 deny 名单从未生效）
+
+- **事故**：0.33.9 起 `tools.restrict({ deny: ['goal', …] })` 里的 `'goal'` **不是任何已注册工具名**——dsh 0.1.2-alpha.4 的 tool-goal 注册的是 `get_goal` / `create_goal` / `update_goal`。restrict 校验全部名字后才生效，遇到 unknown name 整单抛错 → 被 catch 跳过，**等于从未生效**。实证：知识沉淀主会话（a4eacb32）在竞技场开启窗口内多次 `send_message` / `subagent` 调用全部成功（无 deny 错误）——主控者「不得擅自委派/建 goal」此前全靠提示词约束。
+- **修复**（机械两层，均随竞技场开启安装、关闭恢复）：
+  1. 工具 deny 改用**真实工具名**：`get_goal` / `create_goal` / `update_goal`（business/qa 同），知识沉淀额外加 `subagent` / `subagent_fork` / `send_message`；restrict **整单失败时逐名重试**，让能命中的名字仍然生效（个别名字缺失的会话不再整体跳过）。
+  2. `/goal` 命令影子：竞技场开启期间在主会话作用域注册同名 `goal` 命令，遮蔽预设作用域（tool-both 的 command-goal）——用户键入 `/goal`（含 goal 条 UI 快捷：pause/resume/edit/clear）一律返回固定拒绝文案（`ARENA_GOAL_BLOCK_TEXT`），关闭竞技场随 disposer 恢复原命令。
+- 主控者 persona【分工】与 knowledge 指令同步声明：goal 工具（`get_goal` / `create_goal` / `update_goal`）与 `/goal` 命令在竞技场开启期间同样不可用（回合与推进由宿主门控，不由 goal 驱动）。
+- 测试：persona / knowledge 指令含 goal 禁用声明；`ARENA_GOAL_BLOCK_TEXT` 导出并断言含禁用提示。
+
 ## 0.33.13（fix：mainPersona【流程】step 4 同步——NOT_READY 统一与 READY 执行者约束此前漏改 persona 文本）
 
 - 0.33.11/0.33.12 只改了 handler、k_verdict 阶段指示与 `DEFAULT_KNOWLEDGE_INSTRUCTION`，**漏了 `mainPersona` 自己的【流程】step 4**——设置页（/arena-v2/personas 渲染 mainPersona）里仍是旧文案「NOT_READY → 不再送审…关闭」，与运行行为矛盾。
@@ -10,6 +31,26 @@
   - NEEDS_REVISION：呈现原文 → 问 `arena_k_revision`；同意 → record NEEDS_REVISION（推回 propose）→ 宿主重派探索者；拒绝 → record NEEDS_REVISION 后关闭；
   - NOT_READY：与 NEEDS_REVISION **同样处理**（原文列出 FAIL 项 → 问是否再来一轮；同意 → record NEEDS_REVISION 推回 propose；拒绝 → record NOT_READY 后关闭）。
 - 测试：persona 含「NOT_READY → 与 NEEDS_REVISION 同样处理」，不再含旧版「NOT_READY → 不再送审」。
+
+## 0.33.16（chore：依赖对齐——工作区 @deepseek-ai 软链到宿主 dsh 副本，消除混版本）
+
+- 根因：插件的 `@deepseek-ai/*` import 按 Node 文件路径解析到 `~/Documents/dsh-plugins/node_modules`（8/25 安装的 rc.2 快照），而宿主 dsh 是自包含的 0.1.2-alpha.4（全局安装、与工作区路径不相交）——dsh 升级只更新 host/profile，插件工作区副本无人统一重装 → 混版本（本次仅 dsh-subagent 被显式升到 alpha.4）。
+- 修复（方案 A：插件工作区「指向本地 dsh」）：把工作区 `node_modules/@deepseek-ai/{dsh-system-prompt,dsh-llm,dsh-tools,schemastery}` **软链到宿主 dsh 的嵌套副本**（dsh-subagent 已是 alpha.4 不动）；此后 dsh 升级，插件自动跟随宿主版本，永不混版本。
+- 连带修复：宿主 0.1.2-alpha.4 的 dsh-system-prompt 已移除 `PERSONA_ORDER`——插件改为本地常量 `PERSONA_ORDER = 0`（等价于 `SECTION_ORDERS.DEPLOYMENT_PERSONA = 0`，旧版值亦为 0），消除指向后必然出现的 import 崩溃。
+- 验证：arena-v2 与全部兄弟插件（chat-rollback/command-setting/model-arena/plugin-market/session-export/tool-both）在宿主副本解析下均可加载，smoke 全绿。
+- 注意：此后**不要在 dsh-plugins 里对这四个包执行 `npm install`**（会覆盖软链）；dsh 升级后无需任何操作。
+
+## 0.33.15（fix：适配 dsh 0.1.2-alpha.4——subagents API 破坏性变更，自动派发失效）
+
+- **事故**：dsh 升级到 0.1.2-alpha.4 后竞技场 v2 不再自动派发。全量核对发现两处破坏性变更：
+  1. `ctx.subagents.followup` **已移除**（替换为 Agent 相邻消息 `sendMessage` 与 host-only `queueHostSubagentPrompt`）——宿主派发的能力检查 `typeof followup !== 'function'` 恒失败 → 每次派发都走「subagents 服务不可用」回退 → 无自动派发；
+  2. `ctx.subagents.registerContinuableSetup` **已移除**——固定模型/探索者·挑战者 persona 的创建窗口注入静默失效。
+- **修复**：
+  - 续聊改用 `queueHostSubagentPrompt`（`@deepseek-ai/dsh-subagent/internal`，符号键 host 队列，保留宿主来源）；服务为远程 face 未实现符号时回退 `sendMessage`（agent-message 归属）。封装为 `queueToChild`。
+  - 固定模型 + persona 改为 **创建请求注入**：`startContinuable` 的 `request` 带 `agentOptions`（provider/model/reasoningEffort，spawn provider 支持）与 `persona`（阴影 deployment:persona）——两者随 descriptor 持久化、冷恢复重放，替代被移除的创建窗口钩子。探索者=explorerPrompt、挑战者=challengerPrompt，业务/知识沉淀两条派发链都已切换。
+  - 移除 `installModelSelection` / `foldSubagentDescriptor` 依赖与 `subagent/provider-added` 挂载逻辑。
+- 其余 API 核对无影响：`session/event`、`agent/created`、`subagent/start`、`agent/disposed`、`tools.restrict`、`commands.register`、`webServer.register`、`createUserMessage`/`BlockAssembler`、`listChildren`（entry: kind/id/mode/label）均保持兼容。
+- 遗留风险：`PERSONA_ORDER` 仍在用（workspace 解析的 dsh-system-prompt 0.1.1-rc.2 有导出）；若宿主解析统一到 0.1.2-alpha.4 该常量已移除，届时需改用 `SECTION_ORDERS`。
 
 ## 0.33.14（fix：工作区门控下只剩单场景时不再显示场景选择）
 

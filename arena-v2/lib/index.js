@@ -5,20 +5,18 @@
 // 挑战者：首轮用 subagent 创建（拿到 durable 的 subagentId），后续轮次用
 // send_message 给同一个 id 续聊，挑战者的上下文跨轮次累积。
 //
-// 挑战者模型：**固定** deepseek-v4-pro · 推理深度 max，与父代理完全解耦——
-// 父代理用什么模型都不影响挑战者。实现不是靠继承父代理路由，而是在挑战者子代理
-// 的创建窗口（registerContinuableSetup，新建与冷恢复都会走）里安装一个固定的模型
-// 选择（installModelSelection），在 agent/request 瀑布里把每次请求的
-// provider/model/reasoningEffort 覆盖为固定值。这与 api-proxy 给 Web 会话固定
-// 模型用的是同一机制，只是作用域只落在挑战者自己身上。
+// 挑战者/探索者模型：**固定** deepseek-v4-pro · 推理深度 max，与父代理完全解耦——
+// 父代理用什么模型都不影响。dsh 0.1.2-alpha.4 起按**创建请求**注入：ContinuableStartSpec.request
+// 传 agentOptions（provider/model/reasoningEffort，spawn provider 支持）与 persona
+// （阴影 deployment:persona）——两者随 descriptor 持久化、冷恢复重放，不再有
+// registerContinuableSetup 创建窗口钩子。
 //
 // 实现分四部分：
 // 1) 竞技场模式：/arena 命令把模式状态写入 ~/.dsh/arena-v2 侧文件（按会话 id，
 //    重启后恢复）；chip 挂载时经 /arena-v2/state 路由从侧文件恢复开关态；
 //    **与预设无关，只看 chip 是否开启**。
-// 2) 固定模型选择：registerContinuableSetup 的 contribution 按 label
-//    （CHALLENGER_LABEL，subagent 工具的 description）识别挑战者子代理，命中才
-//    安装 installModelSelection；同父会话的其它子代理、其它会话的子代理不受影响。
+// 2) 固定模型选择：创建竞技场子代理时随 startContinuable 请求传入 agentOptions；
+//    同父会话的其它子代理、其它会话的子代理不受影响。
 // 3) 挑战者 id 追踪：监听 subagent/start（子代理创建/唤醒/冷恢复）以及按 label
 //    枚举本会话的直接子代理（ctx.subagents.listChildren），把「当前挑战者 id」
 //    注入系统提示。主代理直接读提示里的 id 即可 send_message，无需从历史工具
@@ -30,9 +28,11 @@ import z from '@deepseek-ai/schemastery';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { installModelSelection } from '@deepseek-ai/dsh-agent';
-import { foldSubagentDescriptor } from '@deepseek-ai/dsh-subagent';
-import { PERSONA_ORDER, PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt';
+import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
+// 0.1.2-alpha.4 起 PERSONA_ORDER 已移除；deployment:persona 的固定槽位序号为 0
+// （SECTION_ORDERS.DEPLOYMENT_PERSONA = 0，旧版 PERSONA_ORDER 亦为 0）。
+import { PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt';
+const PERSONA_ORDER = 0;
 import { createUserMessage, BlockAssembler } from '@deepseek-ai/dsh-llm';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
@@ -422,21 +422,11 @@ function parseStageResult(text) {
   return best;
 }
 
-/** 知识沉淀固定提问的回答解析（report / revision 两种，否定优先）。 */
+/** 知识沉淀固定提问的回答解析（report / revision 两种，否定优先）。输入可为单条结果文本或一组（按各自固定 id 取用）。 */
 function parseKnowledgeChoice(text, kind) {
-  if (typeof text !== 'string' || text.trim() === '') return null;
-  let picked = '';
-  try {
-    const answers = JSON.parse(text)?.answers;
-    if (Array.isArray(answers) && answers.length > 0) {
-      const id = kind === 'report' ? ARENA_K_REPORT_QUESTION_ID : ARENA_K_REVISION_QUESTION_ID;
-      const target = answers.find((a) => a?.id === id) ?? answers[answers.length - 1];
-      picked = [...(Array.isArray(target?.selected) ? target.selected : []), target?.custom ?? '']
-        .filter((s) => typeof s === 'string')
-        .join(' ');
-    }
-  } catch {}
-  const probe = picked.trim() !== '' ? picked : text;
+  const id = kind === 'report' ? ARENA_K_REPORT_QUESTION_ID : ARENA_K_REVISION_QUESTION_ID;
+  const probe = pickedAnswerText(text, id);
+  if (probe.trim() === '') return null;
   if (kind === 'report') {
     if (['跳过', '不生成', '不需要', '不用'].some((m) => probe.includes(m))) return 'skip';
     if (['生成', '报告', '要'].some((m) => probe.includes(m))) return 'generate';
@@ -449,18 +439,8 @@ function parseKnowledgeChoice(text, kind) {
 
 /** 阶段推进确认（arena_k_advance）解析：暂停/不推进 = stop；确认/进入 = continue。 */
 function parseAdvanceChoice(text) {
-  if (typeof text !== 'string' || text.trim() === '') return null;
-  let picked = '';
-  try {
-    const answers = JSON.parse(text)?.answers;
-    if (Array.isArray(answers) && answers.length > 0) {
-      const target = answers.find((a) => a?.id === ARENA_K_ADVANCE_QUESTION_ID) ?? answers[answers.length - 1];
-      picked = [...(Array.isArray(target?.selected) ? target.selected : []), target?.custom ?? '']
-        .filter((v) => typeof v === 'string')
-        .join(' ');
-    }
-  } catch {}
-  const probe = picked.trim() !== '' ? picked : text;
+  const probe = pickedAnswerText(text, ARENA_K_ADVANCE_QUESTION_ID);
+  if (probe.trim() === '') return null;
   if (['暂停', '先不', '不推进', '不进入', '停止', '结束'].some((m) => probe.includes(m))) return 'stop';
   if (['确认', '进入', '推进', '继续'].some((m) => probe.includes(m))) return 'continue';
   return null;
@@ -486,17 +466,19 @@ function parseReviewFileVerdict(text) {
 }
 
 /**
- * 机器提取主会话里**最后一次挑战者/探索者结算之后**的 ask_user_question 工具结果原文
- * （JSON 文本）。知识沉淀场景的「中继提问」与固定提问都靠它：主控者提问 → 用户作答 →
- * 宿主提取答案回传给探索者 / 判定分支。没有提问 → ''。
+ * 机器提取主会话里**当前回合（最后一次 turn/start 之后；无 turn/start 事件时回退
+ * 最后一次挑战者/探索者结算之后）**的 ask_user_question 工具结果原文列表
+ * （每个非空结果一条 JSON 文本，按序）。知识沉淀场景的「中继提问」与固定提问都靠它：
+ * 主控者提问 → 用户作答 → 宿主提取答案判定/回传。同一回合多次询问（如终评 READY
+ * 一次问两道：报告 + 进入 user-readiness）时**全部保留**，由 parse* 按固定 id 各自取用。
+ * 锚点取 turn/start 正是为 session-cceff284 那类「主控者被 subagent 实时消息提前唤醒、
+ * 在 subagent-settled 结算到达**之前**就提问」的乱序兜底——此时提问仍在本回合内，
+ * 按 turn/start 可命中；按「结算之后」会漏（误判没确认 → 关场）。
  * @param events - 会话事件数组。
- * @returns ask_user_question 结果原文（空串 = 没问）。
+ * @returns 回答文本数组（空数组 = 没问）。
  */
 function collectAskAnswerText(events) {
-  if (!Array.isArray(events)) return '';
-  // 锚点：当前回合的 turn/start。提问必然发生在结算触发的同一回合内——即使主控者
-  // 被 subagent-report 提前唤醒、在结算消息到达前就提问（session-cceff284 事故），
-  // 答案仍在 turn/start 之后可命中；无 turn/start 事件时回退到「最后一次结算之后」。
+  if (!Array.isArray(events)) return [];
   let start = -1;
   for (let i = 0; i < events.length; i += 1) {
     if (events[i]?.type === 'turn/start') start = i;
@@ -509,7 +491,7 @@ function collectAskAnswerText(events) {
     }
   }
   const askCallIds = new Set();
-  let answer = '';
+  const answers = [];
   for (let i = start; i < events.length; i += 1) {
     const e = events[i];
     if (e?.type === 'tool/call') {
@@ -525,10 +507,10 @@ function collectAskAnswerText(events) {
         .filter((b) => b?.type === 'text')
         .map((b) => b.text ?? '')
         .join('');
-      if (text.trim() !== '') answer = text; // 同一回合多次询问时以最后一次为准
+      if (text.trim() !== '') answers.push(text); // 同一回合多次询问 → 全部保留（按序）
     }
   }
-  return answer;
+  return answers;
 }
 
 /**
@@ -562,7 +544,7 @@ const KNOWLEDGE_PERSONAS = {
     '- 探索者子代理：执行 theseus-explore / theseus-propose / theseus-user-readiness-review，并可用 subagent_fork 派生 reporter 后台执行 requirement-report；产出全部 openspec 工件（review.md 与 Theseus 运行时状态文件除外）。',
     '- 挑战者子代理：执行 theseus-review-spec，只写 review.md，回复只输出一行 Done。',
     '- 你：执行 Theseus CLI（mode/judge/record）与 T6 apply；你是唯一向用户提问、唯一推进 workflow 状态的代理。',
-    '- **探索者与挑战者均由宿主派发**：执行 Theseus workflow 期间，不得擅自创建子代理（subagent / subagent_fork / send_message 已对你禁用）；任何任务续跑都以已有子代理优先（复用其上下文），不新建副本。',
+    '- **探索者与挑战者均由宿主派发**：执行 Theseus workflow 期间，不得擅自创建子代理（subagent / subagent_fork / send_message 与 goal 工具 get_goal / create_goal / update_goal 在竞技场开启期间已对你禁用）；任何任务续跑都以已有子代理优先（复用其上下文），不新建副本。',
     '- **阶段 skill 不由你执行**：theseus-explore / theseus-propose / theseus-user-readiness-review / theseus-review-spec / requirement-report 全部由子代理执行（探索者/挑战者/reporter）——你只做 Theseus CLI（mode/judge/record）、门控提问（ask_user_question）与 T6 apply；即使你具备加载这些 skill 的能力，也**不得亲自加载/执行它们**。',
     '',
     '【流程】',
@@ -786,7 +768,7 @@ const DEFAULT_INSTRUCTION = [
  */
 const DEFAULT_KNOWLEDGE_INSTRUCTION = [
   '[arena-v2 知识沉淀]',
-  '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，探索者与挑战者均由宿主派发，子代理的创建/复用与派发由系统完成——subagent / subagent_fork / send_message 工具已对你禁用，不得擅自创建子代理；任务续跑均以已有代理优先。你只按当前「竞技阶段」行事：',
+  '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，探索者与挑战者均由宿主派发，子代理的创建/复用与派发由系统完成——subagent / subagent_fork / send_message 工具已对你禁用，不得擅自创建子代理；任务续跑均以已有代理优先。goal 工具（get_goal / create_goal / update_goal）与 /goal 命令在竞技场开启期间同样不可用——回合与推进由宿主门控，不由 goal 驱动。你只按当前「竞技阶段」行事：',
   '1. **绑定/续跑阶段**：judge --current 确认 Theseus workflow 绑定（未绑定则 mode on --bind <id> 或 --init <主题>）。**已绑定且阶段已推进时，系统按 openspec/states 自动续跑对应阶段（跳过已完成阶段）**；只需向用户简报当前阶段后结束回合。',
   '2. **阶段确认**：先把子代理结算消息**原文原样**呈现给用户（不要摘要/改写），再调用 ask_user_question 询问是否进入下一阶段（问题 id 固定 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项「' + ARENA_K_ADVANCE_YES + '」/「' + ARENA_K_ADVANCE_NO + '」）；用户确认后 judge --current 验证并 record 对应 stage.completed，结束回合——系统才会派发下一阶段。',
   '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，先把它结算消息里 JSON 之外的**全部正文（对账、规则揭示、答案正确与否等）原文原样转述给用户**——子代理的一切问题与答案都由你原样转述，需要原文引用时允许用 read 等工具读 openspec 工件（user-readiness.review.md / review.md / decision-log）后逐行引用，禁止改写/摘要；再把问题 JSON 原样转成 ask_user_question 提问（**只取 question/options 等展示字段照抄；JSON 里的 correctIndex / 正确项位置 / why 等答案线索字段一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合——系统会把回答回传给探索者。',
@@ -998,18 +980,27 @@ function collectFiles(events, { limit = 8 } = {}) {
 }
 
 /**
- * 机器提取用户对「是否再来一轮修正-终评」的选择：只看**最后一次挑战者结算之后**
- * （即终评呈现回合内）主代理调用 `ask_user_question` 的工具结果，读 answers[].selected。
+ * 机器提取用户对「是否再来一轮修正-终评」的选择：只看**当前回合**（最后一次
+ * turn/start 之后；无 turn/start 时回退最后一次挑战者结算之后）主代理调用
+ * `ask_user_question` 的工具结果，读 answers[].selected。
  * 与「四字段机器提取」同一思路——用户决策由宿主从会话事件读取，不靠主代理自述。
+ * 锚点用 turn/start 与 knowledge 场景一致：挑战者若先发实时消息再落结算，
+ * 主代理在结算事件入库前就提问（乱序）时，按「结算之后」会漏掉回答。
  * @param events - 会话事件数组。
  * @returns 'continue'（再来一轮）| 'stop'（结束并输出结论）| null（没问 / 无法判定）。
  */
 function collectAnotherRoundChoice(events) {
   if (!Array.isArray(events)) return null;
-  let start = 0;
+  let start = -1;
   for (let i = 0; i < events.length; i += 1) {
-    const e = events[i];
-    if (e?.type === 'user/message' && e.data?.source?.kind === 'subagent-settled') start = i;
+    if (events[i]?.type === 'turn/start') start = i;
+  }
+  if (start < 0) {
+    start = 0;
+    for (let i = 0; i < events.length; i += 1) {
+      const e = events[i];
+      if (e?.type === 'user/message' && e.data?.source?.kind === 'subagent-settled') start = i;
+    }
   }
   const askCallIds = new Set();
   let choice = null;
@@ -1047,6 +1038,95 @@ function collectAnotherRoundChoice(events) {
 function sanitizeSessionRefs(text) {
   if (typeof text !== 'string') return text ?? '';
   return text.replaceAll('dsh-session:', 'dsh-session：');
+}
+
+/**
+ * 从 dsh 会话对象取事件日志数组。dsh 0.1.2-alpha.4 的 `Session` **不再暴露 `.events`**
+ * （只有 `snapshotEvents()` 与公开的 `log`）——0.33.x 此前所有 `agent.session?.events`
+ * 读取在运行时都是 undefined，导致宿主的回答/字段机器提取全部落空（本会话实证：
+ * 派发给探索者的「用户原始表述」显示「（无）」、k_gate 把用户已点的「确认」判成
+ * 「没确认」→ 误关竞技场）。统一走 `snapshotEvents()`（含 turn/start 等全部日志事件，
+ * 与持久化的 jsonl 同源），并兼容旧 `.events` / `.log` 字段。
+ * @param sess - dsh Session（或 Agent.session / 事件处理器收到的 session）。
+ * @returns 会话事件数组（只读快照或原数组；拿不到 → []）。
+ */
+function sessionEventsOf(sess) {
+  if (!sess) return [];
+  if (typeof sess.snapshotEvents === 'function') {
+    try {
+      const snap = sess.snapshotEvents();
+      if (Array.isArray(snap)) return snap;
+    } catch {}
+  }
+  if (Array.isArray(sess.events)) return sess.events;
+  if (Array.isArray(sess.log)) return sess.log;
+  return [];
+}
+
+/**
+ * 从一条 ask_user_question 工具结果文本里提取选中项文本。
+ * @param text - 结果 JSON（{answers:[{id,selected,custom}]}）原文；非 JSON 时按 allowFallback
+ *   返回原文供关键词兜底。
+ * @param questionId - 固定提问 id；命中该 id 的答案优先。传 '' = 直接取最后一项。
+ * @param allowFallback - true 时：无匹配 id 取该条最后一项；JSON 解析失败返回原文。
+ * @returns 提取到的选中项拼接文本（'' = 无）。
+ */
+function pickAnswerFromText(text, questionId, allowFallback) {
+  if (typeof text !== 'string' || text.trim() === '') return '';
+  let picked = '';
+  try {
+    const answers = JSON.parse(text)?.answers;
+    if (Array.isArray(answers) && answers.length > 0) {
+      const target = questionId === '' ? void 0 : answers.find((a) => a?.id === questionId);
+      const chosen = target ?? (allowFallback ? answers[answers.length - 1] : void 0);
+      if (chosen) {
+        picked = [...(Array.isArray(chosen.selected) ? chosen.selected : []), chosen.custom ?? '']
+          .filter((v) => typeof v === 'string')
+          .join(' ');
+      }
+    }
+  } catch {}
+  return picked.trim() !== '' ? picked : (allowFallback ? text : '');
+}
+
+/**
+ * 聚合一次回合内的 ask_user_question 选中文本（输入可为单条结果文本或一组结果文本）。
+ * 一组结果里只采纳**含目标 questionId** 的那条（如终评 READY 一次问两道：报告 + 推进，
+ * 两条结果都在窗口内，各按自己的 id 取），全部不含时回退最后一条的旧语义
+ * （取最后一项 / 非 JSON 原文），保持与单条输入的旧行为一致。
+ */
+function pickedAnswerText(input, questionId) {
+  const list = Array.isArray(input) ? input : [input];
+  const hits = [];
+  for (const text of list) {
+    const p = pickAnswerFromText(text, questionId, false);
+    if (p !== '') hits.push(p);
+  }
+  if (hits.length > 0) return hits.join(' ');
+  const last = list.length > 0 ? list[list.length - 1] : '';
+  return typeof last === 'string' ? pickAnswerFromText(last, questionId, true) : '';
+}
+
+/**
+ * k_gate 阶段推进决策（纯函数，便于测试）：
+ * @param advance - parseAdvanceChoice 结果 'continue' | 'stop' | null。
+ * @param actual - readWorkflowStage 结果（'' = 读不到状态文件）。
+ * @param expected - 期望推进到的阶段（propose / review / apply；'' = 无）。
+ * @returns {{ action: 'dispatch'|'retry'|'close', reason?: string }}
+ *   dispatch = 推进（用户确认；或确认答案未被宿主提取到，但主控者已 record——
+ *             Theseus 状态文件推进到 expected 即 record 生效的机器信号，见 persona
+ *             「用户确认才 judge+record」）；
+ *   retry    = 用户确认但 record 未生效（停留 k_gate，提示主控者排查后重试）；
+ *   close    = 用户明确暂停 / 未确认且未 record（附 reason，提示语由调用方注入）。
+ */
+function planKnowledgeAdvance(advance, actual, expected) {
+  const advanced = expected !== '' && actual === expected;
+  if (advance === 'stop') return { action: 'close', reason: 'user-paused' };
+  if (advance === 'continue') {
+    return advanced ? { action: 'dispatch' } : { action: 'retry' };
+  }
+  if (advanced) return { action: 'dispatch', reason: 'file-truth' };
+  return { action: 'close', reason: 'no-confirm-no-record' };
 }
 
 /**
@@ -1117,6 +1197,13 @@ const ARENA_VERDICT_OUTCOMES = new Set(['approved', 'disputed']);
 
 /** 知识沉淀 review.md 判定取值。 */
 const ARENA_K_OUTCOMES = new Set(['ready', 'needs_revision', 'not_ready']);
+
+/** 竞技场开启期间对主会话禁用的 goal 工具真实注册名（dsh 0.1.2-alpha.4 的 tool-goal 三个模型工具）。 */
+const GOAL_TOOL_NAMES = ['get_goal', 'create_goal', 'update_goal'];
+/** 知识沉淀场景额外禁用的委派工具（探索者/挑战者由宿主派发，主控者不得自建/续派）。 */
+const DELEGATION_TOOL_NAMES = ['subagent', 'subagent_fork', 'send_message'];
+/** /goal 影子命令的固定拒绝文案（遮蔽预设 command-goal 后返回）。 */
+const ARENA_GOAL_BLOCK_TEXT = '竞技场模式下已禁用 /goal：竞技回合与推进由宿主门控，goal 自动续跑会与竞技阶段冲突；如需使用 goal，请先 /arena off 关闭竞技场。';
 
 /** 竞技场场景键（空白页 hero 开关右侧的分段控件：业务探索/知识沉淀/测试用例）。 */
 const SCENES = ['business', 'knowledge', 'qa'];
@@ -1245,85 +1332,12 @@ function apply(ctx) {
       ctx.logger?.warn?.('arena-v2: settings register failed: ' + String(error?.message ?? error));
     }
 
-    // ── 挑战者固定模型 + persona：安装到挑战者子代理自身的创建窗口 ────────
-    // registerContinuableSetup 对每个可接续子代理的新建与冷恢复都会执行；
-    // 这里按 label 识别挑战者：
-    // - 固定模型选择（installModelSelection）在 agent/request 瀑布里覆盖
-    //   provider/model/reasoningEffort；
-    // - 挑战者 persona（challengerPrompt）在挑战者创建时直接注入（竞技场开启后
-    //   才创建挑战者，所以首条消息就带 persona）。
-    // 同父会话的其它子代理、其它会话的子代理均不受影响，父代理也完全自由。
-    let offSetup;
-    const mountSetup = () => {
-      if (offSetup !== void 0) return;
-      const subagents = settingsCtx.get('subagents');
-      if (!subagents || typeof subagents.registerContinuableSetup !== 'function') return;
-      offSetup = subagents.registerContinuableSetup((childCtx) => {
-        try {
-          const cfg = scope?.get?.() ?? {};
-          if (!cfg.enabled) return () => {};
-          const events = childCtx?.agent?.session?.events;
-          if (!events) return () => {};
-          // 竞技场子代理（挑战者/知识沉淀探索者）的 descriptor 在创建种子
-          // （seedDescriptorTurn）里，冷恢复时也在会话日志里——按 label 精确识别
-          // （含旧版无后缀挑战者兼容）。
-          const descriptor = foldSubagentDescriptor(events);
-          if (!descriptor || descriptor.mode !== 'continuable') return () => {};
-          const isChallenger = isChallengerLabel(descriptor.label);
-          const isExplorer = isExplorerLabel(descriptor.label);
-          if (!isChallenger && !isExplorer) return () => {};
-          const role = isExplorer ? 'explorer' : 'challenger';
-          const subScene = sceneFromAnyLabel(descriptor.label) ?? 'business';
-          const model = challengerModelOf(cfg);
-          const fixed = {
-            provider: model.provider,
-            model: model.model,
-            ...model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}
-          };
-          ctx.logger?.info?.('arena-v2: ' + role + ' fixed model -> ' + JSON.stringify(fixed));
-          const disposers = [];
-          // 子代理 persona：按角色与场景取（场景默认 > 顶层 business 默认 > 配置覆盖）。
-          // 创建时注入。阴影覆盖预设 persona（deployment:persona 是命名槽，子代理作用域
-          // 注册的段落最近、优先）。探索者=explorerPrompt；挑战者=challengerPrompt。
-          const personas = scenePersonasOf(cfg, subScene);
-          const persona = isExplorer ? personas.explorerPrompt : personas.challengerPrompt;
-          if (persona !== '') {
-            const d = childCtx.systemPrompt?.section?.({
-              name: PERSONA_SECTION,
-              order: PERSONA_ORDER,
-              text: persona
-            });
-            if (typeof d === 'function') disposers.push(d);
-            ctx.logger?.info?.('arena-v2: ' + role + ' persona injected');
-          }
-          // selection 对象只需 current（快照源）与 assembled（快照槽）；
-          // installModelSelection 会在每次 system-prompt/assemble 与
-          // agent/request 时读取并覆盖请求配置。
-          disposers.push(installModelSelection(childCtx, {
-            current: fixed,
-            assembled: void 0
-          }));
-          return () => {
-            for (const d of disposers) {
-              try {
-                d();
-              } catch {}
-            }
-          };
-        } catch (error) {
-          ctx.logger?.warn?.('arena-v2: challenger setup failed: ' + String(error?.message ?? error));
-          return () => {};
-        }
-      });
-    };
-    mountSetup();
-    // 服务尚未就绪时，等第一个 subagent provider 出现再补装（保险）。
-    const offProviderAdded = settingsCtx.on('subagent/provider-added', () => {
-      try {
-        mountSetup();
-      } catch {}
-    });
-
+    // ── 竞技场子代理的固定模型 + persona ───────────────────────────────
+    // dsh 0.1.2-alpha.4 移除了 registerContinuableSetup；新机制是创建时经
+    // ContinuableStartSpec.request 传入 agentOptions（provider/model/reasoningEffort，
+    // spawn provider 支持）与 persona（阴影 deployment:persona）——两者随 descriptor
+    // 持久化、冷恢复时重放，故不再需要创建窗口钩子。见 dispatchKnowledge /
+    // dispatchArenaRound 的 startContinuable 调用。
     // ── 竞技场子代理 id 追踪 ────────────────────────────────────────────────
     // subagents: `${父会话 id}::${label}` -> 子代理 id（durable，跨轮次/重启有效；
     //   business/qa 一个挑战者 label；knowledge 有 explorer 与 challenger 两个 label）。
@@ -1462,13 +1476,14 @@ function apply(ctx) {
       },
       async execute(args, exec) {
         const agent = exec.agent;
-        if (!agent?.session?.events) throw new Error('arena_compose requires a calling agent session');
+        const events = sessionEventsOf(agent?.session);
+        if (events.length === 0) throw new Error('arena_compose requires a calling agent session with an event log');
         const cfg = scope?.get?.() ?? {};
         const round = args?.round === 'verdict' ? 'verdict' : 'challenge';
         const scene = (() => {
           try { return readArenaState(String(agent.id)).scene; } catch { return 'business'; }
         })();
-        return { text: composeRoundText(cfg, round, agent.session.events, scene) };
+        return { text: composeRoundText(cfg, round, events, scene) };
       }
     });
 
@@ -1521,18 +1536,67 @@ function apply(ctx) {
           const td = tools?.register?.(def);
           if (typeof td === 'function') disposers.push(td);
         }
-        // 竞技场模式下禁用 goal 工具：防止主代理经 goal 绕过竞技场门控（如无人
-        // 管控地创建/推进 goal）。知识沉淀场景额外禁用 subagent / subagent_fork /
+        // 竞技场模式下禁用 goal 工具（get_goal/create_goal/update_goal）与 /goal 命令：
+        // 防止主代理或用户经 goal 绕过竞技场门控（无人管控地创建/推进 goal、goal 自动
+        // 续跑与宿主阶段机抢回合）。知识沉淀场景额外禁用 subagent / subagent_fork /
         // send_message——探索者与挑战者均由宿主派发，主控者不得擅自创建/续派子代理
         // （宿主走 subagents 服务 API，不受影响；子代理会话是独立工具作用域，也不受影响）。
-        // restrict 过滤 scope 继承到的工具（含预设层的）；会话没有这些工具（如 minimal）
-        // 时 restrict 因 unknown name 抛错，跳过。
-        const denyTools = scene === 'knowledge' ? ['goal', 'subagent', 'subagent_fork', 'send_message'] : ['goal'];
+        // restrict 过滤 scope 继承到的工具（含预设层的），且只认真实注册名：0.33.9 曾用
+        // 'goal' 作 deny 名——那不是任何已注册工具，restrict 因 unknown name 整单抛错被
+        // 跳过，等于从未生效（实证：竞技场开启窗口内主控者 send_message/subagent 调用
+        // 全部成功）。整单失败时逐名重试，让能命中的名字仍然生效。
+        const restrictDeny = (names) => {
+          const applied = [];
+          const one = (name) => {
+            try {
+              const d = tools?.restrict?.({ deny: [name] });
+              if (typeof d === 'function') applied.push(d);
+            } catch (error) {
+              ctx.logger?.warn?.('arena-v2: restrict deny failed (' + name + '): ' + String(error?.message ?? error));
+            }
+          };
+          try {
+            const d = tools?.restrict?.({ deny: names });
+            if (typeof d === 'function') applied.push(d);
+          } catch {
+            for (const name of names) one(name);
+          }
+          return applied;
+        };
+        for (const d of restrictDeny(scene === 'knowledge'
+          ? [...GOAL_TOOL_NAMES, ...DELEGATION_TOOL_NAMES]
+          : [...GOAL_TOOL_NAMES])) {
+          disposers.push(d);
+        }
+        // /goal 命令影子：在主代理会话作用域注册同名命令，遮蔽预设作用域（tool-both 的
+        // command-goal）的 /goal——竞技场开启期间键入 /goal（含 goal 条 UI 快捷操作）一律
+        // 拒绝并提示，关闭竞技场时随 disposer 恢复原命令。注册后按该会话的命令解析结果
+        // 核验：若 /goal 仍解析到预设的 command-goal（影子落到了不遮蔽它的层，如全局层），
+        // 立即回滚——避免给其它会话泄漏一条禁用的 goal 命令；机械兜底由上方工具 deny 覆盖。
         try {
-          const rd = tools?.restrict?.({ deny: denyTools });
-          if (typeof rd === 'function') disposers.push(rd);
+          const shadow = {
+            name: 'goal',
+            description: '竞技场模式下已禁用（竞技回合由宿主门控；/arena off 关闭后可正常使用）',
+            input: { hint: '[disabled in arena]' },
+            handler: async () => ({ kind: 'error', text: ARENA_GOAL_BLOCK_TEXT })
+          };
+          let cd = agent.ctx?.commands?.register?.(shadow);
+          if (typeof cd === 'function') {
+            try {
+              const listed = settingsCtx.get('commands')?.list?.(agent) ?? [];
+              const effective = listed.some((c) => c?.name === 'goal' && String(c?.description ?? '').includes('竞技场模式下已禁用'));
+              if (!effective) {
+                try { cd(); } catch {}
+                cd = undefined;
+              }
+            } catch {
+              try { cd(); } catch {}
+              cd = undefined;
+            }
+          }
+          if (typeof cd === 'function') disposers.push(cd);
         } catch (error) {
-          ctx.logger?.warn?.('arena-v2: restrict deny failed: ' + String(error?.message ?? error));
+          ctx.logger?.warn?.('arena-v2: /goal shadow register failed: ' + String(error?.message ?? error));
         }
         if (disposers.length === 0) return false;
         mainPersonas.set(id, () => {
@@ -1680,7 +1744,7 @@ function apply(ctx) {
     //   → phase=challenge（挑战者工作）
     // - 挑战者结算 → 父会话自动收到 subagent-settled 消息（phase=challenge）→
     //   phase=revise（主代理呈现质疑并修正）
-    // - 主代理回合结束（turn/end, phase=revise）→ 宿主组装终评轮 → followup 挑战者
+    // - 主代理回合结束（turn/end, phase=revise）→ 宿主组装终评轮 → 续聊挑战者
     //   → phase=verdict（挑战者终评）
     // - 终评结算回传（phase=verdict）→ phase=present（主代理呈现终评）
     // - 主代理回合结束（turn/end, phase=present）→ 宿主关闭竞技场
@@ -1706,11 +1770,12 @@ function apply(ctx) {
 
     /**
      * 机器读取用户对「是否再来一轮修正-终评」的选择（终评仍存疑时主代理必须用
-     * ask_user_question 询问）：从 live 主代理的会话事件里提取，读不到 → null（收尾）。
+     * ask_user_question 询问）：从会话事件里提取（优先调用方传入的当前回合事件；
+     * 缺省回退 live 主代理的会话日志），读不到 → null（收尾）。
      */
-    const readAnotherRoundChoice = (sessionId) => {
+    const readAnotherRoundChoice = (sessionId, events) => {
       try {
-        return collectAnotherRoundChoice(resolveMainAgent(sessionId)?.session?.events);
+        return collectAnotherRoundChoice(events ?? sessionEventsOf(resolveMainAgent(sessionId)?.session));
       } catch {
         return null;
       }
@@ -1726,10 +1791,27 @@ function apply(ctx) {
       } catch {}
     };
 
-    // 宿主派发用的信号：startContinuable/followup 内部会调用 signal.throwIfAborted()，
+    // 宿主派发用的信号：startContinuable/queueHostSubagentPrompt 内部会调用 signal.throwIfAborted()，
     // 缺省 undefined 会直接抛错（Cannot read properties of undefined (reading
     // 'throwIfAborted')）；插件卸载时 abort 释放。
     const dispatchAbort = new AbortController();
+
+    /**
+     * 宿主协议消息进入子代理（dsh 0.1.2-alpha.4 移除了 subagents.followup）：
+     * 优先 queueHostSubagentPrompt（host-only Queue，符号键、保留宿主来源）；
+     * 服务是远程 face 未实现符号时回退 sendMessage（agent-message 归属）。
+     */
+    const queueToChild = async (subagentsSvc, mainAgent, childId, content, signal) => {
+      try {
+        await queueHostSubagentPrompt(subagentsSvc, mainAgent, childId, content, { kind: 'user' }, signal);
+      } catch (error) {
+        if (subagentsSvc !== null && typeof subagentsSvc?.sendMessage === 'function') {
+          await subagentsSvc.sendMessage(mainAgent, childId, content, { signal });
+        } else {
+          throw error;
+        }
+      }
+    };
 
     /**
      * 宿主派发回合：组装结构化消息（composeRoundText 机器提取四字段）并创建/复用
@@ -1748,8 +1830,8 @@ function apply(ctx) {
         const st = readArenaState(sessionId);
         const scene = st.scene;
         const cfg = scope?.get?.() ?? {};
-        const events = mainAgent.session?.events;
-        if (!events) {
+        const events = sessionEventsOf(mainAgent.session);
+        if (events.length === 0) {
           ctx.logger?.warn?.('arena-v2: dispatch ' + round + ' aborted — no session events for ' + sessionId);
           steerArenaNote(mainAgent, '⚠ 竞技场' + (round === 'verdict' ? '终评' : '质疑') + '轮派发失败：无法读取会话事件（已回到等待态，可重试）。');
           writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null, verdictOutcome: null });
@@ -1758,7 +1840,7 @@ function apply(ctx) {
         const text = composeRoundText(cfg, round, events, scene);
         const content = [{ type: 'text', text }];
         const subagentsSvc = settingsCtx.get('subagents');
-        if (!subagentsSvc || typeof subagentsSvc.startContinuable !== 'function' || typeof subagentsSvc.followup !== 'function') {
+        if (!subagentsSvc || typeof subagentsSvc.startContinuable !== 'function') {
           const msg = '⚠ 竞技场' + (round === 'verdict' ? '终评' : '质疑') + '轮派发失败：subagents 服务不可用（已回到等待态，可重试）。';
           ctx.logger?.warn?.('arena-v2: dispatch ' + round + ' aborted — subagents service unavailable');
           steerArenaNote(mainAgent, msg);
@@ -1772,14 +1854,28 @@ function apply(ctx) {
           childId = subagents.get(key);
           if (childId) ctx.logger?.info?.('arena-v2: dispatch ' + round + ' recovered existing challenger ' + childId);
         }
+        // 固定模型 + persona：随创建请求传入（dsh 0.1.2-alpha.4 机制，冷恢复重放）。
+        const model = challengerModelOf(cfg);
+        const persona = scenePersonasOf(cfg, scene).challengerPrompt;
+        const agentOptions = {
+          provider: model.provider,
+          model: model.model,
+          ...model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}
+        };
         if (childId) {
-          await subagentsSvc.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
-          ctx.logger?.info?.('arena-v2: dispatch ' + round + ' -> followup ' + childId);
+          await queueToChild(subagentsSvc, mainAgent, childId, content, dispatchAbort.signal);
+          ctx.logger?.info?.('arena-v2: dispatch ' + round + ' -> queue ' + childId);
         } else {
           const res = await subagentsSvc.startContinuable({
             provider: subagentProviderOf(cfg),
             label: challengerLabelFor(scene),
-            request: { parent: mainAgent, prompt: content, maxDepth: 1 },
+            request: {
+              parent: mainAgent,
+              prompt: content,
+              maxDepth: 1,
+              agentOptions,
+              ...persona !== '' ? { persona } : {}
+            },
             signal: dispatchAbort.signal
           });
           if (res?.childId) subagents.set(key, String(res.childId));
@@ -1883,7 +1979,7 @@ function apply(ctx) {
         const st = readArenaState(sessionId);
         const cfg = scope?.get?.() ?? {};
         const subagentsSvc = settingsCtx.get('subagents');
-        if (!subagentsSvc || typeof subagentsSvc.startContinuable !== 'function' || typeof subagentsSvc.followup !== 'function') {
+        if (!subagentsSvc || typeof subagentsSvc.startContinuable !== 'function') {
           ctx.logger?.warn?.('arena-v2: k-dispatch ' + stage + ' aborted — subagents service unavailable');
           fail('⚠ 竞技场' + noteName + '派发失败：subagents 服务不可用（已回到等待态，可重试）。');
           return;
@@ -1893,20 +1989,36 @@ function apply(ctx) {
         let childId = subagents.get(key);
         if (!childId) {
           // 重跑/重启后内存缓存为空：派发前强制按 label 找回既有可接续子代理，
-          // 命中就直接 followup 续聊（上下文跨轮次保留），而不是新建一个丢上下文的副本。
+          // 命中就直接续聊（上下文跨轮次保留），而不是新建一个丢上下文的副本。
           await resolveSubagent(sessionId, label, { force: true });
           childId = subagents.get(key);
           if (childId) ctx.logger?.info?.('arena-v2: k-dispatch ' + stage + ' recovered existing ' + role + ' ' + childId);
         }
         const content = [{ type: 'text', text: sanitizeSessionRefs(text) }];
+        // 固定模型 + persona：随创建请求传入（dsh 0.1.2-alpha.4 的机制；spawn 支持，
+        // 并随 descriptor 持久化、冷恢复重放）。
+        const model = challengerModelOf(cfg);
+        const personas = scenePersonasOf(cfg, st.scene);
+        const persona = role === 'explorer' ? personas.explorerPrompt : personas.challengerPrompt;
+        const agentOptions = {
+          provider: model.provider,
+          model: model.model,
+          ...model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}
+        };
         if (childId) {
-          await subagentsSvc.followup(mainAgent, childId, content, { source: { kind: 'user' }, signal: dispatchAbort.signal });
-          ctx.logger?.info?.('arena-v2: k-dispatch ' + stage + ' -> followup ' + childId);
+          await queueToChild(subagentsSvc, mainAgent, childId, content, dispatchAbort.signal);
+          ctx.logger?.info?.('arena-v2: k-dispatch ' + stage + ' -> queue ' + childId);
         } else {
           const res = await subagentsSvc.startContinuable({
             provider: subagentProviderOf(cfg),
             label,
-            request: { parent: mainAgent, prompt: content, maxDepth: 1 },
+            request: {
+              parent: mainAgent,
+              prompt: content,
+              maxDepth: 1,
+              agentOptions,
+              ...persona !== '' ? { persona } : {}
+            },
             signal: dispatchAbort.signal
           });
           if (res?.childId) subagents.set(key, String(res.childId));
@@ -2126,7 +2238,9 @@ function apply(ctx) {
               // 再派发一次终评轮（主代理已在本回合内完成修正）；其余情况——终评认可、
               // 用户拒绝、或没问/无法判定——都收尾关闭（主代理按【结论输出要求】
               // 已整理并输出完整结论）。不记录轮次、不设上限：由用户逐轮决定。
-              const choice = st.verdictOutcome === 'disputed' ? readAnotherRoundChoice(sessionId) : null;
+              const choice = st.verdictOutcome === 'disputed'
+                ? readAnotherRoundChoice(sessionId, sessionEventsOf(session))
+                : null;
               if (choice === 'continue') {
                 writeArenaState(sessionId, {
                   active: true,
@@ -2147,7 +2261,9 @@ function apply(ctx) {
           // ── knowledge：主控者回合结束，按阶段推进 ──
           const cfgK = scope?.get?.() ?? {};
           const personasK = scenePersonasOf(cfgK, 'knowledge');
-          const eventsK = resolveMainAgent(sessionId)?.session?.events;
+          // 会话事件取 session/event 处理器收到的当前 Session 快照（dsh 0.1.2-alpha.4
+          // 的 Session 没有 .events；snapshotEvents() 与持久化 jsonl 同源，含 turn/start）。
+          const eventsK = sessionEventsOf(session);
           if (st.phase === ARENA_PHASE_K_INIT) {
             // 续跑优先：会话焦点文件已有绑定时，以 Theseus 状态文件为真相跳到对应阶段
             // （跳过意图门控——重启/重开后用户发「继续」即可续跑，不会重跑已完成的阶段）。
@@ -2203,17 +2319,20 @@ function apply(ctx) {
               finishArenaRound(sessionId); // readiness NOT_CLEARED / NEEDS_REVISION：主控者已总结
               return;
             }
-            // 阶段推进确认门：用户必须选「确认，进入下一阶段」才推进；
-            // 选暂停、或主控者没问（无法判定）→ 一律不推进，关闭竞技场（Theseus 状态保留，可续跑）。
-            const advance = parseAdvanceChoice(collectAskAnswerText(eventsK));
-            if (advance !== 'continue') {
-              ctx.logger?.info?.('arena-v2: k advance gate -> close (choice=' + String(advance) + ') for ' + sessionId);
-              finishArenaRound(sessionId);
-              return;
-            }
+            // 阶段推进确认门：用户必须选「确认，进入下一阶段」才推进；选暂停 → 不推进
+            // 关闭。确认回答偶发取不到（结算乱序/一次多问）时，以 Theseus 状态文件为
+            // 真相兜底——主控者 persona 只允许「用户确认后」才 judge+record，状态文件推进
+            // 到 expected 本身就是用户已确认的机器信号；仍未推进则关场并给**可见提示**
+            // （不再静默误关），可重开 `/arena knowledge` 发「继续」续跑。
+            const answers = collectAskAnswerText(eventsK);
+            const advance = parseAdvanceChoice(answers);
             const expected = st.kNext === 'propose' || st.kNext === 'review' || st.kNext === 'apply' ? st.kNext : '';
             const actual = expected === '' ? '' : readWorkflowStage(cwd, st.workflowId);
-            if (expected !== '' && actual === expected) {
+            const plan = planKnowledgeAdvance(advance, actual, expected);
+            if (plan.action === 'dispatch') {
+              if (advance === null) {
+                ctx.logger?.info?.('arena-v2: k advance answer unparsed but state file advanced (' + expected + ') -> dispatch by file truth for ' + sessionId);
+              }
               if (st.kNext === 'propose') {
                 const text = renderKnowledgeTemplate(personasK.proposePrompt, st, cwd, '');
                 writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_PROPOSE, pendingDispatch: 'propose', kStage: 'propose', kNext: '', kResult: '' });
@@ -2230,16 +2349,27 @@ function apply(ctx) {
               }
               return;
             }
-            steerArenaNote(resolveMainAgent(sessionId), '⚠ record 未生效：Theseus workflow 阶段未推进（期望 ' + (expected || '—') + '，实际 ' + (actual || '未知') + '）。请 judge --current 排查并完成 record 后再结束回合。');
-            return; // 留在 k_gate 重试
+            if (plan.action === 'retry') {
+              steerArenaNote(resolveMainAgent(sessionId), '⚠ record 未生效：Theseus workflow 阶段未推进（期望 ' + (expected || '—') + '，实际 ' + (actual || '未知') + '）。请 judge --current 排查并完成 record 后再结束回合。');
+              return; // 留在 k_gate 重试
+            }
+            // close：用户暂停（stop）/ 未确认且未 record（no-confirm-no-record）。
+            ctx.logger?.info?.('arena-v2: k advance gate -> close (choice=' + String(advance)
+              + ' reason=' + String(plan.reason ?? '') + ') for ' + sessionId);
+            if (plan.reason === 'no-confirm-no-record') {
+              steerArenaNote(resolveMainAgent(sessionId), '⚠ 未能确认推进下一阶段：未读到你的「确认」回答，且 Theseus workflow 仍未推进到 ' + (expected || '—') + '（当前 ' + (actual || '未知') + '）。竞技场已关闭——如需继续请重开 `/arena knowledge` 后发「继续」，宿主会按 openspec/states 续跑。');
+            }
+            finishArenaRound(sessionId);
+            return;
           }
           if (st.phase === ARENA_PHASE_K_ASK) {
-            const answer = collectAskAnswerText(eventsK);
-            if (answer === '') {
+            const answers = collectAskAnswerText(eventsK);
+            if (answers.length === 0) {
               steerArenaNote(resolveMainAgent(sessionId), '⚠ 未取到用户对中继提问的回答。竞技场已回到等待态，可重试。');
               writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_AWAITING, pendingDispatch: null });
               return;
             }
+            const answer = answers[answers.length - 1];
             const resumePhase = st.kPrev === ARENA_PHASE_K_EXPLORE || st.kPrev === ARENA_PHASE_K_PROPOSE || st.kPrev === ARENA_PHASE_K_READINESS
               ? st.kPrev
               : ARENA_PHASE_K_EXPLORE;
@@ -2680,12 +2810,6 @@ function apply(ctx) {
         disposeSection?.();
       } catch {}
       try {
-        offSetup?.();
-      } catch {}
-      try {
-        offProviderAdded?.();
-      } catch {}
-      try {
         offCreated?.();
       } catch {}
       try {
@@ -2723,6 +2847,7 @@ export {
   ARENA_ANOTHER_ROUND_NO,
   ARENA_ANOTHER_ROUND_QUESTION_ID,
   ARENA_ANOTHER_ROUND_YES,
+  ARENA_GOAL_BLOCK_TEXT,
   ARENA_K_ADVANCE_NO,
   ARENA_K_ADVANCE_QUESTION_ID,
   ARENA_K_ADVANCE_YES,
@@ -2774,11 +2899,14 @@ export {
   parseReviewFileVerdict,
   parseStageResult,
   parseVerdictOutcome,
+  pickedAnswerText,
+  planKnowledgeAdvance,
   sanitizeSessionRefs,
   sceneFromAnyLabel,
   sceneFromLabel,
   scenePersonasOf,
   scenesAllowedIn,
+  sessionEventsOf,
   subagentProviderOf
 };
 export default { Config, apply, inject, name };
