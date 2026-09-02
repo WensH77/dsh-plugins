@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-tool-both",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "一键开启 dsh「both」工具呈现模式：激活时自动在 ~/.dsh/.agent-presets/ 安装「BOTH模式」预设（原生工具直调与 run_code 生成式 SDK 并存、无 code-only 限制），另提供可挂进任意 agent preset 的呈现行组件（./presentation）。",
   "type": "module",
   "main": "lib/index.js",
@@ -15,6 +15,7 @@
     "README.md",
     "CHANGELOG.md"
   ],
+  "repository": "WensH77/dsh-plugins#path:tool-both",
   "scripts": {
     "test": "node test/smoke.mjs"
   },

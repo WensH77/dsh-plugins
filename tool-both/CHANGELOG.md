@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-tool-both` 的历次改动（由 git 提交历史整理）。安装、使用、仓库结构见 [README.md](./README.md)。
 
+## 0.2.1
+
+- **补上 `repository` 字段**（`WensH77/dsh-plugins#path:tool-both`）：插件市场的「检查更新 / 更新 / 帮我更新」按 *市场安装记录 > 包内 repository > profile 依赖的 `github:` spec* 三级回退取仓库地址。此前本包缺第二级，若不是用 `github:` spec 安装（例如 `git+https://`、tarball、`link:`），更新通道会直接报「git 通道需要 GitHub 仓库地址（repository 字段缺失）」。
+
 ## 0.2.0
 
 - 移除设置页「工具呈现模式」卡片：预设选择器里的「BOTH模式」选项与自动安装的预设就是全部界面
