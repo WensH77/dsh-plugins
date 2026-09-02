@@ -834,21 +834,21 @@ window.__ModuleLoader__.load({
 					h("span", { className: "pm-hint" }, t("reviewLabel")),
 					review && reviewOffClicks.current > 0 ? h("span", { className: "pm-hint", style: { color: "var(--dsw-alias-state-warning, #e6a23c)" } }, tpl(t("reviewOffProgress"), { left: String(REVIEW_OFF_CLICKS - reviewOffClicks.current) })) : null
 				),
-				review ? h("div", { className: "pm-inputRow", style: { marginTop: 6 } },
-					h("span", { className: "pm-hint" }, t("reviewModelLabel") + ":"),
-					h("select", { className: "pm-select", value: route.model, onChange: (event) => setRouteModel(event.target.value) },
-						h("option", { value: "deepseek-v4-flash" }, t("modelFlash")),
-						h("option", { value: "deepseek-v4-pro" }, t("modelPro"))
-					),
-					h("span", { className: "pm-hint" }, t("reviewEffortLabel") + ":"),
-					h("select", { className: "pm-select", value: route.effort, onChange: (event) => setRouteEffort(event.target.value) },
-						h("option", { value: "high" }, t("effortHigh")),
-						h("option", { value: "low" }, t("effortLow")),
-						h("option", { value: "off" }, t("effortOff"))
-					)
-				) : null,
 				h("div", { className: "pm-inputRow", style: { marginTop: 6 } },
-					h("button", { className: "pm-btn", disabled: busyNow("cleanup"), onClick: doCleanup }, t("cleanupCache"))
+					review ? [
+						h("span", { className: "pm-hint" }, t("reviewModelLabel") + ":"),
+						h("select", { className: "pm-select", value: route.model, onChange: (event) => setRouteModel(event.target.value) },
+							h("option", { value: "deepseek-v4-flash" }, t("modelFlash")),
+							h("option", { value: "deepseek-v4-pro" }, t("modelPro"))
+						),
+						h("span", { className: "pm-hint" }, t("reviewEffortLabel") + ":"),
+						h("select", { className: "pm-select", value: route.effort, onChange: (event) => setRouteEffort(event.target.value) },
+							h("option", { value: "high" }, t("effortHigh")),
+							h("option", { value: "low" }, t("effortLow")),
+							h("option", { value: "off" }, t("effortOff"))
+						),
+					] : null,
+					h("button", { className: "pm-btn", style: review ? { marginLeft: "auto" } : undefined, disabled: busyNow("cleanup"), onClick: doCleanup }, t("cleanupCache"))
 				),
 				message === null ? null : h("p", { className: "pm-message", "data-error": messageOk ? undefined : "true", "data-ok": messageOk ? "true" : undefined }, message),
 
