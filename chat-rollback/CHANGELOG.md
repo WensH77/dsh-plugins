@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.2.1
+
+- **补上 `repository` 字段**（`WensH77/dsh-plugins#path:chat-rollback`）：插件市场的「检查更新 / 更新 / 帮我更新」按 *市场安装记录 > 包内 repository > profile 依赖的 `github:` spec* 三级回退取仓库地址。此前本包缺第二级，若不是用 `github:` spec 安装（例如 `git+https://`、tarball、`link:`），更新通道会直接报「git 通道需要 GitHub 仓库地址（repository 字段缺失）」。
+
 ## 0.2.0
 
 - **TOCTOU 收窄（二次冲突校验）**：`preflight` 与真正执行之间其他会话的写入，在 `rollback` 端点再次检测——有冲突且未确认 → `409 {code:'conflict', files}`，客户端回到「?」确认态；确认后带 `force=1` 重发才执行。冲突判定逻辑提取为 `rollbackConflictState`，preflight 与 rollback 共用（`handlePreflight` 相应瘦身）
