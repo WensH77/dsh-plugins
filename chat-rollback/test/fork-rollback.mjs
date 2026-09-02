@@ -38,7 +38,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function makeCtx(workspace, snapRoot, eventsBySession) {
   const sessions = new Map(Object.entries(eventsBySession).map(([id, events]) => [id, {
     id, events,
-    header: { cwd: workspace, agentPreset: 'code', seedLength: events.length }
+    // dsh-session ≥0.1.2-alpha.4 的会话面：公开读取是 snapshotEvents()
+    snapshotEvents: () => events,
+    header: { cwd: workspace, agentPreset: 'code' }
   }]));
   const handlers = new Map();
   const routes = new Map();
@@ -66,7 +68,7 @@ function makeCtx(workspace, snapRoot, eventsBySession) {
     agents: {
       create: async (opts) => {
         created.push(opts);
-        sessions.set(opts.sessionId, { id: opts.sessionId, events: opts.seed, header: { cwd: opts.meta.cwd, seedLength: opts.meta.seedLength, agentPreset: opts.meta.agentPreset } });
+        sessions.set(opts.sessionId, { id: opts.sessionId, events: opts.seed, snapshotEvents: () => opts.seed, header: { cwd: opts.meta?.cwd, agentPreset: opts.meta?.agentPreset } });
       },
       get(id) { return sessions.has(id) ? { status: 'idle' } : undefined; }
     },
@@ -159,7 +161,7 @@ test('A+B+C: snapshot, fork inheritance, rollback (code restore + archive + pref
       { turn: 1, user: 'do X', assistant: 'done X' },
       { turn: 2, user: '继续做X，再检查Y', assistant: 'done Y' }
     ]);
-    const forkSession = { id: FORK, header: { parentSession: SRC, cwd: workspace, seedLength: forkSeed.length }, events: forkSeed };
+    const forkSession = { id: FORK, header: { parentSession: SRC, cwd: workspace }, events: forkSeed, inheritedEventCount: forkSeed.length, snapshotEvents: () => forkSeed };
     for (const h of handlers.get('session/created')) await h(forkSession);
     await sleep(300);
     const srcIno1 = (await stat(join(snapRoot, SRC, 'turn-1.tar.zst'))).ino;
@@ -184,7 +186,7 @@ test('A+B+C: snapshot, fork inheritance, rollback (code restore + archive + pref
     assert.ok(created.length >= 1, 'new session created via agents.create');
     const child = created[created.length - 1];
     assert.strictEqual(child.meta.cwd, workspace, 'child inherits cwd');
-    assert.strictEqual(child.meta.seedLength, 5, 'seed cut after turn/end of turn 1');
+    assert.ok(!Object.hasOwn(child.meta, 'seedLength'), 'meta omits seedLength (alpha.4 header validation rejects it)');
     assert.deepStrictEqual(child.seed.map((e) => e.seq), [0, 1, 2, 3, 4], 'seed = events 0..4');
     // code state restored: f.txt old content, new.txt pruned, gone.txt back
     assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'f.txt reverted');
@@ -260,7 +262,7 @@ test('E: user-message rollback — cut BEFORE the message, prefill its own text'
     assert.strictEqual(body.nextInput, 'do Y，再检查Z', 'prefill = the message own text');
     assert.strictEqual(body.archivedSource, true, 'source archived');
     const child = created[created.length - 1];
-    assert.strictEqual(child.meta.seedLength, 7, 'seed ends at turn/end(1)');
+    assert.ok(!Object.hasOwn(child.meta, 'seedLength'), 'meta omits seedLength (alpha.4 header validation rejects it)');
     assert.deepStrictEqual(child.seed.map((e) => e.seq), [0, 1, 2, 3, 4, 5, 6], 'seed = events 0..6, target message excluded');
     assert.strictEqual(await readFile(join(workspace, 'f.txt'), 'utf8'), 'one\n', 'f.txt restored to before-message state');
     assert.ok(archived.includes(SRC), 'archive recorded');
@@ -311,7 +313,7 @@ test('F: user-message rollback mid-turn (steer) — open turn trimmed, queued me
     assert.strictEqual(body.codeRollback.restored, true, 'code restored from turn-2 (state before the open turn)');
     assert.strictEqual(body.nextInput, 'steer now', 'prefill = steer message text');
     const child = created[created.length - 1];
-    assert.strictEqual(child.meta.seedLength, 12, 'seed ends at the queued do Y message');
+    assert.ok(!Object.hasOwn(child.meta, 'seedLength'), 'meta omits seedLength (alpha.4 header validation rejects it)');
     const last = child.seed[child.seed.length - 1];
     assert.strictEqual(last.type, 'user/message', 'seed tail = queued message (kept, unanswered)');
     assert.strictEqual(last.data.content[0].text, 'do Y，再检查Z', 'queued message preserved in seed');

@@ -16,7 +16,6 @@ import { execFile } from 'node:child_process';
 import { promises as fs, createReadStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets';
 import z from '@deepseek-ai/schemastery';
 
 const name = 'chat-rollback';
@@ -59,6 +58,38 @@ function runSh(cmd) {
 /** shell 单引号转义（runSh 的命令体是 sh -c 字符串，排除模式必须引起来防通配符被 shell 展开）。 */
 function shq(value) {
   return "'" + String(value).replace(/'/gu, "'\\''") + "'";
+}
+
+/** 会话事件日志读取。dsh-session 0.1.2-alpha.4 起 `Session.events` getter 被移除
+ * （事件日志私有化，公开读取为 snapshotEvents()/ownEvents()）；旧宿主（rc 线/
+ * alpha.3）仍暴露 `.events`。优先 alpha.4 面，回退 `.events`。 */
+function sessionEvents(session) {
+  if (session === null || typeof session !== 'object') return [];
+  if (typeof session.snapshotEvents === 'function') {
+    try {
+      const snapshot = session.snapshotEvents();
+      return Array.isArray(snapshot) ? snapshot : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(session.events) ? session.events : [];
+}
+
+/** 源会话的 agent preset id。dsh-agent-presets 0.1.2-alpha.4 不再导出
+ * resolveSessionPreset；预设 id 现在由会话自身携带——alpha.4 起持久化在
+ * `SessionHeader.agentPreset`，历史上也以 `agent-preset/selected` 事件记录。
+ * 优先取最近一次选择事件（与旧 resolveSessionPreset 语义一致），回退 header。 */
+function resolvePresetId(session) {
+  const events = sessionEvents(session);
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type === 'agent-preset/selected') {
+      const id = event.data?.agentPreset;
+      if (typeof id === 'string' && id !== '') return id;
+    }
+  }
+  return session?.header?.agentPreset;
 }
 
 // ── tar --exclude 语义的忠实移植（libarchive __archive_pathmatch）────────
@@ -756,6 +787,27 @@ function computeConflicts(targetMap, lastWriteMap, currentMap) {
   return { conflict: files.length > 0, files };
 }
 
+/** Resolve a rollback seq from the client chat-node message key. The DOM
+ * anchor key is "<turn>:input-message<uuid>"; the uuid equals the host
+ * user/message event's data.id (messageDefinition.id in ui-chat), so the
+ * returned index lands on the same event the pre-alpha.4 anchorSeq targeted.
+ * Returns -1 when no event carries the id. seq 参数保留原语义（旧调用方/测试）。 */
+function resolveSeqByMessageKey(events, rawKey) {
+  let id = String(rawKey ?? '');
+  const at = id.lastIndexOf(':');
+  if (at !== -1) id = id.slice(at + 1);
+  id = id.replace(/^input-message/i, '');
+  if (id === '') return -1;
+  for (let i = 0; i < events.length; i += 1) {
+    const event = events[i];
+    const data = event?.data;
+    const evId = data?.id ?? data?.messageId ?? event?.id;
+    if (evId !== undefined && String(evId) === id) return i;
+  }
+  return -1;
+}
+
+
 /** 计算一次回滚的冲突状态（只读）。preflight 与 rollback 共用同一判定，保证
  * 「该回滚是否会覆盖其他会话的写入」两处结论一致（也用于 rollback 的二次
  * 校验收窄 preflight→执行之间的 TOCTOU 窗口）。返回 { conflict, files, reason }。
@@ -814,8 +866,9 @@ async function handlePreflight(req, res, env) {
     const url = new URL(req.url ?? '/', 'http://x');
     const sessionId = url.searchParams.get('session') ?? '';
     const seqParam = url.searchParams.get('seq') ?? '';
-    if (sessionId === '' || !/^\d+$/.test(seqParam)) {
-      sendJson(res, 400, { ok: false, code: 'bad-request', message: 'session id and a numeric seq are required' });
+    const keyParam = url.searchParams.get('key') ?? '';
+    if (sessionId === '' || (!/^\d+$/.test(seqParam) && keyParam === '')) {
+      sendJson(res, 400, { ok: false, code: 'bad-request', message: 'session id and a numeric seq (or a message key) are required' });
       return;
     }
     const source = env.ctx.sessions.get(sessionId);
@@ -823,12 +876,22 @@ async function handlePreflight(req, res, env) {
       sendJson(res, 404, { ok: false, code: 'session-not-found', message: 'no live session ' + sessionId });
       return;
     }
-    const seq = Number(seqParam);
-    if (seq >= source.events.length) {
-      sendJson(res, 400, { ok: false, code: 'bad-seq', message: 'seq ' + seq + ' is beyond the session log (' + source.events.length + ' events)' });
+    const events = sessionEvents(source);
+    let seq;
+    if (keyParam !== '') {
+      seq = resolveSeqByMessageKey(events, keyParam);
+      if (seq === -1) {
+        sendJson(res, 400, { ok: false, code: 'bad-key', message: 'no event carries message key ' + keyParam });
+        return;
+      }
+    } else {
+      seq = Number(seqParam);
+    }
+    if (seq >= events.length) {
+      sendJson(res, 400, { ok: false, code: 'bad-seq', message: 'seq ' + seq + ' is beyond the session log (' + events.length + ' events)' });
       return;
     }
-    const target = resolveRollbackTarget(source.events, seq);
+    const target = resolveRollbackTarget(events, seq);
     const state = await rollbackConflictState(env, source, target.turn);
     sendJson(res, 200, {
       ok: true,
@@ -848,8 +911,9 @@ async function handleRollback(req, res, env) {
     const url = new URL(req.url ?? '/', 'http://x');
     const sessionId = url.searchParams.get('session') ?? '';
     const seqParam = url.searchParams.get('seq') ?? '';
-    if (sessionId === '' || !/^\d+$/.test(seqParam)) {
-      sendJson(res, 400, { ok: false, code: 'bad-request', message: 'session id and a numeric seq are required' });
+    const keyParam = url.searchParams.get('key') ?? '';
+    if (sessionId === '' || (!/^\d+$/.test(seqParam) && keyParam === '')) {
+      sendJson(res, 400, { ok: false, code: 'bad-request', message: 'session id and a numeric seq (or a message key) are required' });
       return;
     }
     // Lazy cleanup: snapshots of archived sessions (and orphaned/non-standard
@@ -862,8 +926,17 @@ async function handleRollback(req, res, env) {
       sendJson(res, 404, { ok: false, code: 'session-not-found', message: 'no live session ' + sessionId });
       return;
     }
-    const events = source.events;
-    const seq = Number(seqParam);
+    const events = sessionEvents(source);
+    let seq;
+    if (keyParam !== '') {
+      seq = resolveSeqByMessageKey(events, keyParam);
+      if (seq === -1) {
+        sendJson(res, 400, { ok: false, code: 'bad-key', message: 'no event carries message key ' + keyParam });
+        return;
+      }
+    } else {
+      seq = Number(seqParam);
+    }
     if (seq >= events.length) {
       sendJson(res, 400, {
         ok: false,
@@ -872,7 +945,7 @@ async function handleRollback(req, res, env) {
       });
       return;
     }
-    const { cut, seed, turn, nextInput } = resolveRollbackTarget(events, seq);
+    const { seed, turn, nextInput } = resolveRollbackTarget(events, seq);
     const force = url.searchParams.get('force') === '1';
     const stream = url.searchParams.get('stream') === '1';
     // TOCTOU 收窄：preflight 与真正执行之间其他会话的写入，在这里再验一次；
@@ -914,7 +987,7 @@ async function handleRollback(req, res, env) {
     let agentPreset;
     let setup;
     try {
-      const presetId = resolveSessionPreset(source);
+      const presetId = resolvePresetId(source);
       const presets = env.ctx.get('agentPresets');
       if (presets !== undefined) {
         const resolvedId = (await presets.resolve(presetId)).id;
@@ -938,7 +1011,6 @@ async function handleRollback(req, res, env) {
       seed,
       meta: {
         ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
-        seedLength: cut,
         ...(agentPreset === undefined ? {} : { agentPreset })
       },
       agentOptions: selection === undefined ? {} : { provider: selection.provider, model: selection.model },
@@ -1197,8 +1269,13 @@ function apply(ctx, config = {}) {
       const header = session?.header;
       if (header?.parentSession === undefined || header.origin !== undefined || header.delegationDepth !== undefined) return;
       if (typeof header.cwd !== 'string' || header.cwd === '') return;
-      if (typeof header.seedLength !== 'number') return;
-      const maxTurn = turnOf(session.events, header.seedLength - 1) + 1;
+      // fork 前缀长度：alpha.4 以 session.inheritedEventCount（精确、持久）为准，
+      // rc 宿主仍记录 header.seedLength。
+      const seedCount = typeof session.inheritedEventCount === 'number'
+        ? session.inheritedEventCount
+        : header.seedLength;
+      if (typeof seedCount !== 'number') return;
+      const maxTurn = turnOf(sessionEvents(session), seedCount - 1) + 1;
       const outcome = await inheritSnapshots(env, header.parentSession, session.id, maxTurn);
       if (outcome.error !== undefined) {
         ctx.logger.warn('chat-rollback: fork snapshot inherit failed for ' + session.id + ': ' + outcome.error);

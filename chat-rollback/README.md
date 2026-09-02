@@ -150,7 +150,7 @@ node chat-rollback/test/client-emit.mjs            # 浏览器端：回滚预填
 
 - 参数校验：非数字 seq、越界 seq、不存在的会话均返回明确错误
 - 用户消息目标：seed 截断到该消息**之前**（open-turn 剪除、seed 以最后一个 turn/end 或排队消息收尾）、nextInput = 该消息自身文本、代码回滚 = seed 最后一个完成轮次的 turn-(turn+1) 快照、首条用户消息回滚 = seed 保留 request/header（全新开始）
-- 助手消息目标（旧语义）：seed = `events.slice(0, seq+1)`（含目标消息），meta 继承 cwd/seedLength/agentPreset，无 parentSession（顶层会话）
+- 助手消息目标（旧语义）：seed = `events.slice(0, seq+1)`（含目标消息），meta 继承 cwd/agentPreset（不传 seedLength——dsh 0.1.2-alpha.4 的 session header 校验显式拒绝该字段），无 parentSession（顶层会话）
 - workspace 解析 = 包含源会话的 workspace，attachSession 调用成功；preset 组合失败 / workspace 挂载失败均不阻断回滚；agents.create 异常则回滚返回 500（先建会话后恢复，create 失败不触碰工作区）
 - 浏览器端：中英文文案；DOM 注入（MutationObserver → `chat.nodes` 解析 anchorSeq → 挂载按钮；steering 气泡同样挂载、未知/非用户节点不挂载）；两段式确认（自绘回滚箭头、确认态红色 ✓、busy 态旋转）；本地 Tooltip；blur 取消确认态
 - **locale 订阅修复**：locale-change 重绘原用 WeakMap 的 `.values()`（WeakMap 无此方法，任何插件注册字典都会触发 `locale subscriber crashed`）；`mounted` 改为 Map（行在 detach 时删除，无泄漏），控制台报错消除

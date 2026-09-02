@@ -201,15 +201,15 @@ window.__ModuleLoader__.load({
 		 * confirm (✓) behind a conflict (?) state when another session also changed
 		 * files this rollback would overwrite. */
 		async function runPreflight(control) {
-			const { sessionId, seq, t } = control.binding ?? {};
-			if (sessionId === undefined || typeof seq !== 'number') {
+			const { sessionId, msgId, t } = control.binding ?? {};
+			if (sessionId === undefined || typeof msgId !== 'string' || msgId === '') {
 				control.busy = false;
 				control.paint?.();
 				control.showNote?.(t?.('rollback.error') ?? 'rollback failed', false);
 				return;
 			}
 			try {
-				const res = await fetch('/chat-rollback/preflight?session=' + encodeURIComponent(sessionId) + '&seq=' + seq, { method: 'POST', cache: 'no-store' });
+				const res = await fetch('/chat-rollback/preflight?session=' + encodeURIComponent(sessionId) + '&key=' + encodeURIComponent(msgId), { method: 'POST', cache: 'no-store' });
 				const data = await res.json();
 				if (typeof data !== 'object' || data === null) throw new Error('invalid preflight response');
 				if (!data.ok) {
@@ -234,15 +234,15 @@ window.__ModuleLoader__.load({
 		 * force=true 时携带 force=1（409 冲突/空快照确认后的二次点击）；默认
 		 * stream=1 走 ndjson 阶段流，busy 期间按阶段展示恢复进度文案。 */
 		async function runRollback(control, force) {
-			const { sessions, sessionId, seq, t } = control.binding ?? {};
-			if (sessions === undefined || typeof seq !== 'number' || sessionId === undefined) {
+			const { sessions, sessionId, msgId, t } = control.binding ?? {};
+			if (sessions === undefined || typeof msgId !== 'string' || msgId === '' || sessionId === undefined) {
 				control.busy = false;
 				control.paint?.();
 				control.showNote?.(t?.('rollback.error') ?? 'rollback failed', false);
 				return;
 			}
 			try {
-				const url = '/chat-rollback/rollback?session=' + encodeURIComponent(sessionId) + '&seq=' + seq + '&stream=1' + (force ? '&force=1' : '');
+				const url = '/chat-rollback/rollback?session=' + encodeURIComponent(sessionId) + '&key=' + encodeURIComponent(msgId) + '&stream=1' + (force ? '&force=1' : '');
 				const res = await fetch(url, { method: 'POST', cache: 'no-store' });
 				// 409 拦截：TOCTOU 冲突或空快照清空 —— 不执行，回到确认态
 				if (res.status === 409) {
@@ -349,8 +349,24 @@ window.__ModuleLoader__.load({
 		const inject = ['locale', 'sessions'];
 
 		function apply(ctx) {
-			ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'chat-rollback: dictionaries');
-			const t = ctx.locale.bind(NS);
+			const dbg = (...args) => { try { console.error('[chat-rollback]', ...args); } catch (e) {} };
+			const dbgState = { phase: 'apply-started', scans: 0, rowsSeen: 0, mounted: 0, reasons: [] };
+			try { window.__crbDebug = dbgState; } catch (e) {}
+			try {
+				ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'chat-rollback: dictionaries');
+			} catch (error) {
+				dbg('locale/effect setup failed:', error);
+				dbgState.phase = "locale-effect-failed"; try { window.__crbDebug = dbgState; } catch (e) {}
+				return;
+			}
+			let t;
+			try {
+				t = ctx.locale.bind(NS);
+			} catch (error) {
+				dbg('locale.bind failed:', error);
+				dbgState.phase = "locale-bind-failed"; try { window.__crbDebug = dbgState; } catch (e) {}
+				return;
+			}
 			// Map (not WeakMap): the locale-change repaint iterates mounted.values(),
 			// which WeakMap does not support. Rows are removed on detach().
 			const mounted = new Map(); // row -> { seq, kind, control }
@@ -370,22 +386,28 @@ window.__ModuleLoader__.load({
 				// 清理已离开 DOM 的行：会话切换/渲染回收时这些行不会再出现在
 				// 行循环里，detach 不会被触发——先统一清掉，防 mounted Map 与
 				// DOM 引用泄漏。
+				dbgState.scans += 1;
 				for (const row of mounted.keys()) {
 					if (!row.isConnected) detach(row);
 				}
 				let sessionId;
-				let nodes;
 				try {
-					const list = ctx.sessions.list.getSnapshot();
+					const listCtx = ctx.sessions?.list;
+					const list = typeof listCtx?.getSnapshot === 'function' ? listCtx.getSnapshot() : null;
 					sessionId = list?.current;
-					if (sessionId === undefined) return;
-					const binding = ctx.sessions.binding(sessionId);
-					const snapshot = binding?.session.getSnapshot();
-					nodes = snapshot?.chat?.nodes;
+					if (sessionId === undefined) {
+						dbgState.reasons.push('no-current-session');
+						try { window.__crbDebug = dbgState; } catch (e2) {}
+						return;
+					}
 				} catch (error) {
+					dbg('session list read failed:', error);
+					dbgState.reasons.push('session-ex: ' + String(error?.message ?? error));
+					try { window.__crbDebug = dbgState; } catch (e2) {}
 					return;
 				}
 				for (const row of document.querySelectorAll('[data-chat-anchor-key]')) {
+					dbgState.rowsSeen += 1;
 					const kind = row.getAttribute('data-chat-flow-kind') ?? '';
 					const key = row.getAttribute('data-chat-anchor-key') ?? '';
 					const entry = mounted.get(row);
@@ -393,29 +415,38 @@ window.__ModuleLoader__.load({
 						if (entry !== undefined) detach(row);
 						continue;
 					}
-					let seq;
-					try {
-						const node = nodes?.get?.(key);
-						seq = node?.anchorSeq;
-					} catch {
-						seq = undefined;
-					}
-					if (typeof seq !== 'number') {
+					// alpha.4 行 key 形如 "13:input-message<uuid>"：uuid = 该 user/message
+					// 事件在宿主日志里的 data.id。host 端按 key 反查 event seq（等价于旧版
+					// anchorSeq），无需注入 uiConversation / 读 chat 快照。
+					const msgMatch = key.match(/input-message([0-9A-Za-z-]+)$/);
+					const msgId = (msgMatch !== null ? msgMatch[1] : key.split(':').pop() ?? '');
+					if (msgId === '') {
+						dbgState.reasons.push('no-msg-id-for:' + key);
 						if (entry !== undefined) detach(row);
 						continue;
 					}
-					if (entry !== undefined && entry.seq === seq && entry.kind === kind) continue;
+					if (entry !== undefined && entry.msgId === msgId && entry.kind === kind) continue;
 					if (entry !== undefined) detach(row);
 					const control = createControl(t);
-					control.binding = { sessions: ctx.sessions, sessionId, seq, t };
-					// Same line as the copy button: the user bubble's action strip
-					// is the last element of the user row ([data-time-hover-root]).
-					// Fall back to a right-aligned strip under the bubble when the
-					// strip cannot be located (defensive against render changes).
-					const userRow = row.querySelector('[data-time-hover-root]');
-					const actionsEl = userRow !== null ? userRow.lastElementChild : null;
-					const stripOk = actionsEl instanceof HTMLElement && actionsEl.querySelector('button') !== null;
-					if (stripOk) {
+					control.binding = { sessions: ctx.sessions, sessionId, msgId, t };
+					// 操作条定位（与复制按钮同排）：老锚点 data-time-hover-root 在
+					// dsh 0.1.2-alpha.4 已删除——依次尝试 ①老锚点 ②复制按钮父容器
+					// （aria-label 复制/Copy/已复制/copied）③含 actions 的容器 ④气泡下兜底行。
+					let actionsEl = null;
+					const legacyRow = row.querySelector('[data-time-hover-root]');
+					if (legacyRow !== null) actionsEl = legacyRow.lastElementChild;
+					if (!(actionsEl instanceof HTMLElement && actionsEl.querySelector('button') !== null)) {
+						actionsEl = null;
+						const copyBtn = Array.prototype.find.call(
+							row.querySelectorAll('button[aria-label]'),
+							(btn) => /^(复制|Copy|copied|已复制)$/i.test((btn.getAttribute('aria-label') || '').trim())
+						);
+						if (copyBtn !== undefined && copyBtn.parentElement !== null) actionsEl = copyBtn.parentElement;
+					}
+					if (!(actionsEl instanceof HTMLElement && actionsEl.querySelector('button') !== null)) {
+						actionsEl = row.querySelector('[class*="actions"]');
+					}
+					if (actionsEl instanceof HTMLElement && actionsEl.querySelector('button') !== null) {
 						actionsEl.appendChild(control.button);
 					} else {
 						const wrapper = document.createElement('span');
@@ -424,7 +455,9 @@ window.__ModuleLoader__.load({
 						row.appendChild(wrapper);
 					}
 					row.appendChild(control.note);
-					mounted.set(row, { seq, kind, control });
+					mounted.set(row, { msgId, kind, control });
+					dbgState.mounted = mounted.size;
+					try { window.__crbDebug = dbgState; } catch (e) {}
 				}
 			}
 			// Rows appear/update on chat re-renders and paging; the list feed

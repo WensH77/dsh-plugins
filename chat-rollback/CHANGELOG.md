@@ -2,6 +2,22 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.2.4
+
+- **修复回滚按钮在 dsh 0.1.2-alpha.4 前端不渲染（两轮重构后定稿）**：
+  - 前端两个契约在 alpha.4 都变了：用户气泡操作条锚点 `data-time-hover-root` 被删除；`binding.session.getSnapshot().chat.nodes`（旧 anchorSeq 数据源）在新版会话快照中已不存在，节点改由会话作用域 chat target 提供；
+  - 探索过的两条路均不可行后定稿：~~读 chat target~~（需 inject `@deepseek-ai/dsh-client-ui-conversation`，而插件并不 require 该模块，inject 声明未使用模块会卡 activation、导致 web boot 失败——已弃用并移除）；最终改为 **DOM key → host 反查 seq**：chat 节点 key 形如 `13:input-message<uuid>`，其 uuid 即宿主 `user/message` 事件 `data.id`，client 只传 `&key=<uuid>`，host 用 `resolveSeqByMessageKey()` 在事件日志中定位同一事件下标（等价旧 anchorSeq 语义），`seq` 参数保留兼容；
+  - client：操作条定位链式尝试（老锚点/复制按钮父容器/actions 容器/气泡下兜底行）；挂载判定不再需要 seq/snapshot，只依赖 `locale + sessions`（未新增任何 inject）；
+  - 诊断保留为无声计数：`window.__crbDebug = { phase, scans, rowsSeen, mounted, reasons }`（不再向 Console 刷错误）。
+
+## 0.2.3
+
+- **适配 dsh 0.1.2-alpha.4 会话 API（回滚主功能恢复）**：
+  - `Session.events` getter 在 alpha.4 被移除 → 新增 `sessionEvents()` 统一读取（优先 `snapshotEvents()`，旧宿主回退 `.events`），`preflight`/`rollback`/fork 继承全部改走它
+  - `dsh-agent-presets` 在 alpha.4 不再导出 `resolveSessionPreset` → 移除该静态 import（连带移除 package.json 的 `@deepseek-ai/dsh-agent-presets` peer），改由本地 `resolvePresetId()` 从 `agent-preset/selected` 事件 / `SessionHeader.agentPreset` 取预设——效果一致且不再依赖第三方包导出面
+  - `agents.create` 的 meta 不再传 `seedLength`（alpha.4 的 session header 校验显式拒绝该字段，带了会直接报错）；fork 快照继承的前缀长度改用 `session.inheritedEventCount`（alpha.4）并回退 `header.seedLength`（rc）
+  - 清理插件 node_modules 里残留的过期 `dsh-agent-presets@0.1.0-rc.8`（此前靠它侥幸加载，依赖一重装就会因 import 缺失而整插件起不来）
+
 ## 0.2.2
 
 - **peer 范围切到 alpha 线**：`@deepseek-ai/dsh-agent-presets` 从 `^0.1.0-rc.7` 改为 `^0.1.2-alpha.4`、`cordis` 从 `^4.0.1` 改为 `^4.0.2`——跟随 dsh 0.1.2-alpha 通道（`alpha` dist-tag 全家桶互相声明 `^0.1.2-alpha.4` / `cordis ^4.0.2`）。这是"以 0.1.2-alpha 线为开发基线"的兼容性声明：semver 下 `^0.1.2-alpha.4` 只匹配同一元组的预发布（上游切 `0.1.3-alpha` 需再 bump），安装/运行期不受其强制（无强制校验，旧 rc 宿主照常运行）。
