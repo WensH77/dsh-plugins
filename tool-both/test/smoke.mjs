@@ -2,15 +2,13 @@
 // - Node half: exports, preset installer (creation / idempotency / overwrite),
 //   status helper, apply() with a fake ctx.
 // - Shipped preset: composition carries the both presentation row; preset.yml
-//   is valid YAML with name/description/order.
+//   carries name/description/order (structural checks — zero external deps).
 // - Presentation row: exports + Config defaults to both.
 // Run: node test/smoke.mjs
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
-import { entryListSchema } from '@deepseek-ai/cordis-plugin-include';
 
 import { apply, inject, name, installBothPreset, presetInstalled, presetTarget } from '../lib/index.js';
 import * as presentation from '../lib/presentation.js';
@@ -77,22 +75,32 @@ try {
 
 // ── shipped preset content ──────────────────────────────────────────────────
 console.log('shipped preset:');
+const presetYml = await readFile(join(PRESET_DIR, 'preset.yml'), 'utf8');
+const metaLines = {
+  name: presetYml.split('\n').find((l) => l.startsWith('name:')),
+  description: presetYml.split('\n').find((l) => l.startsWith('description:')),
+  order: presetYml.split('\n').find((l) => /^order: \d+$/.test(l)),
+};
+check('preset.yml carries name/description/order', Object.values(metaLines).every((v) => typeof v === 'string'), JSON.stringify(metaLines));
+check('preset.yml names BOTH模式', (metaLines.name ?? '').includes('BOTH模式'), metaLines.name);
+
 const composition = await readFile(join(PRESET_DIR, 'agent.cordis.yml'), 'utf8');
 check('composition carries the both presentation row', composition.includes("- id: tool-presentation") && composition.includes("mode: both"), 'presentation row missing');
 check('composition keeps the standard tool rows', composition.includes("tool-bash") && composition.includes("tool-fs") && composition.includes("tool-web"), 'tool rows missing');
-const metadata = yaml.load(await readFile(join(PRESET_DIR, 'preset.yml'), 'utf8'));
-check('preset.yml parses with name/description/order', metadata && typeof metadata.name === 'string' && typeof metadata.description === 'string' && typeof metadata.order === 'number', JSON.stringify(metadata));
 
-// Load the composition under the REAL loader dialect (handles the `!!js`
-// expressions plain js-yaml rejects) — the same shape dsh-agent-presets
-// health-checks before mounting.
-const loaded = yaml.load(composition, { schema: entryListSchema });
-const rows = Array.isArray(loaded) ? loaded : loaded?.rows;
-check('composition loads under entryListSchema as an entry list', Array.isArray(rows) && rows.length > 0, 'not an entry list');
-const rowNames = Array.isArray(rows) ? rows.filter((r) => !r.group).map((r) => r.name) : [];
-check('every row names a plugin', rowNames.every((n) => typeof n === 'string' && n.length > 0), JSON.stringify(rowNames.filter((n) => typeof n !== 'string')));
-const presRow = Array.isArray(rows) ? rows.find((r) => r.id === 'tool-presentation') : undefined;
-check('tool-presentation row resolves mode: both', presRow !== void 0 && presRow.config?.mode === 'both', JSON.stringify(presRow));
+// The shipped composition is static, so structural checks stand in for a full
+// load: every top-level row (`- id: <id>` at column 0) must either be a group
+// or name a plugin, and the presentation row must carry mode: both. A real
+// YAML/dialect parse is deliberately avoided — the plugin has no runtime deps,
+// and this file ships unchanged with the preset.
+const rowBlocks = composition.split(/\n- id: /).slice(1);
+const unnamed = rowBlocks.filter((block) => {
+  const head = block.split('\n').slice(0, 3).join('\n');
+  return !head.includes('group: true') && !head.includes('name:');
+});
+check('every non-group row names a plugin', unnamed.length === 0, JSON.stringify(unnamed.map((b) => b.split('\n')[0])));
+const presRow = rowBlocks.find((b) => b.startsWith('tool-presentation'));
+check('tool-presentation row resolves mode: both', presRow !== void 0 && presRow.includes('mode: both') && presRow.includes('@deepseek-ai/dsh-agent-tool-presentation'), JSON.stringify(presRow ?? null));
 
 // ── presentation row ────────────────────────────────────────────────────────
 console.log('presentation row:');
