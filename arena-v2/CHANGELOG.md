@@ -2,6 +2,55 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.23（feat：知识沉淀断点自愈——宿主在 `agent/created` 时机按 Theseus 真相对齐，自动重建并派发缺失阶段）
+
+- **事故**（session-98182034）：竞技场在 17:36:49 被误关（0.33.21 已修其成因），主控者随后在竞技场关闭状态下完成了 propose.completed 的 record（Theseus 推进到 review），17:38:50 回合结束时宿主因竞技场已关没有派发 review 挑战者——流程停在 review 之前，而主控者被禁创建子代理、无法自救。原恢复路径（重开竞技场 + 发「继续」走 k_init 续跑）依赖用户手动操作。
+- **修复（择机创建挑战者）**：新增 `reconcileKnowledgeResume`，挂在 **`agent/created`** 时机（会话被打开/重启挂载即触发）：
+  - 读 Theseus 绑定（`openspec/.runtime/sessions/dsh__<sessionId>.json`）与 `openspec/states` 的 currentStage，经纯函数 `knowledgeStageResumeOf` 映射续跑目标（explore/propose → 探索者；**review → 挑战者**；user-readiness-review → 探索者；apply → 注入 apply 回合提示）；
+  - 侧文件 **inactive 且已清空**（被误关/中断）→ 自动重建侧文件（active+scene+phase/pending/workflowId）、重装主控者 persona、按阶段完整模板派发（review 即创建挑战者）；
+  - 侧文件 **active 且停在对应工作阶段**（重启中断）→ 走既有 `kickResumeChild` 短续跑；
+  - 用户**明确关闭**（active=false 但 workflowId/kStage 保留，即 /arena off 路径）→ 不自动重开，尊重开关意图；
+  - archive/done/未知 → 不动；30s 节流防重复。
+- 测试：`knowledgeStageResumeOf` 九用例（含 review→挑战者、apply→null pending、archive/done 不续跑）；npm test 全绿。
+
+## 0.33.22（refactor：把 0.33.21 的「修订轮在途」泛化为「子代理任务在途」——成因与行为解耦）
+
+- **归因修正**：0.33.21 把 k_gate 里「主控者 send_message 委派给竞技场子代理」统称"修订轮"不准确——同样的信号形态还包括：中断后的 **rerun/续跑**（本次事故的实质）、宿主漏派/派发失败后的**补派**、NEED_QUESTION **答案直传**（主控者替代宿主中继）、report fork 的催办/补充要求、k_verdict 后主控者**直接下发修订指令**、以及用户显式指示的追加任务。行为（留场等结算）只取决于「任务是否已交到子代理手上」，与成因无关。
+- **改动**：
+  1. 新增纯函数 `hasArenaChildDelegation(events, childIds)`：检测事件段内主控者向竞技场子代理（durable id 集合）发起过 `send_message`——「子代理任务在途」的机械信号；
+  2. `planKnowledgeGate` 第 5 参更名 `childTaskInFlight`、stay 理由统一为 `child-task-in-flight`；
+  3. 接入点扩到三处：k_gate（原 0.33.21 逻辑，删除内联检测改用共享信号）、**k_verdict**（READY 未确认、NEEDS_REVISION/NOT_READY 未选择时，若任务在途 → stay 留场而非关场）、**k_ask**（主控者已直接回传答案 → 只恢复阶段状态、跳过宿主重复中继，避免探索者收到双份答案）；
+  4. 共享信号在 knowledge turn/end 开头一次计算（按 label 缓存的 explorer/challenger id）。
+- 测试：`hasArenaChildDelegation` 六用例（命中/非竞技场目标/非 send_message/空 id/不匹配/事件缺失），`planKnowledgeGate` 理由更新；npm test 全绿。
+
+## 0.33.21（fix：k_gate 修订轮「在途」误判——主控者跳过提问直接委派时不再误关竞技场）
+
+- **事故**（session-98182034 17:36:49）：0.33.20 的 stay 只认「当回合的 arena_k_revision 回答」。主控者沿用早前（17:10）的修订授权、**没有当场重问**就 send_message 委派修订轮 → 该回合 turn/end 时宿主读不到任何确认、Theseus 状态也未推进 → 按「未确认且未 record」**关闭竞技场**。随后主控者在竞技场关闭状态下完成了 propose.completed 的 record（Theseus 推进到 review），17:38:50 回合结束时宿主因竞技场已关而没有派发 review 挑战者——流程停在 review、竞技场已关（状态文件 mtime=17:36:49 即为关场时刻）。
+- **修复**：`planKnowledgeGate` 增加第 5 参 `revisionInFlight`——k_gate 回合内检测主控者向竞技场子代理（按 label 缓存的 durable id：explorer/challenger）发起过 `send_message` 工具调用，即视为修订轮在途 → stay 留场等待其结算；不依赖主代理「记得提问」。其余决策不变。
+- 测试：`planKnowledgeGate` 增两条在途用例（stay 优先于推进判定、无确认也不误关）；npm test 全绿。
+- 恢复本次卡点：竞技场已关、Theseus 已到 review——重开知识沉淀竞技场后发「继续」即可：k_init 续跑读 states=review → 宿主直接派发 review 挑战者，无需重跑 explore/propose（工件已齐）。
+
+## 0.33.20（change：knowledge 委派限制从「全禁」改为「只禁创建」——send_message 开放，主控者只能向已存在的子代理委派）
+
+- **动机**：0.33.9/0.33.17 的「subagent / subagent_fork / send_message 全禁」在门控 blocked 时制造了无解死锁——主控者既不能自己修工件（阶段 skill 不由其执行）、又不能派人修（委派全禁），宿主 k_gate 又没有修订轮通道（session-98182034 实证：propose judge 因 design.md 缺失 blocked，用户选「修订轮」后主控者无路可走，流程停在 k_gate）。禁止造成的损失大于它防的「擅自委派」。
+- **新规则**：knowledge 场景只禁用**创建新子代理**的工具 `subagent` / `subagent_fork`；`send_message` 开放——主控者只能向**已存在**的探索者/挑战者委派任务（宿主未派发时的补派、门控 blocked 时的修订轮），新副本没有阶段上下文、游离于状态机外，仍被禁止。goal 工具与 /goal 命令维持禁用。
+- **配套改动**：
+  1. **k_gate 修订轮留场**：新增纯函数 `planKnowledgeGate`——用户同意修订轮（`arena_k_revision` → continue）→ action=stay，保持 k_gate 等待探索者修订结算，既不推进也不按「未确认→关场」误关；其余按 `planKnowledgeAdvance`。
+  2. **阶段指示**：三个确认门（explore/propose/apply）的 gateText 均补「judge 未通过 → 说明失败项 → 问 `arena_k_revision` → 同意则 send_message 修订轮指令给探索者（列出失败项+返回协议）→ 等修订结算再重新确认；拒绝 → 关场」。
+  3. **提示不再静默**：`steerArenaNote` 增加 inject 回退与日志——steer 不可用/取不到 live 主代理时不再无声丢提示（本次 retry 提示静默丢失的修复）。
+- 主控者 persona【分工】与 `DEFAULT_KNOWLEDGE_INSTRUCTION` 同步改写：创建类工具禁用、send_message 开放、只能向已存在的探索者/挑战者委派、续跑复用优先不新建副本、goal 仍禁。
+- 测试：persona/指令断言换新语义（9 条），`planKnowledgeGate` 四分支（stay 优先 / 无修订回落原决策 / 拒绝修订关场）；npm test 全绿。
+
+## 0.33.19（feat：断点续跑——「继续」恢复所有子代理工作阶段，不再需要手动关开竞技场）
+
+- **缺口**：宿主进程重启/崩溃会掐断正在运行的**子代理回合**（无结算、无工件），重启后阶段按侧文件恢复为子代理工作阶段（knowledge 的 k_explore / k_propose / k_review / k_readiness，business/qa 的 challenge / verdict），但宿主只响应 `awaiting` 阶段的新消息 → 用户发「继续」被忽略、宿主不重派 → 死锁。实证（session-98182034）：propose 委派 16:28:43 已送达探索者并开工（skill 已加载、spec-meta 已检索），16:32 重启 dsh web 把该回合掐断；之后主代理只能反复简报「等待宿主派发」，16:33 的「继续」无效。
+- **修复**：用户消息落在子代理工作阶段（且 `pendingDispatch` 与阶段一致）时，宿主先确认对应子代理**未在运行**，再幂等重派同一阶段：
+  - 新增纯函数 `knowledgeChildStageOf`（阶段 → {pending, role}）、`childWorkOf`（active + 阶段/pendingDispatch 一致才算可续跑目标）、`kickResumeText`（**短续跑指令**，自带该阶段返回协议——子代理历史中已有完整委派，不重发整份模板、不污染上下文）；
+  - `kickResumeChild`：子代理 live 且 `status==='running'` → 跳过（正常工作中不双发）；durable 子代理存在 → 投递短续跑指令（30s 节流防重复）；子代理从未创建（崩溃落在派发状态写入与 `startContinuable` 之间）→ knowledge 按阶段完整模板重建（与 k_init 续跑一致）、business/qa 走 `dispatchArenaRound` 重建；
+  - 主代理交互阶段（k_init / k_gate / k_ask / k_verdict / k_apply / answer / revise / present）**不需要**续跑：用户消息本来就会到达主代理，由其按阶段指示推进（0.33.18 起事件源已修，k_gate 确认提取可靠）。
+- 行为变化：knowledge 任一子代理阶段与 business/qa 挑战/终评轮被中断（重启/崩溃/手动停服务）后，在该会话发任意消息（如「继续」）即自动续跑同阶段；正常工作中发消息仍照旧忽略。
+- 测试：`knowledgeChildStageOf` 全映射、`childWorkOf`（未开启 / pendingDispatch 不一致 / workflowId 未绑定 / k_gate 不续跑 / business/qa 命中）、`kickResumeText` 各阶段协议行；npm test 全绿。
+
 ## 0.33.18（fix：`.session.events` 事件源全面适配 dsh 0.1.2-alpha.4——回答/字段提取此前全部落空）
 
 - **事故**：0.33.15 适配 subagents API 时漏掉另一处破坏性变更——dsh 0.1.2-alpha.4 的 `Session` **不再暴露 `.events`**（只有 `snapshotEvents()` 与公开的 `log`）。lib 里所有 `agent.session?.events` / `resolveMainAgent(...)?.session?.events` 运行时恒为 undefined，宿主机器提取整条失效：

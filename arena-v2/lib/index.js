@@ -544,7 +544,7 @@ const KNOWLEDGE_PERSONAS = {
     '- 探索者子代理：执行 theseus-explore / theseus-propose / theseus-user-readiness-review，并可用 subagent_fork 派生 reporter 后台执行 requirement-report；产出全部 openspec 工件（review.md 与 Theseus 运行时状态文件除外）。',
     '- 挑战者子代理：执行 theseus-review-spec，只写 review.md，回复只输出一行 Done。',
     '- 你：执行 Theseus CLI（mode/judge/record）与 T6 apply；你是唯一向用户提问、唯一推进 workflow 状态的代理。',
-    '- **探索者与挑战者均由宿主派发**：执行 Theseus workflow 期间，不得擅自创建子代理（subagent / subagent_fork / send_message 与 goal 工具 get_goal / create_goal / update_goal 在竞技场开启期间已对你禁用）；任何任务续跑都以已有子代理优先（复用其上下文），不新建副本。',
+    '- **探索者与挑战者默认由宿主派发**：执行 Theseus workflow 期间，**创建新子代理的工具（subagent / subagent_fork）已对你禁用**；send_message 对你开放——你只能向**已存在**的探索者/挑战者委派任务（如宿主未派发时的补派、门控 blocked 时的修订轮），任何任务续跑都以已有子代理优先（复用其上下文），不新建副本。goal 工具 get_goal / create_goal / update_goal 与 /goal 命令在竞技场开启期间同样不可用。',
     '- **阶段 skill 不由你执行**：theseus-explore / theseus-propose / theseus-user-readiness-review / theseus-review-spec / requirement-report 全部由子代理执行（探索者/挑战者/reporter）——你只做 Theseus CLI（mode/judge/record）、门控提问（ask_user_question）与 T6 apply；即使你具备加载这些 skill 的能力，也**不得亲自加载/执行它们**。',
     '',
     '【流程】',
@@ -768,7 +768,7 @@ const DEFAULT_INSTRUCTION = [
  */
 const DEFAULT_KNOWLEDGE_INSTRUCTION = [
   '[arena-v2 知识沉淀]',
-  '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，探索者与挑战者均由宿主派发，子代理的创建/复用与派发由系统完成——subagent / subagent_fork / send_message 工具已对你禁用，不得擅自创建子代理；任务续跑均以已有代理优先。goal 工具（get_goal / create_goal / update_goal）与 /goal 命令在竞技场开启期间同样不可用——回合与推进由宿主门控，不由 goal 驱动。你只按当前「竞技阶段」行事：',
+  '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，探索者与挑战者默认由宿主派发；**创建新子代理的工具（subagent / subagent_fork）已对你禁用**，send_message 对你开放——你只能向**已存在**的探索者/挑战者委派任务（宿主未派发时的补派、门控 blocked 时的修订轮等），任务续跑均以已有代理优先、复用其上下文。goal 工具（get_goal / create_goal / update_goal）与 /goal 命令在竞技场开启期间同样不可用——回合与推进由宿主门控，不由 goal 驱动。你只按当前「竞技阶段」行事：',
   '1. **绑定/续跑阶段**：judge --current 确认 Theseus workflow 绑定（未绑定则 mode on --bind <id> 或 --init <主题>）。**已绑定且阶段已推进时，系统按 openspec/states 自动续跑对应阶段（跳过已完成阶段）**；只需向用户简报当前阶段后结束回合。',
   '2. **阶段确认**：先把子代理结算消息**原文原样**呈现给用户（不要摘要/改写），再调用 ask_user_question 询问是否进入下一阶段（问题 id 固定 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项「' + ARENA_K_ADVANCE_YES + '」/「' + ARENA_K_ADVANCE_NO + '」）；用户确认后 judge --current 验证并 record 对应 stage.completed，结束回合——系统才会派发下一阶段。',
   '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，先把它结算消息里 JSON 之外的**全部正文（对账、规则揭示、答案正确与否等）原文原样转述给用户**——子代理的一切问题与答案都由你原样转述，需要原文引用时允许用 read 等工具读 openspec 工件（user-readiness.review.md / review.md / decision-log）后逐行引用，禁止改写/摘要；再把问题 JSON 原样转成 ask_user_question 提问（**只取 question/options 等展示字段照抄；JSON 里的 correctIndex / 正确项位置 / why 等答案线索字段一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合——系统会把回答回传给探索者。',
@@ -1130,6 +1130,130 @@ function planKnowledgeAdvance(advance, actual, expected) {
 }
 
 /**
+ * k_gate 回合决策（0.33.20 起支持修订轮留场）：用户同意「让探索者修订」
+ * （revision === 'continue'），或本回合内主控者已向竞技场子代理 send_message 委派任务
+ * （childTaskInFlight——修订轮、rerun、补派、追问/答案回传、报告派生等统一形态）→
+ * **stay** 留场等待子代理结算，既不推进也不按「未确认」关场；其余按 planKnowledgeAdvance。
+ * 注意：成因（修订/重跑/补派）不影响行为——凡「任务已交给子代理」都应等结算。
+ */
+function planKnowledgeGate(advance, revision, actual, expected, childTaskInFlight = false) {
+  if (revision === 'continue' || childTaskInFlight) return { action: 'stay', reason: 'child-task-in-flight' };
+  return planKnowledgeAdvance(advance, actual, expected);
+}
+
+/**
+ * 检测一段事件里主控者是否已向**竞技场子代理**（durable id 集合）发起过 send_message
+ * 委派。这是「子代理任务在途」的机械信号，与成因无关：修订轮、中断后的 rerun、
+ * 宿主漏派后的补派、NEED_QUESTION 答案直传、report fork 催办……都表现为同一形态；
+ * 宿主据此在 k_gate / k_verdict 留场等待结算，在 k_ask 跳过重复中继。
+ * @param events - 会话事件数组。
+ * @param childIds - 竞技场子代理 durable id 列表（按 label 缓存）。
+ * @returns 是否在本段事件中发现对竞技场子代理的 send_message。
+ */
+function hasArenaChildDelegation(events, childIds) {
+  if (!Array.isArray(events)) return false;
+  const ids = new Set((childIds ?? []).filter((v) => typeof v === 'string' && v !== ''));
+  if (ids.size === 0) return false;
+  return events.some((e) => {
+    if (e?.type !== 'tool/call' || e.data?.name !== 'send_message') return false;
+    try {
+      const args = typeof e.data?.arguments === 'string' ? JSON.parse(e.data.arguments) : e.data?.arguments;
+      return ids.has(String(args?.agent_id ?? ''));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * 知识沉淀「子代理工作阶段」→ 该阶段期望的派发信息。子代理工作阶段指：阶段执行权
+ * 在探索者/挑战者手里、宿主等待其结算回传的阶段（k_explore / k_propose / k_review /
+ * k_readiness）。决策/交互阶段（k_init / k_gate / k_ask / k_verdict / k_apply）的执行权
+ * 在主代理手里，用户消息会照常到达主代理、由主代理推进，不属于这里。
+ * @param phase - 会话阶段。
+ * @returns { pending: 'explore'|'propose'|'review'|'readiness', role: 'explorer'|'challenger' } | null
+ */
+function knowledgeChildStageOf(phase) {
+  switch (phase) {
+    case ARENA_PHASE_K_EXPLORE: return { pending: 'explore', role: 'explorer' };
+    case ARENA_PHASE_K_PROPOSE: return { pending: 'propose', role: 'explorer' };
+    case ARENA_PHASE_K_REVIEW: return { pending: 'review', role: 'challenger' };
+    case ARENA_PHASE_K_READINESS: return { pending: 'readiness', role: 'explorer' };
+    default: return null;
+  }
+}
+
+/**
+ * 断点续跑判定（纯函数）：会话处于某个「子代理工作阶段」且 pendingDispatch 与该阶段
+ * 一致（即阶段执行权在子代理、宿主在等结算）→ 返回续跑目标；否则 null。
+ * 子代理工作阶段被进程重启/崩溃中断后（子代理回合死在半途、无结算无工件），阶段被
+ * 持久化在侧文件、重启后恢复，但宿主不会自动重派——用户发任意消息（如「继续」）时
+ * 由调用方据此重派同一阶段（见 apply 内 kickResumeChild）。
+ * @param state - readArenaState 结果。
+ * @param isKnowledge - 是否 knowledge 场景。
+ */
+function childWorkOf(state, isKnowledge) {
+  if (!state?.active) return null;
+  if (isKnowledge) {
+    const m = knowledgeChildStageOf(state.phase);
+    if (!m || state.pendingDispatch !== m.pending) return null;
+    if (typeof state.workflowId !== 'string' || state.workflowId === '') return null;
+    return { scene: state.scene, phase: state.phase, pending: m.pending, role: m.role, workflowId: state.workflowId };
+  }
+  if (state.phase === ARENA_PHASE_CHALLENGE && state.pendingDispatch === ARENA_PHASE_CHALLENGE) {
+    return { scene: state.scene, phase: state.phase, pending: 'challenge', role: 'challenger', workflowId: '' };
+  }
+  if (state.phase === ARENA_PHASE_VERDICT && state.pendingDispatch === ARENA_PHASE_VERDICT) {
+    return { scene: state.scene, phase: state.phase, pending: 'verdict', role: 'challenger', workflowId: '' };
+  }
+  return null;
+}
+
+/**
+ * Theseus 阶段 → 竞技场续跑目标（k_init 续跑与 agent/created 断点自愈共用，0.33.23）。
+ * @param stageNow - `openspec/states/<workflowId>.json` 的 currentStage。
+ * @returns 子代理工作阶段的续跑目标 { pending, phase, kStage, role, templateKey }；
+ *   apply → { pending: null, phase: k_apply }（主控者执行）；archive/done/未知 → null（无需续跑）。
+ */
+function knowledgeStageResumeOf(stageNow) {
+  switch (stageNow) {
+    case 'explore': return { pending: 'explore', phase: ARENA_PHASE_K_EXPLORE, kStage: 'explore', role: 'explorer', templateKey: 'explorePrompt' };
+    case 'propose': return { pending: 'propose', phase: ARENA_PHASE_K_PROPOSE, kStage: 'propose', role: 'explorer', templateKey: 'proposePrompt' };
+    case 'review': return { pending: 'review', phase: ARENA_PHASE_K_REVIEW, kStage: '', role: 'challenger', templateKey: 'reviewPrompt' };
+    case 'user-readiness-review': return { pending: 'readiness', phase: ARENA_PHASE_K_READINESS, kStage: 'readiness', role: 'explorer', templateKey: 'readinessPrompt' };
+    case 'apply': return { pending: null, phase: ARENA_PHASE_K_APPLY, kStage: '', role: null, templateKey: null };
+    default: return null;
+  }
+}
+
+/**
+ * 断点续跑的**短指令**文本：发给既有子代理（其历史中已含完整委派）的续跑提示，
+ * 自带阶段返回协议，避免重发整份委派模板（那会重复污染子代理上下文）。
+ * @param work - childWorkOf 的返回。
+ * @returns 续跑指令文本。
+ */
+function kickResumeText(work) {
+  const workflow = work.workflowId !== '' ? '（' + work.workflowId + '）' : '';
+  switch (work.pending) {
+    case 'explore':
+      return '[arena-v2 宿主续跑] 宿主进程重启中断了你正在执行的 theseus-explore' + workflow + '。基于你历史中已收到的完整委派继续执行 theseus-explore skill；若工件已满足 gate 则直接核验并按返回协议输出（一行）：STAGE_DONE explore CONFIRMED，或 NEED_QUESTION <问题JSON>，或 BLOCKED <原因>。';
+    case 'propose':
+      return '[arena-v2 宿主续跑] 宿主进程重启中断了你正在执行的 theseus-propose' + workflow + '。基于你历史中已收到的完整委派继续执行 theseus-propose skill，产出/补齐提案工件后按返回协议输出（一行）：STAGE_DONE propose ARTIFACTS_CREATED，或 NEED_QUESTION <问题JSON>，或 BLOCKED <原因>。';
+    case 'review':
+      return '[arena-v2 宿主续跑] 宿主进程重启中断了你正在执行的 theseus-review-spec' + workflow + '。基于你历史中已收到的完整委派继续审查并把结论写入 review.md，完成后只回复一行 Done。';
+    case 'readiness':
+      return '[arena-v2 宿主续跑] 宿主进程重启中断了你正在执行的 theseus-user-readiness-review' + workflow + '。基于你历史中已收到的完整委派继续执行（预测题对账契约不变），完成后按返回协议输出（一行）：STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION，或 NEED_QUESTION <问题JSON>，或 BLOCKED <原因>。';
+    case 'challenge':
+      return '[arena-v2 宿主续跑] 宿主进程重启中断了你正在进行的质疑轮。基于你历史中已收到的完整委派继续完成本轮质疑并结束回合（结算会回传给主代理呈现）。';
+    case 'verdict':
+      return '[arena-v2 宿主续跑] 宿主进程重启中断了你正在进行的终评轮。基于你历史中已收到的完整委派（含主代理修正稿）继续完成终评并结束回合（结算会回传给主代理呈现）。';
+    default:
+      return '';
+  }
+}
+
+
+/**
  * 按 round 组装质疑轮/终评轮结构化文本：四个字段（用户问题/回答正文/提到的文件/
  * 工具操作记录）全部由宿主侧从会话事件机器提取，模板渲染也在这里完成——主代理
  * 不再自述任何字段，只把返回文本转发给挑战者。返回前中和 `dsh-session:` URI。
@@ -1200,8 +1324,11 @@ const ARENA_K_OUTCOMES = new Set(['ready', 'needs_revision', 'not_ready']);
 
 /** 竞技场开启期间对主会话禁用的 goal 工具真实注册名（dsh 0.1.2-alpha.4 的 tool-goal 三个模型工具）。 */
 const GOAL_TOOL_NAMES = ['get_goal', 'create_goal', 'update_goal'];
-/** 知识沉淀场景额外禁用的委派工具（探索者/挑战者由宿主派发，主控者不得自建/续派）。 */
-const DELEGATION_TOOL_NAMES = ['subagent', 'subagent_fork', 'send_message'];
+/** 知识沉淀场景额外禁用的「创建新子代理」工具：探索者/挑战者由宿主派发（或主控者用
+ *  send_message 向**已存在**的子代理委派），主控者不得新建副本（新副本没有阶段上下文，
+ *  游离于状态机之外）。send_message 保持开放——主控者只能向已存在的探索者/挑战者委派
+ *  任务（如门控 blocked 时的修订轮、宿主漏派时的补派）。 */
+const CHILD_CREATE_TOOL_NAMES = ['subagent', 'subagent_fork'];
 /** /goal 影子命令的固定拒绝文案（遮蔽预设 command-goal 后返回）。 */
 const ARENA_GOAL_BLOCK_TEXT = '竞技场模式下已禁用 /goal：竞技回合与推进由宿主门控，goal 自动续跑会与竞技阶段冲突；如需使用 goal，请先 /arena off 关闭竞技场。';
 
@@ -1346,7 +1473,9 @@ function apply(ctx) {
     const subagents = new Map();
     const resolving = new Map();
     const mainPersonas = new Map();
+    const kickThrottle = new Map(); // sessionId -> 最近一次断点续跑派发时间（防重复续跑）
     const RESOLVE_THROTTLE_MS = 10_000;
+    const KICK_THROTTLE_MS = 30_000;
     const subagentKey = (sessionId, label) => sessionId + '::' + label;
     const challengerKey = (sessionId, scene) => subagentKey(sessionId, challengerLabelFor(scene));
     const explorerKey = (sessionId, scene) => subagentKey(sessionId, explorerLabelFor(scene));
@@ -1538,9 +1667,10 @@ function apply(ctx) {
         }
         // 竞技场模式下禁用 goal 工具（get_goal/create_goal/update_goal）与 /goal 命令：
         // 防止主代理或用户经 goal 绕过竞技场门控（无人管控地创建/推进 goal、goal 自动
-        // 续跑与宿主阶段机抢回合）。知识沉淀场景额外禁用 subagent / subagent_fork /
-        // send_message——探索者与挑战者均由宿主派发，主控者不得擅自创建/续派子代理
-        // （宿主走 subagents 服务 API，不受影响；子代理会话是独立工具作用域，也不受影响）。
+        // 续跑与宿主阶段机抢回合）。知识沉淀场景额外禁用**创建新子代理**的 subagent /
+        // subagent_fork（0.33.20 起开放 send_message：主控者只能向已存在的探索者/挑战者
+        // 委派任务——新副本没有阶段上下文且游离于状态机外，宿主走 subagents 服务 API
+        // 不受影响；子代理会话是独立工具作用域，也不受影响）。
         // restrict 过滤 scope 继承到的工具（含预设层的），且只认真实注册名：0.33.9 曾用
         // 'goal' 作 deny 名——那不是任何已注册工具，restrict 因 unknown name 整单抛错被
         // 跳过，等于从未生效（实证：竞技场开启窗口内主控者 send_message/subagent 调用
@@ -1564,7 +1694,7 @@ function apply(ctx) {
           return applied;
         };
         for (const d of restrictDeny(scene === 'knowledge'
-          ? [...GOAL_TOOL_NAMES, ...DELEGATION_TOOL_NAMES]
+          ? [...GOAL_TOOL_NAMES, ...CHILD_CREATE_TOOL_NAMES]
           : [...GOAL_TOOL_NAMES])) {
           disposers.push(d);
         }
@@ -1694,6 +1824,9 @@ function apply(ctx) {
         void resolveChallenger(id, st.scene, { force: true });
         if (st.scene === 'knowledge') void resolveExplorer(id, st.scene, { force: true });
         if (st.active) installMainPersona(agent);
+        // 知识沉淀断点自愈（0.33.23）：会话被打开/重启挂载时按 Theseus 真相对齐，
+        // 自动重建侧文件并派发缺失的阶段（含 review 挑战者）。
+        if (st.scene === 'knowledge') void reconcileKnowledgeResume(agent, id);
       } catch {}
     });
 
@@ -1781,14 +1914,27 @@ function apply(ctx) {
       }
     };
 
-    /** 向主会话注入一条可见的竞技场提示（成功/失败都能看到，不再只进终端日志）。中和 dsh-session: 防预处理器抛错。 */
+    /** 向主会话注入一条可见的竞技场提示（成功/失败都能看到，不再只进终端日志）。中和 dsh-session: 防预处理器抛错。
+     *  0.33.20：steer 不可用时回退 inject，两者都不可用/取不到 live agent 时记日志——
+     *  不再静默丢提示（session-98182034 的 k_gate retry 提示曾因静默失败让用户以为卡死）。 */
     const steerArenaNote = (mainAgent, text) => {
+      const message = () => createUserMessage({
+        content: [{ type: 'text', text: sanitizeSessionRefs(text) }],
+        source: { kind: 'user' }
+      });
       try {
-        mainAgent?.steer?.(createUserMessage({
-          content: [{ type: 'text', text: sanitizeSessionRefs(text) }],
-          source: { kind: 'user' }
-        }));
-      } catch {}
+        if (mainAgent && typeof mainAgent.steer === 'function') {
+          mainAgent.steer(message());
+          return;
+        }
+        if (mainAgent && typeof mainAgent.inject === 'function') {
+          mainAgent.inject(message());
+          return;
+        }
+        ctx.logger?.warn?.('arena-v2: arena note dropped (no live main agent with steer/inject) — text: ' + String(text).slice(0, 120));
+      } catch (error) {
+        ctx.logger?.warn?.('arena-v2: arena note delivery failed: ' + String(error?.message ?? error));
+      }
     };
 
     // 宿主派发用的信号：startContinuable/queueHostSubagentPrompt 内部会调用 signal.throwIfAborted()，
@@ -2033,6 +2179,144 @@ function apply(ctx) {
         } catch {}
       }
     };
+
+    /**
+     * 断点续跑：子代理工作阶段（knowledge 的 k_explore/k_propose/k_review/k_readiness，
+     * business/qa 的 challenge/verdict）被宿主进程重启/崩溃中断后，用户发任意消息
+     * （如「继续」）→ 若对应子代理**没有运行中的任务**，把同一阶段幂等重派：
+     * - 子代理已存在（durable，历史中含完整委派）→ 投递**短续跑指令**（kickResumeText，
+     *   自带阶段返回协议），不重发整份模板、不污染上下文；
+     * - 子代理从未创建（崩溃落在派发写入与创建之间）→ knowledge 按阶段完整模板重建
+     *   （与 k_init 续跑一致），business/qa 走 dispatchArenaRound 重建。
+     * 30s 节流防重复；子代理 live 且 running 时跳过（避免双发）。
+     * @param sessionId - 顶层会话 id。
+     * @param work - childWorkOf 的结果。
+     * @param cwd - 会话工作区。
+     * @returns 是否触发续跑。
+     */
+    const kickResumeChild = async (sessionId, work, cwd) => {
+      try {
+        const st = readArenaState(sessionId);
+        if (!st.active) return false;
+        const cfg = scope?.get?.() ?? {};
+        const scene = work.scene ?? st.scene;
+        const label = work.role === 'explorer' ? explorerLabelFor(scene) : challengerLabelFor(scene);
+        const key = subagentKey(sessionId, label);
+        const subagentsSvc = settingsCtx.get('subagents');
+        const mainAgent = resolveMainAgent(sessionId);
+        if (!subagentsSvc || !mainAgent) return false;
+        let childId = subagents.get(key);
+        if (childId) {
+          const live = settingsCtx.get('agents')?.get?.(childId);
+          if (live && live.status === 'running') {
+            ctx.logger?.info?.('arena-v2: kick resume ' + work.pending + ' skipped (child running ' + childId + ') for ' + sessionId);
+            return false; // 子代理仍在工作，普通消息照旧忽略，不双发
+          }
+        } else {
+          await resolveSubagent(sessionId, label, { force: true });
+          childId = subagents.get(key);
+        }
+        const now = Date.now();
+        const last = kickThrottle.get(sessionId);
+        if (last !== void 0 && now - last < KICK_THROTTLE_MS) {
+          ctx.logger?.info?.('arena-v2: kick resume ' + work.pending + ' throttled for ' + sessionId);
+          return false;
+        }
+        kickThrottle.set(sessionId, now);
+        const content = [{ type: 'text', text: sanitizeSessionRefs(kickResumeText(work)) }];
+        if (childId) {
+          await queueToChild(subagentsSvc, mainAgent, childId, content, dispatchAbort.signal);
+          ctx.logger?.info?.('arena-v2: kick resume ' + work.pending + ' -> queue ' + childId + ' for ' + sessionId);
+          return true;
+        }
+        // 子代理从未创建（崩溃落在派发写入与 startContinuable 之间）：按阶段完整重建。
+        if (work.pending === 'challenge' || work.pending === 'verdict') {
+          ctx.logger?.info?.('arena-v2: kick resume ' + work.pending + ' -> recreate challenger for ' + sessionId);
+          void dispatchArenaRound(sessionId, work.pending);
+          return true;
+        }
+        const personas = scenePersonasOf(cfg, 'knowledge');
+        const template = work.pending === 'explore' ? personas.explorePrompt
+          : work.pending === 'propose' ? personas.proposePrompt
+            : work.pending === 'review' ? personas.reviewPrompt
+              : personas.readinessPrompt;
+        const roleName = work.role === 'explorer' ? '探索者' : '挑战者';
+        // 重建窗口的子代理没有历史委派；explore 的原问题已不可回放（当前消息是「继续」），
+        // 模板按无问题渲染（探索者需要澄清会发 NEED_QUESTION），阶段工件幂等可覆盖。
+        const text = renderKnowledgeTemplate(template, { ...st, workflowId: st.workflowId }, cwd, '', '');
+        ctx.logger?.info?.('arena-v2: kick resume ' + work.pending + ' -> recreate ' + roleName + ' for ' + sessionId);
+        void dispatchKnowledge(sessionId, work.role, work.pending, text, roleName);
+        return true;
+      } catch (error) {
+        ctx.logger?.warn?.('arena-v2: kick resume failed: ' + String(error?.message ?? error));
+        return false;
+      }
+    };
+
+    /**
+     * 知识沉淀断点自愈（0.33.23）：宿主在 `agent/created` 时机（会话被打开/重启挂载）
+     * 按 Theseus 文件真相对齐一次——发现「Theseus 已推进到子代理工作阶段，而竞技场
+     * 侧文件已清空（被误关/中断）或还停在对应工作阶段（重启中断）」时，**自动重建
+     * 侧文件并派发该阶段**（含创建 review 挑战者），不需要用户手动重开竞技场/发消息。
+     * 明确关闭的竞技场（侧文件 active=false 但 workflowId/kStage 保留）不自动续跑，
+     * 尊重用户开关意图。
+     * @param agent - 顶层会话的 live 主代理。
+     * @param sessionId - 会话 id。
+     */
+    const reconcileKnowledgeResume = async (agent, sessionId) => {
+      try {
+        const st = readArenaState(sessionId);
+        if (st.scene !== 'knowledge') return;
+        const cwd = sessionCwd(agent?.session ?? null);
+        if (cwd === '') return;
+        const workflowId = readKnowledgeWorkflowId(cwd, sessionId);
+        if (workflowId === '') return;
+        const stageNow = readWorkflowStage(cwd, workflowId);
+        const target = knowledgeStageResumeOf(stageNow ?? '');
+        if (!target) return; // archive/done/未知：无需续跑
+        // 用户明确关闭（off 只置 active=false，字段保留）→ 不自动重开。
+        if (!st.active && (st.workflowId !== '' || st.kStage !== '')) return;
+        if (st.active) {
+          // 重启中断：还停在对应工作阶段 → 走 kick 短续跑（复用既有子代理上下文）。
+          const work = childWorkOf(st, true);
+          if (work && work.pending === target.pending) {
+            void kickResumeChild(sessionId, work, cwd);
+            return;
+          }
+          // 其余 active 状态（决策阶段/等待用户）→ 不打扰，交给既有回合逻辑。
+          return;
+        }
+        // 侧文件 inactive 且已清空（被误关/中断后无人恢复）：按 Theseus 真相重建并派发。
+        const now = Date.now();
+        const last = kickThrottle.get(sessionId);
+        if (last !== void 0 && now - last < KICK_THROTTLE_MS) return;
+        kickThrottle.set(sessionId, now);
+        const cfg = scope?.get?.() ?? {};
+        const personas = scenePersonasOf(cfg, 'knowledge');
+        if (target.pending === null) {
+          // apply：主控者执行阶段——重开竞技场并注入 apply 回合提示。
+          writeArenaState(sessionId, { active: true, scene: 'knowledge', phase: ARENA_PHASE_K_APPLY, pendingDispatch: null, kStage: '', kNext: '', kResult: '', workflowId, reviewOutcome: null });
+          installMainPersona(agent);
+          steerArenaNote(resolveMainAgent(sessionId), '[arena-v2] 宿主：workflow 已处于 apply 阶段（readiness 已 CLEARED）。请按当前「竞技阶段」执行 apply（theseus-apply-change）。');
+          ctx.logger?.info?.('arena-v2: knowledge auto-resume -> apply turn for ' + sessionId);
+          return;
+        }
+        const question = target.pending === 'explore'
+          ? collectUserQuestion(sessionEventsOf(agent?.session))
+          : '';
+        const text = renderKnowledgeTemplate(personas[target.templateKey], { ...st, workflowId }, cwd, '', question);
+        writeArenaState(sessionId, {
+          active: true, scene: 'knowledge', phase: target.phase, pendingDispatch: target.pending,
+          kStage: target.kStage, kNext: '', kResult: '', workflowId, reviewOutcome: null
+        });
+        installMainPersona(agent);
+        const roleName = target.role === 'challenger' ? '挑战者' : '探索者';
+        ctx.logger?.info?.('arena-v2: knowledge auto-resume -> ' + target.pending + ' (' + roleName + ') for ' + sessionId);
+        void dispatchKnowledge(sessionId, target.role, target.pending, text, roleName);
+      } catch (error) {
+        ctx.logger?.warn?.('arena-v2: knowledge auto-resume failed: ' + String(error?.message ?? error));
+      }
+    };
     // ── 意图识别（flash LLM）：判断用户消息 need_answer / no_need_answer ────
     // 并行预判：用户消息到达即进入作答阶段（主代理零延迟作答），同时用 flash 轻量
     // 模型（reasoningEffort=off）判定该消息是否需要竞技；turn/end 时取结果——
@@ -2150,7 +2434,19 @@ function apply(ctx) {
             void seedIntent(sessionId, userText);
             ctx.logger?.info?.('arena-v2: user msg -> phase ' + (isKnowledge ? 'k_init' : 'answer') + ' for ' + sessionId);
           } else {
-            ctx.logger?.info?.('arena-v2: user msg ignored (phase=' + st.phase + ') for ' + sessionId);
+            // 断点续跑：子代理工作阶段（knowledge k_explore/k_propose/k_review/k_readiness，
+            // business/qa challenge/verdict）被宿主进程重启/崩溃中断后（子代理回合死在
+            // 半途、无结算、无工件），用户发任意消息（如「继续」）→ 子代理未在运行则
+            // 幂等重派同一阶段，一条「继续」恢复所有断点、无需手动关开竞技场。
+            // 其余阶段（主代理交互阶段 k_init/k_gate/k_ask/k_verdict/k_apply/answer/revise/
+            // present）的用户消息照旧只记录——消息本身会到达主代理，由其按阶段指示推进。
+            const work = childWorkOf(st, isKnowledge);
+            if (work) {
+              ctx.logger?.info?.('arena-v2: user msg during child phase ' + st.phase + ' -> kick resume for ' + sessionId);
+              void kickResumeChild(sessionId, work, cwd);
+            } else {
+              ctx.logger?.info?.('arena-v2: user msg ignored (phase=' + st.phase + ') for ' + sessionId);
+            }
           }
           return;
         }
@@ -2264,6 +2560,15 @@ function apply(ctx) {
           // 会话事件取 session/event 处理器收到的当前 Session 快照（dsh 0.1.2-alpha.4
           // 的 Session 没有 .events；snapshotEvents() 与持久化 jsonl 同源，含 turn/start）。
           const eventsK = sessionEventsOf(session);
+          // 「子代理任务在途」的机械信号（0.33.22 泛化）：本回合主控者是否已向竞技场
+          // 子代理（按 label 缓存的 durable id）send_message 委派过任务——修订轮、中断后
+          // rerun、宿主漏派后的补派、NEED_QUESTION 答案直传等统一形态。k_gate / k_verdict
+          // 据此留场等待结算（不把「未确认/未 record」误判成关场），k_ask 据此跳过重复中继。
+          const arenaChildIds = [
+            subagents.get(explorerKey(sessionId, st.scene)),
+            subagents.get(challengerKey(sessionId, st.scene))
+          ].filter((v) => typeof v === 'string');
+          const childTaskInFlight = hasArenaChildDelegation(eventsK, arenaChildIds);
           if (st.phase === ARENA_PHASE_K_INIT) {
             // 续跑优先：会话焦点文件已有绑定时，以 Theseus 状态文件为真相跳到对应阶段
             // （跳过意图门控——重启/重开后用户发「继续」即可续跑，不会重跑已完成的阶段）。
@@ -2326,9 +2631,20 @@ function apply(ctx) {
             // （不再静默误关），可重开 `/arena knowledge` 发「继续」续跑。
             const answers = collectAskAnswerText(eventsK);
             const advance = parseAdvanceChoice(answers);
+            // 修订轮（0.33.20）：judge 未通过时主控者可问用户是否让探索者修订（固定 id
+            // arena_k_revision），同意后主控者用 send_message 向**既有探索者**委派修订轮
+            // （创建类工具仍被禁用）。此时本回合无 arena_k_advance 确认、也未 record——
+            // 不能走「未确认→关场」：保持 k_gate 等待探索者修订结算，再重新确认/record。
+            // 0.33.21/0.33.22：若主控者跳过提问、直接 send_message 委派（修订/rerun/补派
+            // 等），以 childTaskInFlight 机械信号兜底同样留场，不依赖主代理「记得提问」。
+            const revision = parseKnowledgeChoice(answers, 'revision');
             const expected = st.kNext === 'propose' || st.kNext === 'review' || st.kNext === 'apply' ? st.kNext : '';
             const actual = expected === '' ? '' : readWorkflowStage(cwd, st.workflowId);
-            const plan = planKnowledgeAdvance(advance, actual, expected);
+            const plan = planKnowledgeGate(advance, revision, actual, expected, childTaskInFlight);
+            if (plan.action === 'stay') {
+              ctx.logger?.info?.('arena-v2: k gate child task in flight (revision=' + String(revision) + ') -> stay k_gate for ' + sessionId);
+              return;
+            }
             if (plan.action === 'dispatch') {
               if (advance === null) {
                 ctx.logger?.info?.('arena-v2: k advance answer unparsed but state file advanced (' + expected + ') -> dispatch by file truth for ' + sessionId);
@@ -2376,6 +2692,12 @@ function apply(ctx) {
             const resumeStage = st.kStage !== '' ? st.kStage
               : (resumePhase === ARENA_PHASE_K_EXPLORE ? 'explore' : resumePhase === ARENA_PHASE_K_PROPOSE ? 'propose' : 'readiness');
             writeArenaState(sessionId, { active: true, phase: resumePhase, pendingDispatch: resumeStage, kStage: resumeStage, kPrev: '', kQuestion: '' });
+            if (childTaskInFlight) {
+              // 主控者已直接把答案 send_message 回传给探索者（替代宿主中继）→ 只恢复
+              // 阶段状态等待结算，不再重复派发中继答案（避免探索者收到双份）。
+              ctx.logger?.info?.('arena-v2: k ask answer relayed by controller directly -> skip host relay for ' + sessionId);
+              return;
+            }
             void dispatchKnowledge(sessionId, 'explorer', resumeStage, '[中继答案] ' + answer + '\n\n继续你当前阶段，按返回协议输出。', '探索者');
             return;
           }
@@ -2385,6 +2707,11 @@ function apply(ctx) {
               const reportChoice = parseKnowledgeChoice(answers, 'report');
               const advance = parseAdvanceChoice(answers);
               if (advance !== 'continue') {
+                if (childTaskInFlight) {
+                  // 主控者已直接向竞技场子代理委派任务（如自行派发 readiness/报告）→ 留场等结算。
+                  ctx.logger?.info?.('arena-v2: k READY gate child task in flight -> stay k_verdict for ' + sessionId);
+                  return;
+                }
                 // 用户未确认进入 user-readiness（暂停/没问）→ 不推进，关闭竞技场。
                 ctx.logger?.info?.('arena-v2: k READY advance gate -> close (choice=' + String(advance) + ') for ' + sessionId);
                 finishArenaRound(sessionId);
@@ -2406,6 +2733,10 @@ function apply(ctx) {
                 const text = renderKnowledgeTemplate(personasK.proposePrompt, st, cwd, '本轮为修订轮：先读 review.md 的 Action Items（含 FAIL 项）逐条回应，再生成/更新工件。');
                 writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_PROPOSE, pendingDispatch: 'propose', kStage: 'propose', kNext: '', reviewOutcome: null });
                 void dispatchKnowledge(sessionId, 'explorer', 'propose', text, '探索者');
+              } else if (childTaskInFlight) {
+                // 主控者已直接把修订任务 send_message 给探索者（替代宿主重派）→ 留场等结算。
+                ctx.logger?.info?.('arena-v2: k verdict ' + st.reviewOutcome + ' child task in flight -> stay k_verdict for ' + sessionId);
+                return;
               } else {
                 ctx.logger?.info?.('arena-v2: k verdict ' + st.reviewOutcome + ' -> close (choice=' + String(choice) + ') for ' + sessionId);
                 finishArenaRound(sessionId);
@@ -2698,11 +3029,11 @@ function apply(ctx) {
             const gateText = kNext === 'close'
               ? '[arena-v2 竞技阶段]\n当前阶段：收尾——探索者已返回 user-readiness 未 CLEARED。**先原样呈现探索者结算消息原文（不要摘要/改写）**，再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；然后按实际结果 record user-readiness-review.completed（NOT_CLEARED / NEEDS_REVISION），向用户总结评估结论与后续建议，然后结束回合（本轮竞技随之结束）。'
               : kNext === 'propose'
-                ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE explore。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record explore.completed CONFIRMED，简报一句，结束回合（系统会派发下一阶段）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。'
+                ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE explore。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record explore.completed CONFIRMED，简报一句，结束回合（系统会派发下一阶段）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。若 judge 未通过（存在 FAIL 项）→ 先向用户说明失败项，再用问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）询问是否让探索者修订；用户同意 → 用 send_message 向探索者（id 见上方）发送修订轮指令（列出失败项，要求补全后按返回协议输出一行 STAGE_DONE explore CONFIRMED 或 NEED_QUESTION / BLOCKED）后结束回合，等待探索者修订结算后再重新确认；用户拒绝 → 结束回合（系统关闭竞技场）。'
                 : kNext === 'review'
-                  ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE propose。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record propose.completed ARTIFACTS_CREATED，简报一句，结束回合（系统会派发挑战者审查）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。'
+                  ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE propose。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record propose.completed ARTIFACTS_CREATED，简报一句，结束回合（系统会派发挑战者审查）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。若 judge 未通过（存在 FAIL 项，如 design.md 缺失、specs 未登记）→ 先向用户说明失败项，再用问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）询问是否让探索者修订；用户同意 → 用 send_message 向探索者（id 见上方）发送修订轮指令（列出失败项，要求补全后按返回协议输出一行 STAGE_DONE propose ARTIFACTS_CREATED 或 NEED_QUESTION / BLOCKED）后结束回合，等待探索者修订结算后再重新确认；用户拒绝 → 结束回合（系统关闭竞技场）。'
                   : kNext === 'apply'
-                    ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE user-readiness CLEARED。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；\n2. 调用 ask_user_question 询问是否进入 apply：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record user-readiness-review.completed CLEARED，结束回合（系统进入 apply 回合）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。'
+                    ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE user-readiness CLEARED。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；\n2. 调用 ask_user_question 询问是否进入 apply：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record user-readiness-review.completed CLEARED，结束回合（系统进入 apply 回合）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。若 judge 未通过（存在 FAIL 项）→ 先向用户说明失败项，再用问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）询问是否让探索者修订；用户同意 → 用 send_message 向探索者（id 见上方）发送修订轮指令（列出失败项，要求补全后按返回协议输出一行 STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION 或 NEED_QUESTION / BLOCKED）后结束回合，等待探索者修订结算后再重新确认；用户拒绝 → 结束回合（系统关闭竞技场）。'
                     : '';
             const phaseText = state.phase === ARENA_PHASE_K_INIT
               ? '[arena-v2 竞技阶段]\n当前阶段：绑定/续跑——judge --current 确认 Theseus workflow 绑定（未绑定则用 bash 执行 mode on --bind <id> 或 --init <主题>）。**已绑定且 Theseus 阶段已推进（propose/review/user-readiness-review/apply）时，宿主会按 openspec/states 状态文件自动跳到对应阶段续跑，跳过已完成阶段**——你只需向用户简报当前阶段，然后结束回合。'
@@ -2877,6 +3208,7 @@ export {
   apply,
   challengerLabelFor,
   challengerModelOf,
+  childWorkOf,
   collectAnswer,
   collectAnotherRoundChoice,
   collectAskAnswerText,
@@ -2886,9 +3218,13 @@ export {
   composeRoundText,
   explorerLabelFor,
   foldArenaMode,
+  hasArenaChildDelegation,
   inject,
   isChallengerLabel,
   isExplorerLabel,
+  kickResumeText,
+  knowledgeChildStageOf,
+  knowledgeStageResumeOf,
   name,
   normalizeScene,
   parseArenaCommand,
@@ -2901,6 +3237,7 @@ export {
   parseVerdictOutcome,
   pickedAnswerText,
   planKnowledgeAdvance,
+  planKnowledgeGate,
   sanitizeSessionRefs,
   sceneFromAnyLabel,
   sceneFromLabel,

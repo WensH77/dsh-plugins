@@ -35,6 +35,7 @@ import {
   apply,
   challengerLabelFor,
   challengerModelOf,
+  childWorkOf,
   collectAnswer,
   collectAnotherRoundChoice,
   collectAskAnswerText,
@@ -44,9 +45,13 @@ import {
   composeRoundText,
   explorerLabelFor,
   foldArenaMode,
+  hasArenaChildDelegation,
   inject,
   isChallengerLabel,
   isExplorerLabel,
+  kickResumeText,
+  knowledgeChildStageOf,
+  knowledgeStageResumeOf,
   name,
   normalizeScene,
   parseAdvanceChoice,
@@ -58,6 +63,7 @@ import {
   parseStageResult,
   parseVerdictOutcome,
   planKnowledgeAdvance,
+  planKnowledgeGate,
   sanitizeSessionRefs,
   sceneFromAnyLabel,
   sceneFromLabel,
@@ -540,10 +546,15 @@ for (const key of ['mainPersona', 'explorerPrompt', 'challengerPrompt']) {
   const text = scenePersonasOf({}, 'knowledge')[key];
   assert.ok(text.includes('【工作语言】'), key + ' 含工作语言段');
 const kMainPersona = scenePersonasOf({}, 'knowledge').mainPersona;
-assert.ok(kMainPersona.includes('均由宿主派发'), '主控者 persona 声明探索者/挑战者由宿主派发');
-assert.ok(kMainPersona.includes('不得擅自创建子代理'), '主控者 persona 禁止擅自创建子代理');
+assert.ok(kMainPersona.includes('默认由宿主派发'), '主控者 persona 声明探索者/挑战者默认由宿主派发');
+assert.ok(kMainPersona.includes('subagent / subagent_fork）已对你禁用'), '主控者 persona 声明创建新子代理的工具已禁用（0.33.20：仅禁创建）');
+assert.ok(kMainPersona.includes('send_message 对你开放'), '主控者 persona 声明 send_message 开放');
+assert.ok(kMainPersona.includes('只能向**已存在**的探索者/挑战者委派任务'), '主控者 persona 声明只能向已存在的子代理委派');
 assert.ok(kMainPersona.includes('已有子代理优先'), '主控者 persona 声明续跑以已有代理优先');
-assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('已对你禁用'), 'knowledge 指令声明委派工具已禁用');
+assert.ok(kMainPersona.includes('不新建副本'), '主控者 persona 声明不新建副本');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('subagent / subagent_fork）已对你禁用'), 'knowledge 指令声明创建类委派工具禁用');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('send_message 对你开放'), 'knowledge 指令声明 send_message 开放');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('只能向**已存在**的探索者/挑战者委派任务'), 'knowledge 指令声明只能向已存在的子代理委派');
 assert.ok(kMainPersona.includes('goal 工具 get_goal / create_goal / update_goal'), '主控者 persona 声明 goal 工具在开启期间禁用');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('goal 工具（get_goal / create_goal / update_goal）与 /goal 命令在竞技场开启期间同样不可用'), 'knowledge 指令声明 goal 工具与 /goal 命令不可用');
 assert.ok(ARENA_GOAL_BLOCK_TEXT.includes('/goal') && ARENA_GOAL_BLOCK_TEXT.includes('已禁用'), '/goal 影子命令返回禁用提示');
@@ -663,6 +674,22 @@ assert.deepEqual(
 // planKnowledgeAdvance：k_gate 推进决策（文件真相兜底，杜绝「已确认却静默关场」）
 assert.deepEqual(planKnowledgeAdvance('continue', 'propose', 'propose'), { action: 'dispatch' }, '确认 + record 已生效 → 派发');
 assert.deepEqual(planKnowledgeAdvance('continue', 'explore', 'propose'), { action: 'retry' }, '确认但 record 未生效 → 停留重试');
+// planKnowledgeGate（0.33.20-0.33.22）：用户同意修订轮 / 本回合已向竞技场子代理
+// send_message 委派（统一「子代理任务在途」）→ 留场等待结算，不推进不关场
+assert.deepEqual(planKnowledgeGate(null, 'continue', 'propose', 'review'), { action: 'stay', reason: 'child-task-in-flight' }, '修订轮同意 → stay（即使无推进确认、record 未生效）');
+assert.deepEqual(planKnowledgeGate('continue', 'continue', 'propose', 'review'), { action: 'stay', reason: 'child-task-in-flight' }, '修订轮优先于推进判定');
+assert.deepEqual(planKnowledgeGate('continue', null, 'propose', 'propose'), { action: 'dispatch' }, '无在途任务时回落原决策：确认 + record → 派发');
+assert.deepEqual(planKnowledgeGate(null, 'stop', 'propose', 'review'), { action: 'close', reason: 'no-confirm-no-record' }, '拒绝修订且未 record → 关场');
+assert.deepEqual(planKnowledgeGate(null, null, 'propose', 'review', true), { action: 'stay', reason: 'child-task-in-flight' }, '0.33.21：本回合已 send_message 委派给竞技场子代理 → stay（主控者跳过提问也不误关）');
+assert.deepEqual(planKnowledgeGate('continue', null, 'propose', 'review', true), { action: 'stay', reason: 'child-task-in-flight' }, '在途检测优先于推进判定');
+// hasArenaChildDelegation（0.33.22）：与成因无关的「子代理任务在途」机械信号
+const kSendCall = (agentId) => ({ type: 'tool/call', data: { name: 'send_message', arguments: JSON.stringify({ agent_id: agentId, message: 'x' }) } });
+assert.equal(hasArenaChildDelegation([kSendCall('2bf6aff4-1')], ['2bf6aff4-1', 'c909fb57-1']), true, '命中竞技场子代理 id → 在途');
+assert.equal(hasArenaChildDelegation([kSendCall('other-agent')], ['2bf6aff4-1']), false, '目标是其它代理 → 不在途');
+assert.equal(hasArenaChildDelegation([{ type: 'tool/call', data: { name: 'bash', arguments: '{}' } }], ['2bf6aff4-1']), false, '非 send_message 调用不计');
+assert.equal(hasArenaChildDelegation([kSendCall('2bf6aff4-1')], []), false, '无竞技场子代理 id → 不误判');
+assert.equal(hasArenaChildDelegation([kSendCall('2bf6aff4-1')], ['x']), false, '目标不匹配 → 不在途');
+assert.equal(hasArenaChildDelegation(undefined, ['x']), false, '事件缺失 → false');
 assert.deepEqual(planKnowledgeAdvance('stop', 'propose', 'propose'), { action: 'close', reason: 'user-paused' }, '用户暂停 → 关闭（即使已 record）');
 assert.deepEqual(
   planKnowledgeAdvance(null, 'propose', 'propose'),
@@ -675,5 +702,77 @@ assert.deepEqual(
   '未确认且未 record → 关闭（附可见提示）'
 );
 assert.deepEqual(planKnowledgeAdvance(null, '', 'propose'), { action: 'close', reason: 'no-confirm-no-record' }, '状态文件读不到按未推进处理');
+
+// 断点续跑：子代理工作阶段判定 + 续跑目标 + 续跑短指令
+// knowledgeChildStageOf：只有子代理工作阶段有对应派发信息
+assert.deepEqual(knowledgeChildStageOf('k_explore'), { pending: 'explore', role: 'explorer' }, 'k_explore → 探索者 explore');
+assert.deepEqual(knowledgeChildStageOf('k_propose'), { pending: 'propose', role: 'explorer' }, 'k_propose → 探索者 propose');
+assert.deepEqual(knowledgeChildStageOf('k_review'), { pending: 'review', role: 'challenger' }, 'k_review → 挑战者 review');
+assert.deepEqual(knowledgeChildStageOf('k_readiness'), { pending: 'readiness', role: 'explorer' }, 'k_readiness → 探索者 readiness');
+assert.equal(knowledgeChildStageOf('k_gate'), null, 'k_gate 是主代理交互阶段 → null');
+assert.equal(knowledgeChildStageOf('k_ask'), null, 'k_ask 是主代理交互阶段 → null');
+assert.equal(knowledgeChildStageOf('k_verdict'), null, 'k_verdict 是主代理交互阶段 → null');
+assert.equal(knowledgeChildStageOf('k_init'), null, 'k_init 是主代理交互阶段 → null');
+assert.equal(knowledgeChildStageOf('awaiting'), null, 'awaiting → null');
+assert.equal(knowledgeChildStageOf('challenge'), null, 'business challenge 不属于 knowledge 映射 → null');
+
+// knowledgeStageResumeOf（0.33.23）：Theseus 阶段 → 竞技场续跑目标（agent/created 自愈 + k_init 续跑共用）
+assert.deepEqual(knowledgeStageResumeOf('explore'), { pending: 'explore', phase: 'k_explore', kStage: 'explore', role: 'explorer', templateKey: 'explorePrompt' }, 'explore → 探索者 explore');
+assert.deepEqual(knowledgeStageResumeOf('propose'), { pending: 'propose', phase: 'k_propose', kStage: 'propose', role: 'explorer', templateKey: 'proposePrompt' }, 'propose → 探索者 propose');
+assert.deepEqual(knowledgeStageResumeOf('review'), { pending: 'review', phase: 'k_review', kStage: '', role: 'challenger', templateKey: 'reviewPrompt' }, 'review → **挑战者**（本次卡点的目标）');
+assert.deepEqual(knowledgeStageResumeOf('user-readiness-review'), { pending: 'readiness', phase: 'k_readiness', kStage: 'readiness', role: 'explorer', templateKey: 'readinessPrompt' }, 'user-readiness-review → 探索者 readiness');
+assert.deepEqual(knowledgeStageResumeOf('apply'), { pending: null, phase: 'k_apply', kStage: '', role: null, templateKey: null }, 'apply → 主控者执行（不派子代理）');
+assert.equal(knowledgeStageResumeOf('archive'), null, 'archive → 无需续跑');
+assert.equal(knowledgeStageResumeOf('done'), null, 'done → 无需续跑');
+assert.equal(knowledgeStageResumeOf(''), null, '空/未知 → null');
+assert.equal(knowledgeStageResumeOf(undefined), null, 'undefined → null');
+
+// childWorkOf：active + 阶段与 pendingDispatch 一致才返回续跑目标
+assert.equal(childWorkOf({ active: false, phase: 'k_propose', pendingDispatch: 'propose', workflowId: 'w' }, true), null, '未开启 → null');
+assert.deepEqual(
+  childWorkOf({ active: true, phase: 'k_propose', pendingDispatch: 'propose', workflowId: 'w', scene: 'knowledge' }, true),
+  { scene: 'knowledge', phase: 'k_propose', pending: 'propose', role: 'explorer', workflowId: 'w' },
+  'knowledge k_propose 匹配 → 续跑探索者 propose'
+);
+assert.equal(
+  childWorkOf({ active: true, phase: 'k_propose', pendingDispatch: 'review', workflowId: 'w', scene: 'knowledge' }, true),
+  null,
+  'pendingDispatch 与阶段不一致 → null'
+);
+assert.equal(
+  childWorkOf({ active: true, phase: 'k_propose', pendingDispatch: 'propose', workflowId: '', scene: 'knowledge' }, true),
+  null,
+  'workflowId 为空（未绑定）→ null'
+);
+assert.equal(
+  childWorkOf({ active: true, phase: 'k_gate', pendingDispatch: null, workflowId: 'w', scene: 'knowledge' }, true),
+  null,
+  'k_gate 不续跑（主代理交互阶段）'
+);
+assert.deepEqual(
+  childWorkOf({ active: true, phase: 'challenge', pendingDispatch: 'challenge', scene: 'business' }, false),
+  { scene: 'business', phase: 'challenge', pending: 'challenge', role: 'challenger', workflowId: '' },
+  'business challenge 匹配 → 续跑挑战者'
+);
+assert.deepEqual(
+  childWorkOf({ active: true, phase: 'verdict', pendingDispatch: 'verdict', scene: 'qa' }, false),
+  { scene: 'qa', phase: 'verdict', pending: 'verdict', role: 'challenger', workflowId: '' },
+  'qa verdict 匹配 → 续跑挑战者'
+);
+assert.equal(childWorkOf({ active: true, phase: 'answer', pendingDispatch: null, scene: 'business' }, false), null, 'answer 阶段不续跑');
+
+// kickResumeText：续跑短指令自带阶段返回协议（不重发整份委派模板）
+const tExplore = kickResumeText({ pending: 'explore', workflowId: 'w' });
+assert.ok(tExplore.includes('theseus-explore') && tExplore.includes('STAGE_DONE explore CONFIRMED'), 'explore 续跑指令含协议行');
+const tPropose = kickResumeText({ pending: 'propose', workflowId: 'w' });
+assert.ok(tPropose.includes('theseus-propose') && tPropose.includes('STAGE_DONE propose ARTIFACTS_CREATED'), 'propose 续跑指令含协议行');
+const tReview = kickResumeText({ pending: 'review', workflowId: 'w' });
+assert.ok(tReview.includes('theseus-review-spec') && tReview.includes('Done'), 'review 续跑指令指向 Done');
+const tReadiness = kickResumeText({ pending: 'readiness', workflowId: 'w' });
+assert.ok(tReadiness.includes('STAGE_DONE user-readiness'), 'readiness 续跑指令含协议行');
+const tChallenge = kickResumeText({ pending: 'challenge', workflowId: '' });
+assert.ok(tChallenge.includes('质疑轮') && tChallenge.includes('续跑'), 'business challenge 续跑指令');
+const tVerdict = kickResumeText({ pending: 'verdict', workflowId: '' });
+assert.ok(tVerdict.includes('终评轮') && tVerdict.includes('续跑'), 'business verdict 续跑指令');
 
 console.log('arena-v2 smoke OK');
