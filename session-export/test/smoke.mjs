@@ -136,7 +136,10 @@ function fakeRes() {
   };
 }
 {
-  const session = { events: [userMsg('你好'), assistantMsg([{ type: 'reasoning', text: '想' }, { type: 'text', text: '你好！' }])] };
+  // dsh-session ≥0.1.2-alpha.4 的会话面：`snapshotEvents()` 是公开读取入口
+  // （`Session.events` getter 已在 alpha.4 移除）。
+  const evts = [userMsg('你好'), assistantMsg([{ type: 'reasoning', text: '想' }, { type: 'text', text: '你好！' }])];
+  const session = { snapshotEvents: () => evts };
   const env = { ctx: { sessions: { get: (id) => (id === 's1' ? session : undefined) }, logger: { warn() {} } }, config: { maxMessages: 4000, width: 860, scale: 2, partHeight: 10000, segmentHeight: 8000 } };
   const handler = buildDataHandler(env);
   const res = fakeRes();
@@ -152,6 +155,19 @@ function fakeRes() {
   const res404 = fakeRes();
   await handler({ url: '/session-export/data?session=nope' }, res404);
   check('unknown session -> 404', res404.state.status === 404);
+}
+
+// ── old-host fallback: sessions that still expose `.events` (pre-alpha.4) ────
+console.log('old-host fallback:');
+{
+  const events = [userMsg('旧宿主'), assistantMsg([{ type: 'text', text: '兜底路径' }])];
+  const session = { events };
+  const env = { ctx: { sessions: { get: () => session }, logger: { warn() {} } }, config: {} };
+  const handler = buildDataHandler(env);
+  const res = fakeRes();
+  await handler({ url: '/session-export/data?session=s1' }, res);
+  const parsed = JSON.parse(res.state.body);
+  check('fallback .events still exports', res.state.status === 200 && parsed.ok === true && parsed.messages.length === 2 && parsed.messages[1].text === '兜底路径', res.state.body);
 }
 
 // ── apply registration ──────────────────────────────────────────────────────

@@ -156,8 +156,14 @@ export function buildDataHandler(env) {
         sendJson(res, 404, { ok: false, code: 'session-not-found', message: 'no live session ' + sessionId });
         return;
       }
-      const { messages, skipped, truncated } = buildTranscript(session.events, { maxMessages: env.config.maxMessages });
-      const title = deriveTitle(session.events, messages);
+      // dsh-session 0.1.2-alpha.4 起 `Session.events` 公开 getter 被移除（事件日志改为
+      // 私有，公开读取统一走 snapshotEvents()/ownEvents()）。优先用 alpha 线的
+      // snapshotEvents()；旧宿主（rc 线/alpha.3，仍暴露 get events）走 .events 兜底。
+      const events = typeof session.snapshotEvents === 'function'
+        ? session.snapshotEvents()
+        : (Array.isArray(session.events) ? session.events : []);
+      const { messages, skipped, truncated } = buildTranscript(events, { maxMessages: env.config.maxMessages });
+      const title = deriveTitle(events, messages);
       sendJson(res, 200, {
         ok: true,
         sessionId,

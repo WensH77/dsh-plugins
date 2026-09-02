@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-session-export` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.1.6
+
+- **适配 dsh 0.1.2-alpha.4 的会话读取 API**：`dsh-session` 在 alpha.4 移除了 `Session.events` 公开 getter（事件日志改为私有，公开读取走 `snapshotEvents()`/`ownEvents()`），旧代码读 `session.events` 会静默导出空图。`buildDataHandler` 改为优先调用 `session.snapshotEvents()`，旧宿主（rc 线/alpha.3，仍暴露 `get events`）回退 `.events`——两端都可用，alpha.4 下恢复真实导出内容。
+
 ## 0.1.5
 
 - **`cordis` peer 从 `^4.0.1` 改为 `^4.0.2`**：跟随 dsh 0.1.2-alpha 通道（alpha 全家桶统一声明 `cordis ^4.0.2`），与仓库其它插件对齐。
