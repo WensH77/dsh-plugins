@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-session-export` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.1.4
+
+- **补上 `repository` 字段**（`WensH77/dsh-plugins#path:session-export`）：插件市场的「检查更新 / 更新 / 帮我更新」按 *市场安装记录 > 包内 repository > profile 依赖的 `github:` spec* 三级回退取仓库地址。此前本包缺第二级，若不是用 `github:` spec 安装（例如 `git+https://`、tarball、`link:`），更新通道会直接报「git 通道需要 GitHub 仓库地址（repository 字段缺失）」。
+
 ## 0.1.3
 
 - 导出**始终为一张完整长图**：移除按 `partHeight` 拆多张下载；总高超过浏览器 canvas 高度上限（约 32000px）时自动降低栅格倍率（scale）保持单张完整
