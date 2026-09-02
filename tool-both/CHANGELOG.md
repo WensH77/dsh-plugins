@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-tool-both` 的历次改动（由 git 提交历史整理）。安装、使用、仓库结构见 [README.md](./README.md)。
 
+## 0.2.4
+
+- **预设重新生成，BOTH 恢复全能力**：`preset/both/agent.cordis.yml` 按 dsh 0.1.2-alpha.4 自带的 `standard` 预设整体重做（原文件是 0.1.0-rc.8 时代的快照，一直没跟上）。dsh 自 alpha.3 起把 `/goal` 命令从 host 平面移到 preset 层（host 显式禁用、各 preset 自行挂载），旧快照因此缺了 `command-goal` 行——BOTH 模式会话里 `/goal` 斜杠命令消失。本次重做同步带回全部增量：goals 段补挂 `@deepseek-ai/dsh-command-goal`、subagent 配置补 `modelSelectionSettings: true`、`tool-web` 的 `fetch` 改回 `true`，并删去已失效的 `registerContinuableSetup` 时代注释。
+- 运行时已安装副本（`~/.dsh/.agent-presets/both/agent.cordis.yml`）已同步；新会话即生效。
+
 ## 0.2.3
 
 - **peer 范围切到 alpha 线**：`@deepseek-ai/dsh-home-paths` 从 `^0.1.0-rc.8` 改为 `^0.1.2-alpha.4`、`cordis` 从 `^4.0.1` 改为 `^4.0.2`——跟随 dsh 0.1.2-alpha 通道（`alpha` dist-tag 全家桶互相声明 `^0.1.2-alpha.4` / `cordis ^4.0.2`）。semver 下 `^0.1.2-alpha.4` 只匹配同一元组的预发布（上游切 `0.1.3-alpha` 需再 bump）；安装/运行期不受其强制，旧 rc 宿主照常运行。
