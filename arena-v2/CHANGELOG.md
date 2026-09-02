@@ -2,6 +2,63 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.13（fix：mainPersona【流程】step 4 同步——NOT_READY 统一与 READY 执行者约束此前漏改 persona 文本）
+
+- 0.33.11/0.33.12 只改了 handler、k_verdict 阶段指示与 `DEFAULT_KNOWLEDGE_INSTRUCTION`，**漏了 `mainPersona` 自己的【流程】step 4**——设置页（/arena-v2/personas 渲染 mainPersona）里仍是旧文案「NOT_READY → 不再送审…关闭」，与运行行为矛盾。
+- 修复：mainPersona【流程】step 4 同步——
+  - READY：一次问两道（报告 + 进入 user-readiness，固定 id），两道确认后**只结束回合**，user-readiness 与 requirement-report 由宿主派探索者执行（fork reporter 后台出 PPT），不得亲自加载/执行这两个 skill；
+  - NEEDS_REVISION：呈现原文 → 问 `arena_k_revision`；同意 → record NEEDS_REVISION（推回 propose）→ 宿主重派探索者；拒绝 → record NEEDS_REVISION 后关闭；
+  - NOT_READY：与 NEEDS_REVISION **同样处理**（原文列出 FAIL 项 → 问是否再来一轮；同意 → record NEEDS_REVISION 推回 propose；拒绝 → record NOT_READY 后关闭）。
+- 测试：persona 含「NOT_READY → 与 NEEDS_REVISION 同样处理」，不再含旧版「NOT_READY → 不再送审」。
+
+## 0.33.14（fix：工作区门控下只剩单场景时不再显示场景选择）
+
+- chip：可选场景（allowedScenes）**多于一个**才显示 hover 场景浮层；只剩一个（如非 intranet-aio 只剩 business）时点击 chip 直接开启/关闭，开启后不再自动弹浮层。
+- hero：可选场景 ≤1 时整个场景分段控件隐藏（开启即默认场景），不再出现单按钮场景段。
+- 纯客户端改动。
+
+## 0.33.13（feat：知识沉淀 / 测试用例场景仅限 intranet-aio 工作区）
+
+- 场景按工作区门控：新增配置 `sceneWorkspace`（scene -> cwd 必须包含的目录子串；'' 或缺失 = 不限），默认 `knowledge: 'intranet-aio'`、`qa: 'intranet-aio'`——**知识沉淀与测试用例仅在 intranet-aio 工作区可见可用**（含其 worktrees 子目录），business 不受限。可整体改配置放开。
+- 宿主侧：
+  - `/arena-v2/state` 返回 `allowedScenes`（由会话 cwd + sceneWorkspace 计算；cwd 未知只放行业务）；
+  - `/arena` 命令显式指定被门控场景且 cwd 不满足 → 拒绝（提示仅限 intranet-aio）；
+  - `/arena-v2/state?scene=` 写场景同门控（400）。
+- 客户端：chip hover 场景浮层与空白页 hero 场景分段控件按 `allowedScenes` 过滤按钮；当前场景若被隐藏则回落 business。
+- 纯函数 `scenesAllowedIn(cwd, gate)` 导出并测试（intranet-aio 命中 / 非命中 / 子目录 / cwd 未知 / 无门控配置）。
+
+## 0.33.12（fix：把方案 A 的执行者边界写死——readiness/PPT 归子代理，主代理不得自跑）
+
+- 确认方案 A 一直在代码里（k_verdict READY → `dispatchKnowledge('explorer','readiness')` + reportNote），从未改过；被改的是**运行行为**——最新会话主代理在 READY 回合抢跑，自己加载并执行了 theseus-user-readiness-review / requirement-report（seq 15395/15397 实证）。原因是提示只写了「拿到回答后结束回合」，没有负向约束。
+- 修复（三处负向约束）：
+  1. k_verdict READY 阶段指示：拿到回答后**只结束回合，不要执行任何阶段 skill**——user-readiness 与 requirement-report 由宿主派探索者执行（探索者 fork reporter 后台生成 PPT）；不得亲自加载/执行 theseus-user-readiness-review、requirement-report skill、不得自己提问预测题。
+  2. 主控者 persona【分工】新增「**阶段 skill 不由你执行**」：theseus-explore/propose/user-readiness-review/review-spec/requirement-report 全部由子代理执行，主控者只做 CLI/record、门控提问、T6 apply。
+  3. `DEFAULT_KNOWLEDGE_INSTRUCTION` 第 4 条 READY 段同步。
+- 探索者 fork 不受主代理 `tools.restrict` 影响（dsh-agent-presets `composeFrom` 绑定父的 preset 而非父 agent scope，已代码级确认）——方案 A 链路完整可用。
+- 测试：persona 含「阶段 skill 不由你执行」「不得亲自加载/执行它们」；指令含禁止自跑两个 skill。
+
+## 0.33.11（feat：竞技场不再区分 NOT_READY 与 NEEDS_REVISION——都走「问用户是否再来一轮修订」）
+
+- 此前 `k_verdict` 对 NOT_READY 直接收尾关闭（workflow 停 review），对 NEEDS_REVISION 问用户是否再来一轮——两者本质都是「探索者要重新修订」，区分没有意义且会误关（如 `event-page-trend-tracker` 的元数据 FAIL 其实可修）。现合并：
+  - `k_verdict` 处理器：`not_ready` 与 `needs_revision` 走同一分支——呈现 review.md 原文（NOT_READY 含五维 FAIL 项）→ 问 `arena_k_revision` → 用户选「再来一轮」→ 宿主重新派发探索者 propose（修订轮，读 review.md Action Items / FAIL 项）；选「结束」/ 没问 → 按原 verdict 收尾关闭。
+  - 阶段指示：NOT_READY 与 NEEDS_REVISION 提示统一——选「再来一轮」→ 主控者本回合 record review.completed NEEDS_REVISION（把 workflow 从 review 推回 propose）再结束回合；选「结束」→ 按原 verdict record（NOT_READY / NEEDS_REVISION）后总结关闭。
+  - `DEFAULT_KNOWLEDGE_INSTRUCTION` 第 4 条与 README 流程图同步。
+- 测试：指令含「NOT_READY 与 NEEDS_REVISION 同样处理」「推回 propose」。
+
+## 0.33.10（fix：knowledge 检索源清单补上「历史会话」）
+
+- 用户此前明确要求搜索源包含历史会话；0.33.0 把历史会话从 business 检索指引拆为独立的 `sessionHistoryGuide`（全场景、触发词驱动）时，**knowledge 的 `sceneSearchGuide`（KNOWLEDGE_SEARCH_GUIDE）遗漏了该项**——清单只有 openspec / workflow 运行时 / spec-meta / Jira / 代码库。结果是「最新一轮知识沉淀不翻历史会话」（用户消息无触发词 + 知识检索源清单里没有历史源）。
+- 修复：`KNOWLEDGE_SEARCH_GUIDE` 新增第 6 项「历史会话（dsh 会话历史）」——绑定/续跑与准备探索输入时先 session-search 短查询 → `--show` 拉全文 → 素材并入探索输入并交叉验证；引用注明 session id 与日期。至此知识场景的检索源清单与用户预期一致，且不再只依赖触发词。
+- 测试：knowledge 指引含「历史会话」「session-search」；原「历史会话不重复出现在 knowledge 指引」断言改为「作为检索源之一出现」。
+
+## 0.33.9（feat：主控者不得擅自委派——prompt 硬性要求 + 主会话机械禁用委派工具）
+
+- **主控者 persona【分工】新增硬性要求**（措辞微调、核心不变）：「**探索者与挑战者均由宿主派发**：执行 Theseus workflow 期间，不得擅自创建子代理（subagent / subagent_fork / send_message 已对你禁用）；任何任务续跑都以已有子代理优先（复用其上下文），不新建副本。」
+- **主会话机械禁用**：知识沉淀场景开启时 `tools.restrict` 的 deny 列表从 `['goal']` 扩为 `['goal','subagent','subagent_fork','send_message']`（business/qa 仍只禁 goal），关闭竞技场时恢复。宿主派发走 subagents 服务 API、子代理会话是独立工具作用域，均不受影响——从机制上杜绝主控者「替宿主开子代理 / send_message 插队」的越权路径（此前仅靠提示词约束，实测出现 4 次野子代理 + 1 次补发）。
+- **knowledge 指令第 1 条同步**：「subagent / subagent_fork / send_message 工具已对你禁用…任务续跑均以已有代理优先」。
+- **收尾提醒补续跑指引**：knowledge 关闭时注入「如需继续：先 /arena knowledge 重开，宿主按 openspec/states 当前阶段自动续跑并复用已有探索者/挑战者——不要自行创建或委派子代理」。
+- 测试：主控者 persona 含「均由宿主派发 / 不得擅自创建子代理 / 已有子代理优先」，knowledge 指令含「已对你禁用」。
+
 ## 0.33.8（fix：peer 范围切到 alpha 线——跟随 dsh 0.1.2-alpha 通道）
 
 - **peerDependencies 全线切到当前 alpha 线**：`@deepseek-ai/dsh-*`（agent / api-remotes / client-locale / client-ui-conversation / llm / session / subagent / system-prompt / tools）从 `^0.1.1-rc.2`（system-prompt 为 `^0.1.0-rc.7`）改为 `^0.1.2-alpha.4`，`cordis` 从 `^4.0.1` 改为 `^4.0.2`——与 alpha 通道全家桶（`alpha` dist-tag = `0.1.2-alpha.4`，且各包 peer 互相声明 `^0.1.2-alpha.4` / `cordis ^4.0.2`）对齐。

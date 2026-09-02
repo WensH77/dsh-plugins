@@ -85,7 +85,8 @@ window.__ModuleLoader__.load({
 						setMeta({
 							scene: typeof data.scene === "string" ? data.scene : "business",
 							hasChallenger: data.hasChallenger === true,
-							challengerScene: typeof data.challengerScene === "string" ? data.challengerScene : null
+							challengerScene: typeof data.challengerScene === "string" ? data.challengerScene : null,
+							allowedScenes: Array.isArray(data.allowedScenes) ? data.allowedScenes : null
 						});
 					}
 				} catch (_restoreFailure) {
@@ -132,7 +133,8 @@ window.__ModuleLoader__.load({
 								setMeta((m) => ({
 									scene: typeof data.scene === "string" ? data.scene : (m?.scene ?? "business"),
 									hasChallenger: typeof data.hasChallenger === "boolean" ? data.hasChallenger : (m?.hasChallenger ?? false),
-									challengerScene: typeof data.challengerScene === "string" ? data.challengerScene : (m?.challengerScene ?? null)
+									challengerScene: typeof data.challengerScene === "string" ? data.challengerScene : (m?.challengerScene ?? null),
+									allowedScenes: Array.isArray(data.allowedScenes) ? data.allowedScenes : (m?.allowedScenes ?? null)
 								}));
 							}
 						})
@@ -151,8 +153,8 @@ window.__ModuleLoader__.load({
 						const nowActive = !active;
 						setActive(nowActive);
 						// 开启后自动弹出场景浮层（鼠标此刻已在 chip 上，无需移开再 hover）；
-						// 关闭则收起。场景锁定（已有挑战者）的会话 showScenePick 为 false，不会弹。
-						if (nowActive) setExpanded(true);
+						// 关闭则收起。仅当可选场景多于一个时弹（单场景直接开，无需选择）。
+						if (nowActive && sceneKeys.length > 1) setExpanded(true);
 						else setExpanded(false);
 						arenaBus.emit();
 					}
@@ -184,10 +186,13 @@ window.__ModuleLoader__.load({
 					setError(reason instanceof Error ? reason.message : String(reason));
 				});
 			};
-			// 场景浮层只在**竞技场已开启**（且会话尚无挑战者、场景仍可调）时展示——
-			// 未开启时 hover 不反应（chip 是普通开关，点击以默认场景开启后再 hover 换场景）；
-			// 已有挑战者 → 场景锁定，不显示场景选择。
-			const showScenePick = active === true && meta !== null && meta.hasChallenger !== true;
+			// 当前工作区可选场景（宿主 allowedScenes 过滤；null = 旧宿主/全量）。
+			const sceneKeys = meta !== null && Array.isArray(meta.allowedScenes) && meta.allowedScenes.length > 0
+				? meta.allowedScenes
+				: ["business", "knowledge", "qa"];
+			// 场景浮层只在**竞技场已开启**、会话尚无挑战者、且**可选场景多于一个**时展示——
+			// 未开启时 hover 不反应；已有挑战者场景锁定；只剩一个场景时点击即开、无需选择。
+			const showScenePick = active === true && meta !== null && meta.hasChallenger !== true && sceneKeys.length > 1;
 			return (0, react_jsx_runtime.jsxs)("span", {
 				ref: wrapRef,
 				className: ArenaChip_module_css_default.wrap,
@@ -207,7 +212,7 @@ window.__ModuleLoader__.load({
 				}), showScenePick && expanded && (0, react_jsx_runtime.jsx)("span", {
 					className: "ra2-chipScenes",
 					"data-arena-chip-scenes": "",
-					children: ["business", "knowledge", "qa"].map((key) => (0, react_jsx_runtime.jsx)("button", {
+					children: sceneKeys.map((key) => (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						className: "ra2-sceneBtn",
 						"aria-pressed": (meta?.scene ?? "business") === key ? "true" : "false",
@@ -427,7 +432,7 @@ window.__ModuleLoader__.load({
 				m.toggle.setAttribute("aria-label", heroT(m.active ? "toggle.aria.on" : "toggle.aria.off"));
 				m.toggle.setAttribute("title", heroT(m.active ? "toggle.title.on" : "toggle.title.off"));
 				m.toggle.disabled = m.toggleBusy;
-				m.sceneSeg.style.display = m.active ? "" : "none";
+				m.sceneSeg.style.display = m.hideScenes === true ? "none" : (m.active ? "" : "none");
 				for (const key of HERO_SCENES) {
 					const btn = m.buttons[key];
 					btn.setAttribute("aria-pressed", m.scene === key ? "true" : "false");
@@ -449,9 +454,29 @@ window.__ModuleLoader__.load({
 				if (heroMount !== m) return;
 				if (data !== null) {
 					m.active = data.active === true;
+					m.allowedScenes = Array.isArray(data.allowedScenes) ? data.allowedScenes : null;
 					if (HERO_SCENES.includes(data.scene)) m.scene = data.scene;
+					applySceneVisibility(m);
 				}
 				repaintHero(m);
+			};
+
+			// 按宿主返回的 allowedScenes 应用场景按钮可见性（null = 全部可见/旧宿主）。
+			// 被隐藏的场景若恰好是当前场景 → 回落 business（工作区门控不允许）。
+			// 可选场景 <=1 时整个场景段隐藏（无需选择，开启即默认场景）。
+			const applySceneVisibility = (m) => {
+				if (m === null) return;
+				if (m.allowedScenes === null) return;
+				m.hideScenes = m.allowedScenes.length <= 1;
+				for (const key of HERO_SCENES) {
+					const btn = m.buttons[key];
+					if (!btn) continue;
+					btn.style.display = m.hideScenes || !m.allowedScenes.includes(key) ? "none" : "";
+				}
+				if (!m.allowedScenes.includes(m.scene)) m.scene = "business";
+				requestAnimationFrame(() => {
+					if (heroMount === m) positionThumb(m);
+				});
 			};
 
 			const cleanupHero = () => {
@@ -546,7 +571,7 @@ window.__ModuleLoader__.load({
 					thumbObserver = null;
 				}
 
-				heroMount = { row, sessionId, wrap, toggle, sceneSeg, thumb, buttons, errorEl, thumbObserver, active: false, scene: "business", toggleBusy: false, sceneBusy: false, error: null, lastSig: null };
+				heroMount = { row, sessionId, wrap, toggle, sceneSeg, thumb, buttons, errorEl, thumbObserver, active: false, scene: "business", toggleBusy: false, sceneBusy: false, error: null, lastSig: null, allowedScenes: null, hideScenes: false };
 				repaintHero(heroMount);
 				void restoreHero(heroMount);
 			};

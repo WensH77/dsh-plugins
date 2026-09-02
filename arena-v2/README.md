@@ -80,8 +80,9 @@ business/qa 沿用质疑-修正-终评双回合；knowledge 走 Theseus workflow
        NEEDS_REVISION → 问用户是否再来一轮修订（arena_k_revision）
                         同意 → 重新 k_propose（读 review.md Action Items）→ 再送审（无轮次上限）
                         拒绝 → 主控者总结 + record NEEDS_REVISION → 关闭
-       NOT_READY      → 主控者原文逐条列出五维 FAIL 项 / Action Items / 未完成 Anchor Trace，
-                        record NOT_READY → 关闭（workflow 停在 review 待人工处理）
+       NOT_READY      → 与 NEEDS_REVISION 同样处理：原文逐条列出五维 FAIL 项 / Action Items /
+                        未完成 Anchor Trace，再问用户是否再来一轮修订（arena_k_revision）——
+                        同意 → record NEEDS_REVISION 推回 propose 重新修订再送审；拒绝 → 关闭
 关闭 → 注入收尾提醒：T7 worktree-commit-push / T8 openspec-impl-doc / T9 theseus-archive-change 需用户明确指示
 ```
 
@@ -108,6 +109,7 @@ business/qa 沿用质疑-修正-终评双回合；knowledge 走 Theseus workflow
 | `maxVerdictRounds` | `3` | **保留但不参与判定**：终评轮不记录、不累加、不设上限，是否再来一轮由用户逐轮决定 |
 | `sceneSearchGuide` | 见 lib/index.js | 按场景注入主代理的检索指引（`scene -> 文本`，空 = 不注入；business 多源检索，knowledge Theseus 知识源，qa 空） |
 | `sessionHistoryGuide` | 见 lib/index.js | 历史会话检索指引：全场景共用、**只注入主代理**（子代理不注入），能力式条件（有 `session-search` 等能力才生效）；`''` = 不注入 |
+| `sceneWorkspace` | `{ knowledge: 'intranet-aio', qa: 'intranet-aio' }` | 场景工作区门控：`scene -> cwd 必须包含的目录子串`（'' 或缺失 = 不限）。**知识沉淀 / 测试用例默认仅 intranet-aio 工作区可见可用**（含 worktrees 子目录）；business 不限。改空值可放开 |
 | `scenePersonas` | `{}` | 各场景 persona 覆盖：`{ business|knowledge|qa: { mainPersona?, challengerPrompt?, challengePrompt?, verdictPrompt?, explorerPrompt?, explorePrompt?, proposePrompt?, reviewPrompt?, readinessPrompt?, reportPrompt? } }`，缺省回落场景默认/顶层（business）值；knowledge 后六字段为探索者 persona 与阶段委派模板 |
 | `knowledgeInstruction` | 见 lib/index.js | knowledge 场景注入主代理的自动竞技指令（Theseus 对抗流程，主控者视角；占位符 `{workflowId}`/`{explorePrompt}`/…） |
 | `subagentProvider` | `spawn` | 宿主创建竞技场子代理使用的 provider（对应预设 delegation 组的 subagent provider） |

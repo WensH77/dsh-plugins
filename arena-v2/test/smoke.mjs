@@ -60,6 +60,7 @@ import {
   sceneFromAnyLabel,
   sceneFromLabel,
   scenePersonasOf,
+  scenesAllowedIn,
   subagentProviderOf
 } from '../lib/index.js';
 
@@ -331,6 +332,18 @@ assert.equal(defaults.sceneSearchGuide.business, DEFAULT_SEARCH_GUIDE, 'business
 assert.ok(defaults.sceneSearchGuide.knowledge.includes('openspec/specs'), 'knowledge 注入 Theseus 知识源检索指引');
 assert.ok(defaults.sceneSearchGuide.knowledge.includes('openspec/states'), 'knowledge 检索指引含 workflow 运行时');
 assert.ok(defaults.sceneSearchGuide.knowledge.includes('spec-meta.ts'), 'knowledge 检索指引含 spec-meta');
+assert.ok(defaults.sceneSearchGuide.knowledge.includes('历史会话'), 'knowledge 检索指引含历史会话源');
+
+// 工作区门控：knowledge/qa 默认仅 intranet-aio；business 不限
+const wsGate = { knowledge: 'intranet-aio', qa: 'intranet-aio' };
+assert.deepEqual(scenesAllowedIn('/Users/wens.huang/Documents/intranet-aio', wsGate), ['business', 'knowledge', 'qa'], 'intranet-aio 工作区三个场景全可用');
+assert.deepEqual(scenesAllowedIn('/Users/wens.huang/Documents/dsh-plugins', wsGate), ['business'], '非 intranet-aio 只余 business');
+assert.deepEqual(scenesAllowedIn('/Users/wens.huang/Documents/intranet-aio/worktrees/intranet-mod/x', wsGate), ['business', 'knowledge', 'qa'], 'intranet-aio 子目录同样命中');
+assert.deepEqual(scenesAllowedIn('', wsGate), ['business'], 'cwd 未知只放行业务');
+assert.deepEqual(scenesAllowedIn('/any/path', {}), ['business', 'knowledge', 'qa'], '无门控配置 = 全部可用');
+assert.equal(defaults.sceneWorkspace.knowledge, 'intranet-aio', 'sceneWorkspace.knowledge 默认 intranet-aio');
+assert.equal(defaults.sceneWorkspace.qa, 'intranet-aio', 'sceneWorkspace.qa 默认 intranet-aio');
+assert.ok(defaults.sceneSearchGuide.knowledge.includes('session-search'), 'knowledge 检索指引含 session-search 入口');
 assert.equal(defaults.sceneSearchGuide.qa, '', 'qa 默认不注入');
 assert.ok(DEFAULT_SEARCH_GUIDE.includes('mcp__jira'), '指引含 Jira MCP 工具');
 assert.ok(DEFAULT_SEARCH_GUIDE.includes('git log'), '指引含 git 检索');
@@ -350,7 +363,7 @@ assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('SKILL.md 为准'), '与工作区 SKIL
 // 历史会话检索指引：独立字段、全场景、只给主代理、能力式条件
 assert.equal(defaults.sessionHistoryGuide, DEFAULT_SESSION_HISTORY_GUIDE, 'sessionHistoryGuide 默认值一致');
 assert.ok(!DEFAULT_SEARCH_GUIDE.includes('session-search'), '历史会话已拆出，不再内嵌在 business 多源检索里');
-assert.ok(!KNOWLEDGE_SEARCH_GUIDE.includes('session-search'), '历史会话不重复出现在 knowledge 检索指引里');
+assert.ok(KNOWLEDGE_SEARCH_GUIDE.includes('session-search'), '历史会话作为检索源之一出现在 knowledge 指引里（用户明确要求搜索源包含历史会话）');
 assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('session-search'), '历史会话指引点名 session-search 等价能力');
 assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('没有该能力则整段跳过'), '无该能力时优雅跳过');
 assert.ok(DEFAULT_SESSION_HISTORY_GUIDE.includes('搜不到不等于没发生过'), '含字面子串匹配的边界说明');
@@ -523,6 +536,18 @@ assert.ok(scenePersonasOf({}, 'knowledge').readinessPrompt.includes('correctInde
 for (const key of ['mainPersona', 'explorerPrompt', 'challengerPrompt']) {
   const text = scenePersonasOf({}, 'knowledge')[key];
   assert.ok(text.includes('【工作语言】'), key + ' 含工作语言段');
+const kMainPersona = scenePersonasOf({}, 'knowledge').mainPersona;
+assert.ok(kMainPersona.includes('均由宿主派发'), '主控者 persona 声明探索者/挑战者由宿主派发');
+assert.ok(kMainPersona.includes('不得擅自创建子代理'), '主控者 persona 禁止擅自创建子代理');
+assert.ok(kMainPersona.includes('已有子代理优先'), '主控者 persona 声明续跑以已有代理优先');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('已对你禁用'), 'knowledge 指令声明委派工具已禁用');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('NOT_READY 与 NEEDS_REVISION 同样处理'), 'NOT_READY 与 NEEDS_REVISION 不再区分（都问是否再来一轮修订）');
+assert.ok(kMainPersona.includes('阶段 skill 不由你执行'), '主控者 persona 声明阶段 skill 不由其执行');
+assert.ok(kMainPersona.includes('不得亲自加载/执行它们'), '主控者 persona 禁止亲自加载阶段 skill');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('你不得亲自加载/执行 theseus-user-readiness-review / requirement-report skill'), '指令禁止主代理自跑 readiness/报告 skill');
+assert.ok(kMainPersona.includes('NOT_READY → 与 NEEDS_REVISION 同样处理'), 'persona 流程 step 4 的 NOT_READY 与 NEEDS_REVISION 已统一');
+assert.ok(!kMainPersona.includes('NOT_READY → 不再送审'), 'persona 不再出现旧版「NOT_READY 不再送审」文案');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('推回 propose'), '再来一轮时把 workflow 推回 propose 重新修订');
   assert.ok(text.includes('工作语言用中文'), key + ' 声明工作语言为中文');
   assert.ok(text.includes('保持英文原文不翻译'), key + ' 声明硬信息不翻译');
 }
