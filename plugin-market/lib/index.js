@@ -1019,7 +1019,7 @@ async function removeDisableBlock(patchPath, id) {
  * @returns {{ ok, packageName, usedChannel, entryId, bundle, error, restart }}
  */
 /** 适配的 dsh 最佳版本：基于该版本开发，其它版本可能不兼容。 */
-const DSH_BEST_FIT_VERSION = '0.1.0-rc.7'
+const DSH_BEST_FIT_VERSION = '0.1.2-alpha.4'
 /** 安装任务队列：jobId → job。状态流：pulling（拉取中）→ reviewing（审查中）→ pending（待安装）→ installing（安装中）→ 完成/取消。 */
 const installJobs = new Map()
 /** 正在生成的审查（按 包名@版本 键）→ Promise：同一键的生成只跑一次，连点/双端触发时等待并复用结果。 */
