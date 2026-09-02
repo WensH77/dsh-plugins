@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.12.3
+
+- **「帮我安装」与「帮我更新」统一走同一份极简 prompt**：两条通道原先各有一段长提示词（角色设定、包名、失败信息、profile 目录、pnpm 修复清单、安全约束）。现在合并为 `buildHelpPrompt()`，正文只有一句 —— `帮我安装、更新插件：<GitHub 地址>，不要自行重启`。诊断与安装/更新的具体做法交给会话自行决定；`不要自行重启` 是硬要求，重启 dsh web 会把会话所在的进程一并杀掉。
+- **地址规整**：新增 `helpRepoUrl()`，把 `owner/name`、`github:owner/name#path:sub`、完整 URL（含 `.git` 后缀）统一规整成 `https://github.com/owner/name[#path:子目录]`。
+- **「帮我更新」补上仓库地址的三级回退**：此前 `/update/help` 只读包内 `repository` 字段，CLI 安装的插件（含插件市场自身）拿不到地址。新增 `resolveModuleRepository()`，与已安装列表用同一条链：*市场安装记录 > 包内 repository > profile 依赖里的 `github:` spec*；客户端也一并把已解析的 `repository` 传过来。
+- **拉取 / 审查阶段失败现在也能点「帮我安装」**：此前按钮只认 `status === 'failed'`（即「审查通过、点了确认安装之后」的失败），而拉取失败走的是 `status = 'pending'` + `error`，于是最常见的一类失败反而没有出口。现在任何失败态都提供按钮（待安装但未失败的任务不受影响，仍不显示）。
+- **自身补上 `repository` 字段**（`WensH77/dsh-plugins#path:plugin-market`），不再只靠「profile 依赖 spec」这一级兜底。
+
 ## 0.12.2
 
 - **修复「声明了 `@deepseek-ai/dsh-*` peer 的插件一律装不上」**：隔离暂存目录（`~/.dsh/plugin-market-staging/job-*`）此前只写 `package.json`，没有 `pnpm-workspace.yaml`，pnpm 于是退回默认 `auto-install-peers=true`，去 registry 解析插件 peer 的整条传递闭包；而 `@deepseek-ai/dsh-*` 全系只发预发布版（`dsh-invariants` 的 `latest` 还停在 `0.0.1-rc.1`，实际在用的是 `next: 0.1.1-rc.2` / `alpha: 0.1.2-alpha.3`），归并出的 `^0.1.1` 之类范围匹配不到任何版本，**拉取阶段直接 `ERR_PNPM_NO_MATCHING_VERSION` 失败**（安装/检查更新/更新三条通道全中，因为都走 `stagePackage`）。现在暂存目录会写入与 dsh `initProfile` 完全一致的 `pnpm-workspace.yaml`（`nodeLinker: hoisted` + `autoInstallPeers: false`），拉取只留一条 peer 警告，插件能否运行仍由宿主的 `profiles/node_modules` 回退链决定，与此处解析无关

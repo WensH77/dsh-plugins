@@ -617,7 +617,7 @@ window.__ModuleLoader__.load({
 					return snap && typeof snap.current === "string" ? snap.current : "";
 				} catch { return ""; }
 			};
-			// 帮我安装：失败任务 → 开启可见 harness 会话并附上报错，由会话诊断并完成安装
+			// 帮我安装：失败任务（拉取/审查/安装任一阶段）→ 开启可见 harness 会话，由会话完成安装
 			const doHelpInstall = (job, event) => {
 				if (event) event.stopPropagation();
 				const key = "help:" + job.jobId;
@@ -634,11 +634,11 @@ window.__ModuleLoader__.load({
 					.catch((error) => flash(error.message, false))
 					.finally(() => leaveBusy(key));
 			};
-			// 帮我更新：更新失败的插件 → 开启可见 harness 会话并附上失败信息，由会话诊断并完成更新
+			// 帮我更新：更新失败的插件 → 开启可见 harness 会话，由会话完成更新（与「帮我安装」同一条通道、同一份 prompt）
 			const doHelpUpdate = (entry) => {
 				const key = "help-update:" + entry.entryId;
 				enterBusy(key);
-				call("/plugin-market/update/help", { entryId: entry.entryId, sessionId: readCurrentSessionId() })
+				call("/plugin-market/update/help", { entryId: entry.entryId, repository: entry.repository ?? "", sessionId: readCurrentSessionId() })
 					.then((data) => {
 						refresh();
 						flash(tpl(t("helpUpdateDone"), { sessionId: data.sessionId ?? "" }), true);
@@ -884,8 +884,8 @@ window.__ModuleLoader__.load({
 					: h("ul", { className: "pm-list" }, jobs.map((job) => {
 						// 失败判定（显示报错与失败状态）：显式 failed，或拉取/审查失败（status 仍为 pending 但带 error）
 						const jobFailed = job.status !== "helping" && (job.status === "failed" || (job.error != null && job.error !== ""));
-						// 可「帮我安装」：仅安装阶段失败（审查选中时指审查结束、点击确认安装之后的失败；拉取/审查失败不提供）
-						const jobHelpable = job.status === "failed";
+						// 可「帮我安装」：任何失败阶段都提供（拉取 / 审查 / 安装），一律交给 help session 处理
+						const jobHelpable = jobFailed;
 						const statusLabel = job.status === "pulling"
 							? (t("jobPulling") + " · " + Math.max(1, Math.round((Date.now() - job.createdAt) / 1000)) + "s")
 							: job.status === "reviewing"
