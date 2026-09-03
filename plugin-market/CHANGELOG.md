@@ -2,6 +2,15 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.13.0
+
+- **dsh 升级分析新增 L1 本地插件契约扫描（机器判定，先于 LLM 分析）**：点击状态灯分析前，先做确定性代码级核对，替换原先「把插件名 `name@version` 丢给模型猜」的弱做法——
+  - **使用指纹采集**：枚举已安装用户插件，读取本地包内 `dsh.client.inject` 注入名、`lib/*.js` 代码里的 `@deepseek-ai/…` 引用字面量、`dependencies`/`peerDependencies` 声明的宿主依赖范围；
+  - **宿主闭包对比**：从 npm registry 按**精确版本号**（dist-tag 不可信，`latest` 停在旧 rc）拉取目标版本 `dsh-web-app` + `dsh-base` 的依赖闭包，与本地运行树闭包对比，找出「已装闭包存在、目标版本消失」的宿主模块；
+  - **机器判定 findings**：`removed-module`（引用的宿主模块在目标闭包消失，高置信破坏点）与 `range-break`（声明的 `@deepseek-ai/dsh-*` 范围不再覆盖目标版本，宿主同版本发布直接越界）两类高置信结论；短 inject id / cordis / schemastery 等 infra 依赖只作为使用指纹上下文给模型参考、不做机器结论；registry 不可达时降级 `local-only`（仅指纹）不阻塞分析；
+  - **结果入库展示**：扫描结果随判定持久化到 `~/.dsh/plugin-market-dsh.json`（目标版本未变时复用），判定弹窗新增「本地插件契约扫描（机器判定）」证据区（受影响插件逐条高亮、clean 插件计数、闭包消失模块、扫描告警）；
+  - **prompt 引导**：升级分析 prompt 前段嵌入扫描结论，并指示 affectedPlugins 优先依据机器判定、clean 插件需有明确 diff 证据才可补入、不得仅凭插件名猜测。
+
 ## 0.12.5
 
 - **「清理缓存」与「审查模型/推理程度」合并到同一行**：审查开启时，模型/推理程度两个下拉与清理缓存按钮并排显示（清理按钮右对齐，窄屏自动换行）；审查关闭时清理按钮仍单独一行，行为不变

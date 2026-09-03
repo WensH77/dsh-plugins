@@ -246,6 +246,11 @@ window.__ModuleLoader__.load({
 			dshReportVersionBreaking: "破坏性变更",
 			dshReportVersionMissing: "（该版本变更未能分析）",
 			dshReportVersionEmpty: "（该版本无变更说明）",
+			dshReportScan: "本地插件契约扫描（机器判定）",
+			dshReportScanIntro: "用「本地插件使用指纹 × 目标版本宿主模块闭包」做的确定性核对，先于 LLM 分析。",
+			dshReportScanClean: "{count} 个插件机器判定未命中",
+			dshReportScanLocalOnly: "（registry 不可达，仅指纹、无闭包核对）",
+			dshReportScanCleanNone: "（机器判定未发现受影响插件）",
 		};
 		const en = {
 			tab: "Plugin Market",
@@ -372,6 +377,11 @@ window.__ModuleLoader__.load({
 			dshReportVersionBreaking: "breaking change",
 			dshReportVersionMissing: "(changes for this version could not be analyzed)",
 			dshReportVersionEmpty: "(no change notes for this version)",
+			dshReportScan: "Local plugin contract scan (machine)",
+			dshReportScanIntro: "Deterministic check of local plugin usage fingerprints against the target version's host module closure, run before the LLM analysis.",
+			dshReportScanClean: "{count} plugin(s) machine-clean",
+			dshReportScanLocalOnly: "(registry unreachable — fingerprints only, no closure check)",
+			dshReportScanCleanNone: "(no machine findings)",
 		};
 
 		// ── helpers ──────────────────────────────────────────────────────────
@@ -1171,6 +1181,73 @@ window.__ModuleLoader__.load({
 							p.style.opacity = "0.7";
 							p.textContent = t("dshReportAffectedNone");
 							body.appendChild(p);
+						}
+						// L1 契约扫描（机器判定）证据区：展示机器结论与闭包核对结果
+						if (d && d.scan && (Array.isArray(d.scan.plugins) || Array.isArray(d.scan.errors))) {
+							const scan = d.scan;
+							const scanH = document.createElement("p");
+							scanH.className = "pm-modalText";
+							scanH.style.fontWeight = "600";
+							scanH.textContent = t("dshReportScan") + "：";
+							body.appendChild(scanH);
+							const scanIntro = document.createElement("p");
+							scanIntro.className = "pm-modalText";
+							scanIntro.style.opacity = "0.7";
+							scanIntro.style.fontSize = "12px";
+							scanIntro.textContent = t("dshReportScanIntro");
+							body.appendChild(scanIntro);
+							if (scan.method === "local-only") {
+								const note = document.createElement("p");
+								note.className = "pm-modalText";
+								note.style.color = "var(--dsw-alias-state-warn-primary)";
+								note.textContent = t("dshReportScanLocalOnly");
+								body.appendChild(note);
+							}
+							if (Array.isArray(scan.errors) && scan.errors.length > 0) {
+								const note = document.createElement("p");
+								note.className = "pm-modalText";
+								note.style.opacity = "0.8";
+								note.textContent = scan.errors.join("；");
+								body.appendChild(note);
+							}
+							const hits = (Array.isArray(scan.plugins) ? scan.plugins : []).filter((p) => p && Array.isArray(p.findings) && p.findings.length > 0);
+							const cleanCount = (Array.isArray(scan.plugins) ? scan.plugins : []).filter((p) => p && p.machine === "clean").length;
+							if (hits.length === 0) {
+								const p = document.createElement("p");
+								p.className = "pm-modalText";
+								p.style.opacity = "0.8";
+								p.textContent = cleanCount > 0 ? tpl(t("dshReportScanClean"), { count: String(cleanCount) }) + " · " + t("dshReportScanCleanNone") : t("dshReportScanCleanNone");
+								body.appendChild(p);
+							} else {
+								const ul = document.createElement("ul");
+								ul.className = "pm-reviewRisks";
+								hits.forEach((p) => {
+									const li = document.createElement("li");
+									const head = document.createElement("span");
+									head.style.fontWeight = "600";
+									head.textContent = p.moduleName + (p.version ? "@" + p.version : "") + "：";
+									li.appendChild(head);
+									const sub = document.createElement("ul");
+									sub.className = "pm-reviewRisks";
+									p.findings.forEach((f) => {
+										const subLi = document.createElement("li");
+										subLi.textContent = f.message ?? "";
+										if (f.severity === "high") subLi.style.color = "var(--dsw-alias-state-error-primary)";
+										else if (f.severity === "medium") subLi.style.color = "var(--dsw-alias-state-warn-primary)";
+										sub.appendChild(subLi);
+									});
+									li.appendChild(sub);
+									ul.appendChild(li);
+								});
+								body.appendChild(ul);
+								if (cleanCount > 0) {
+									const p = document.createElement("p");
+									p.className = "pm-modalText";
+									p.style.opacity = "0.8";
+									p.textContent = tpl(t("dshReportScanClean"), { count: String(cleanCount) });
+									body.appendChild(p);
+								}
+							}
 						}
 						if (d.details) {
 							const h = document.createElement("p");
