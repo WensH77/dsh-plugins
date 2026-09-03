@@ -2,6 +2,108 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.34（opt：readiness→apply 确认门去重——面试已确认「apply 启动决定」时不再重复提问）
+
+- **现象**（90527e05 14:28–14:30）：「进入 apply」被问两次且语义重复：先由就绪评审面试内的 `readiness_q14b`（apply 启动决定）询问并获确认「确认进入 apply」，随后 readiness CLEARED 的确认门又用 `arena_k_advance` 再问一次「是否确认进入 apply 阶段」。
+- **修复**：k_gate（kNext=apply）阶段指示新增**先去重**步骤——若已进行的就绪评审 Q&A 已含「apply 启动决定」且用户已选「确认进入 apply」（read user-readiness.review.md 核对），**不再重复提问**：直接呈现结算与 Requirement Alignment 表、judge、record `user-readiness-review.completed CLEARED` 后结束回合；仅当评审未含该决定（或未确认）才问 `arena_k_advance`。宿主推进不变：主控者不提问时按文件真相（Theseus 到 apply）走 dispatch 进入 apply 回合。
+- **同类问题排查结论**：① review READY 门一次问两道（报告 + 进入 user-readiness）为既有设计（两问内容不同、非重复）；② 「上一轮提问被中断未收到作答」重发为重启/未答恢复兜底（非同一轮重复）；③ explore/propose 的 Metadata Interview 与阶段确认门不同义、无重叠；④ readiness 面试内其它问题与确认门不同义。**唯一语义重复点即 apply 这一处**，已修。
+- 测试：npm test 全绿（阶段指示为模板文案，无新增纯函数）。
+
+## 0.33.33（fix：user-readiness NEEDS_REVISION 确认修订后未派发 propose、竞技场误关）
+
+- **现象**（90527e05 13:17–13:18）：user-readiness 结算 `NEEDS_REVISION`（用户拍板 Panel Discussion 语义变更需回 propose 收编）→ 主控者呈现并问 `arena_k_advance` → 用户确认"推回修订" → 主控者补齐 record（`review.completed READY` + `user-readiness-review.completed NEEDS_REVISION`，workflow 已回 **propose**）→ 回合结束宿主却**直接关场**：探索者从未被委派重新 propose。
+- **根因**：readiness 阶段 `NOT_CLEARED / NEEDS_REVISION` 结算把 k_gate 置为 `kNext='close'`；k_gate 的 close 分支**无条件 finishArenaRound**——没有像 review NEEDS_REVISION（k_verdict 分支）那样的"确认修订 → 派发 propose"路径，也不看 Theseus 文件真相。主控者按 persona 已 record（文件已到 propose），宿主仍关场。
+- **修复**：k_gate `kNext==='close'` 分支先读 Theseus 状态：若 `currentStage==='propose'`（=用户已确认修订且 record 生效的文件真相）→ 写 k_propose/pendingDispatch=propose 并**派发 propose 修订轮**给探索者（修订提示引用 user-readiness.review.md 差异与 Action Items），不关场；仅当文件仍停在 user-readiness-review / review（未确认/未 record）才 `finishArenaRound` 收尾。
+- 附带核实：关场路径 `finishArenaRound` 调用 `disposeMainPersona`（卸载 arena persona 段、arena 工具、/goal 影子、restrict/guard disposer）——arena 退出后主代理 persona 不残留；本现场 13:18:29 的 `active:true+awaiting+清空` 状态是 `setArenaMode(开启)` 的写入形状（用户重新开启），非清理遗漏。
+- 测试：npm test 全绿（该分支属宿主状态机，无新增纯函数用例）。
+
+## 0.33.33（feat：就绪题问答透传重构——宿主直问（方案 B），主代理退出 Q&A 热路径；对账随弹窗必现）
+
+- **背景**：问题/答案透传链此前含 4 个模型/运行时关节（探索者打包→回合末条截断→主代理转述提问→主代理回传），0.33.27–0.33.32 六连补丁全部是"提高某一关节自觉度"，反复打补丁治标。
+- **重构（方案 B，团队共享文件零改动）**：
+  - 宿主在 readiness NEED_QUESTION 结算时，经 **`ctx.userQuestions.ask`** 直接向用户提问（UI 与 ask_user_question 同一管道；`agent` 传 live 主代理）；`user-readiness.review.md` 仍只读不改、探索者产出与 theseus skill 不变；
+  - **答案正确与否的透传由宿主保证**：把文件末节 Reconciliation 作为**问题文本前缀**随弹窗逐题呈现（aligned/discrepancy/未作预测均含），不再依赖探索者打包/主代理转述/注入时序；
+  - 作答由宿主**原文回传**探索者（无措辞漂移），随后恢复 k_readiness 等待下一题或阶段结算；
+  - **防双重提问（结构性）**：pre-step 在就绪题回合把消息整体替换为「宿主代问」注记（含对账）——主代理看不到题面 JSON；k_ask turn/end 在宿主提问挂起期间跳过"未取到回答→回等待态"处理；
+  - **回退链**：userQuestions 不可用 / 题面解析失败 / ask 中止 → 自动回退旧路（k_ask + 主控者按 0.33.29 必读规则转问 + 0.33.31 注入兜底），流程不断。
+- 纯函数：`buildReadinessAskQuestions(questionJsonText, reconc)`（解析 NEED_QUESTION JSON、对账前缀、剔除线索字段只留展示字段）、`readinessTurnHostAsk(st, msgText)`（是否由宿主代问并替换回合）。
+- 测试：新增 8 用例（对账前缀/线索剔除/非 JSON/k_readiness 判定/非题消息/非 active）；npm test 全绿。
+
+## 0.33.32（fix：agent/pre-step 注入时序——pre-step 与宿主 k_ask 写入存在竞态，settle 裸题回合漏注入）
+
+- **现象**（0.33.31 实测）：注入只出现在用户「继续」触发的回合（13:05:02），而探索者发裸题直接触发的回合（12:54:46 q12、12:58:58 q13、13:06:00 q14）**均无注入**——主控者照样先裸问、后一轮才补对账，观感乱序。
+- **根因**：pre-step（agent-loop 回合开始）与宿主的 session/event→写 k_ask 存在竞态；settle 触发的回合里 pre-step 常先于 k_ask 写入执行 → 0.33.31 的判定（仅当 phase===k_ask）拿到的是 k_readiness → 跳过注入。
+- **修复**：注入判定放宽到两类：①宿主已写 k_ask（kPrev=k_readiness，含用户续跑回合）；②仍停在 **k_readiness/pendingDispatch=readiness** 但本回合消息**确在携带一道就绪题**（含 `NEED_QUESTION`）——用消息内容判定，不依赖宿主状态写入先后；探索者已打包对账（含标记）仍跳过；非题消息（如 reporter 状态同步）不误注入；同一对账去重不变。
+- 测试：`readinessPreStepShouldInject` +3（k_readiness+NEED_QUESTION→注入、k_readiness 非题消息→不注入、纯 NEED_QUESTION→注入）；npm test 全绿。
+
+## 0.33.31（fix：宿主可见注入 agent/pre-step——裸题回合开始前把对账作为 plugin 消息并入，机械兜底的最终形态）
+
+- **遗留问题**（90527e05 对账丢失链收官）：0.33.27 宿主注记通道不落地；0.33.28/0.33.29 主控者必读指令（实证在其 system prompt）不执行（12:52 后 q11/q12 提问前零次 read）；0.33.30 探索者"对账+下一题同条回合末消息"硬格式仍属模型自觉。三者都非机械保证。
+- **修复（机械）**：arena 注册 `agent/pre-step`（与 theseus `<theseus-workflow-context>` 同一注入机制）——当主控者即将转问"裸题"（竞技场状态 k_ask/kPrev=k_readiness 且触发回合的消息未含对账标记）时，宿主在回合开始前读 `user-readiness.review.md` 末节 Reconciliation，作为 **plugin 消息**（`source:{kind:'plugin'}`）并入本回合：
+  - 对账与提问同回合、对用户与模型都可见——不依赖主控者/探索者任何一边的模型自觉；
+  - 探索者已打包对账（消息含标记）→ 不重复注入；同一对账只注入一次（in-memory 去重）；首题/无待问/非 knowledge 均跳过；
+  - 全 try/catch：pre-step 基决策失败返回空 enter，注入失败回落原决策，绝不影响回合推进。
+- 纯函数：`readinessPreStepShouldInject(st, msgText)`、`stepTextOf(messages)`、`arenaPluginMessage(text)`（plugin 消息信封，镜像 theseus）。
+- 测试：`readinessPreStepShouldInject` 6 用例（裸题→注入/无问题/非 readiness/非 active/非 knowledge/已打包不重复）；npm test 全绿。
+- 说明：plugin 消息的 UI 呈现形态与 theseus workflow-context 一致（进程内同机制）；这是当前 dsh 插件 API 下能做到的**最高机械保证**。
+
+## 0.33.30（fix：约束探索者——就绪评审对账改「单条回合末消息硬格式」+ 送达机制解释）
+
+- **遗留问题**（90527e05 复现链）：主控者侧已加两层指令（0.33.28 条件必读、0.33.29 无条件必读+违例观测），实测 12:52 重启加载 0.33.29 后 q11/q12 提问前主控者**仍零次 read 文档**——文本规则对主控者无效。回到根因：探索者每轮其实都产出对账（写进 user-readiness.review.md），但把它发成**回合中段** assistant 文本、随后继续工具调用，回合末条只有「下一题」——dsh 只回传**回合最后一条**，对账从未送达主控者/用户。探索者自身并不知道"中段消息不会送达"（它以为自己已经发出了）。
+- **修复（约束探索者）**：探索者 persona 的对账规则升级为**硬格式 + 机制解释**：
+  - 「就绪评审对账硬格式」：每道题作答后，对账（规则揭示、用户答案、**答案是否正确 aligned/discrepancy/未作预测**）+ 下一道题必须放在**同一条回合末消息**，固定排版（对账前置、NEED_QUESTION 在后）；首题免对账。
+  - **整个回合只能以这一条 assistant 消息收尾**——先写完全部工件（Reconciliation），**禁止回合中段先发对账再继续调用工具**；
+  - 明确写出原因：dsh 只回传回合最后一条，中段输出=用户永远看不到答案对错（90527e05 根因），主控者只会收到裸的下一题并被直接转问。
+- 主控者侧 0.33.29 无条件必读保留作双保险；宿主补发（0.33.27）保留作兜底。
+- 测试：探索者 persona 断言 +3（硬格式、回合最后一条、禁止中段先发）；npm test 全绿。
+
+## 0.33.29（fix：readiness 对账规则改「无条件必读」+ 宿主执行观测——0.33.28 条件式指令模型未执行）
+
+- **遗留问题**（接 0.33.28）：0.33.28 把对账义务写进主控者指令（条件式："若消息未含对账则 read"），实测 12:40 重启后指令确在主控者 system prompt（两处标记验证），q10→q11 仍直接转问——LLM 对"先判断缺失再动作"的条件分支执行不稳定。文档侧证据充分：`user-readiness.review.md` 每答一题都写 Reconciliation（aligned / discrepancy / 未作预测均记录），宿主解析器可稳定取出——问题只在主控者不去读。
+- **修复**：规则改为**无条件必读**（删除"若缺失"判断，少一个分支）：就绪评审每收到一道新题、转问用户前**必须先用 read 读 `user-readiness.review.md`**；末节若有尚未呈现的 `Reconciliation`（含 User answer 的最后一节，无论 aligned/discrepancy/未作预测）先**原文呈现**再转问下一题；无未呈现对账（首题/已呈现）则直接转问。同步更新主控者常驻指令与 k_ask 阶段提示两处。
+- **执行观测（0.33.29）**：新增纯函数 `readinessAskSkippedDocRead(events)`——turn/end 时检测当前回合是否出现"未 read user-readiness.review.md 就调用就绪题 ask_user_question"的违例，命中记 warn 日志（不阻断；阻断需 dsh 提供宿主可拦截/改写子代理分发的能力，超出插件范围）。
+- 测试：指令新文案断言 +2；`readinessAskSkippedDocRead` 5 用例（未读即问→true、先读后问→false、非就绪题不检、读在问后→true、缺失→false）；npm test 全绿。
+- 说明：若无条件必读仍被模型跳过，下一档是宿主导流（裸题弹回 + 探索者补发）或 dsh 侧宿主 ask/append 能力——按需再上。
+
+## 0.33.28（fix：readiness 对账兜底载体修正——「每答必回对账」改为主控者转问前的硬性义务）
+
+- **遗留问题**（接 0.33.27）：0.33.27 的宿主补发用 `steerArenaNote` 注记让主控者转述上一题对账——但注记经 steer 注入与「subagent-settled 触发主控者回合同帧」竞争，实际不落地（本会话历史 ⚠ 类注记零出现）；探索者仍把对账发成回合中段消息（只回传回合末条）→ 用户仍看不到「答案正确与否」（90527e05 重核 R1/R2 复现：探索者 12:32:38/12:33:44 均产出对账，末条只有下一题，主控者直接转问）。
+- **修复（方案 A）**：把义务放在唯一执行者（主控者）身上、数据源用确定性文件——知识沉淀主代理指令与 k_ask 阶段提示同时加入**硬性步骤**：转问下一题前，若本消息未含上一题「答案是否正确」/「对账」且非本场首题 → **必须先 read `user-readiness.review.md` 末节（含 `User answer` 的最后一节）的 `Reconciliation` 原文原样转述给用户，再转问下一题；上一题对账未呈现前禁止转问下一题**。探索者漏打包/中段消息都不再导致用户看不到对账——主控者有明确动作（read 文件）与禁令（禁跳步转问）。
+- 测试：`DEFAULT_KNOWLEDGE_INSTRUCTION` 断言 +2（含硬性步骤与禁令文案）；npm test 全绿。
+
+## 0.33.27（fix：user-readiness 预测题「每答必回对账」的机械兜底——探索者对账消息丢失时宿主代读补发）
+
+- **事故**（session-90527e05）：user-readiness 面试中 Q1 答完用户能看到「第 1 题对账 / 答案是否正确」，Q2/Q3（Pulse、客户主导）答完后看不到——只有下一题。探索者 b7f2664a 会话日志证明其**每轮都写了对账**（含答案是否正确）；但 Q2/Q3 轮把对账发成**回合中段**的 assistant 文本、随后继续工具调用，回合末条只含「下一题 NEED_QUESTION」——dsh 只把子代理**回合末条**回传父会话 → 对账丢失。Q1 轮把对账与下一题打包在同一条末条消息（探索者 persona `readinessPrompt` 规定的形态）→ 正常送达。属 LLM 消息排版漂移，时好时坏。
+- **修复（机械兜底，不依赖探索者排版）**：knowledge 结算处理在 readiness 阶段收到 NEED_QUESTION（下一题）时，先检查该消息是否已含对账标记（`hasReadinessReconcileText`：含「答案是否正确」/「对账」则探索者已打包，跳过）；缺失时宿主代读 `openspec/changes/<workflow>/user-readiness.review.md` 中**最后一题已作答**的 Reconciliation（`lastAnsweredReconciliationOf`，按段落取含 `User answer` 的末节），以 ⧉ 注形式指示主控者先把该对账原文转述给用户再转问下一题。用户答「不确定——一起核对」时文件同样有 Reconciliation（规则揭示 + 未作预测说明），兜底天然兼容。
+- 纯函数 + 测试：`hasReadinessReconcileText` 3 用例、`lastAnsweredReconciliationOf` 4 用例（含「不确定」fixture、无已答题返回 null）；npm test 全绿。
+- 主控者 persona 本已允许 read user-readiness.review.md 原文引用（.784），此处把「内容可得性」从模型自觉升级为宿主保证。
+
+## 0.33.26（fix：「主控者禁创建新子代理」补执行级硬门 tools.guard——restrict 对 own 层注册的 subagent 结构性无效）
+
+- **事故**（session-90527e05，接 0.33.25）：propose 确认后主代理在 10:30:40 直接用 `subagent` 工具**自建了挑战者** ee8feef6（label 是自拟描述串、非 arena-challenger），宿主 k_gate 文件真相派发又建了正式挑战者 99b0fc28 → 双挑战者并存；99b0fc28 随后被外部停止、review.md 无人产出、竞技场关闭。
+- **根因**：0.33.20 起「主控者禁 subagent/subagent_fork」的实现只有 `tools.restrict({deny})` **软过滤**，而 dsh-tools 的 restrict 只能过滤 scope「继承」（global/preset 层）的工具（`restrictableNames` 只收 inherited）；`subagent` 由 dsh-tool-subagent 注册在**会话 own 层**（runtimeCtx 动态注册），不在可限制清单 → restrict 整单抛 "unknown global tool" → catch 逐名重试仍失败、只记 warn → **对 subagent 从未生效**。对照实证：同一次 deny 里继承层的 goal 工具全程被滤、subagent_fork 重启后被滤，唯独 own 层的 subagent 每轮 request header 都可见。
+- **修复**：`installMainPersona`（knowledge 场景）在 restrict 之外补 `agent.ctx.tools.guard()` **执行级硬门**——guard 在 dispatch 前按 `exec.name` 判定，命中 `CHILD_CREATE_TOOL_NAMES` 即返回拒绝文案（工具调用整体失败，主代理可见原因）。纯函数 `childCreateDenyReason(name)` 输出文案（undefined = 放行）。作用域精确：经 agent.ctx 注册只对该会话主代理生效，子代理 own 层不受影响（探索者 fork reporter 的 subagent_fork 照常可用）；`send_message` 不在名单（向已存在探索者/挑战者委派保持开放）；宿主派发走 ctx.subagents API 不经主代理工具、不受影响。restrict 仍负责隐藏继承层工具（goal / subagent_fork）。
+- 测试：`childCreateDenyReason` 六用例（subagent/subagent_fork 拒绝、send_message/list_agents/缺失名放行）；npm test 全绿。
+- 恢复/验证：重启加载 0.33.26 后，在任一 knowledge 竞技场会话让主代理尝试 `subagent`/`subagent_fork` → 应收到拒绝文案；`send_message` 照常可用。
+
+## 0.33.25（fix：子代理任务在途信号窗口化——修复 NEED_QUESTION 中继后 k_gate 被历史 send_message 永久 stay 的卡死）
+
+- **事故**（session-90527e05，2026-09-03 上午）：知识沉淀 explore → propose 全流程走通、用户确认、主控者 record `propose.completed`（Theseus 已推进到 **review**），但 10:05:33 回合结束后宿主**没有**派发 review 挑战者——侧文件停在 k_gate、review.md 不存在，流程卡死在 review 之前。
+- **根因**：0.33.22 把「子代理任务在途」检测（`hasArenaChildDelegation`）接到 knowledge turn/end 时用的是 `sessionEventsOf(session)` **全量历史**事件，只认"历史里是否出现过对竞技场子代理的 send_message"。而 0.33.20 起的正常路径——探索者 NEED_QUESTION（如 Metadata Interview）时主控者用 `send_message` 把用户回答直传探索者（k_ask 中继）——会**永久残留**在事件流里；此后每次 k_gate 决策 `childTaskInFlight=true` → `planKnowledgeGate` 无条件返回 **stay**（stay 优先于 dispatch/close，且只记日志无任何可见提示）→ 竞技场既不开下一阶段也不关场。同会话两次确认门对照：explore 门（09:56，历史无 send_message）正常派发 propose；propose 门（10:05，历史含 09:59:35 的中继）卡死——唯一差别即那一次中继。
+- **修复**：新增纯函数 `roundEventsOf(events)`（取**最后一次 turn/start 之后**的事件；无 turn/start 回退最后一次 subagent-settled 之后；锚点语义与 `collectAskAnswerText` 一致），在途检测改为 `hasArenaChildDelegation(roundEventsOf(eventsK), …)`——只有**本回合**主控者向竞技场子代理的 send_message 才算在途。修订轮/补派/rerun 等**当回合**委派仍正确 stay；历史回合的合法中继不再误伤。k_gate / k_ask / k_verdict 三处共用同一修正信号。
+- 测试：`roundEventsOf` 六用例（空/全量回退/settle 兜底/turn/start 优先）+ 组合回归两条（历史中继 → 不在途 → 确认门 dispatch 派发 review——本次事故形态；本回合委派 → 仍在途 → stay）；npm test 全绿。
+- 恢复：重启加载 0.33.25 后，对卡住的会话重开 `/arena knowledge` 发「继续」走 k_init 续跑（读 currentStage=review → 直接派发 review 挑战者），或直接在已开状态发「继续」由 k_gate 回合按修正后的在途判定正常派发。
+
+## 0.33.24（feat：knowledge 探索者与挑战者模型分离——探索者改用官方 deepseek-v4-flash · high）
+
+- **动机**：知识沉淀的探索者是高频长链路工件生成角色（explore/propose/readiness 全由它跑），与评审对抗的挑战者共用 deepseek-v4-pro · max 性价比低；探索者切到官方 deepseek-v4-flash · 推理深度 high，挑战者保持不变。
+- **改动**：
+  - 新增 `DEFAULT_EXPLORER_MODEL = { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' }` 与纯函数 `explorerModelOf(cfg)`（配置优先、缺省字段回退默认，与 `challengerModelOf` 同构）；
+  - Config 新增 `explorerModel`（z.object 默认值同上），settings 注册 base 同步加入；
+  - `dispatchKnowledge` 按角色取模型：`role === 'explorer'` → `explorerModelOf`，挑战者（含 business/qa）→ `challengerModelOf`；创建请求的 `agentOptions` 随之分离。
+- **注意**：模型随创建请求注入并持久化进子代理 descriptor——**已存在的探索者（如 2bf6aff4）继续用旧模型**，新配置只对之后新建的探索者生效（新工作流/新会话，或现有子代理被重建后）。探索者 fork 的 reporter（requirement-report PPT）继承探索者模型（fork 不带 modelSelection），即也会用 flash·high。
+- 测试：`DEFAULT_EXPLORER_MODEL` 值、`explorerModelOf` 四用例（空配置回退/覆盖/缺省推理深度/与挑战者默认分离）、Config 默认一致；README 配置表与示例 yaml 增 `explorerModel`；npm test 全绿。
+
 ## 0.33.23（feat：知识沉淀断点自愈——宿主在 `agent/created` 时机按 Theseus 真相对齐，自动重建并派发缺失阶段）
 
 - **事故**（session-98182034）：竞技场在 17:36:49 被误关（0.33.21 已修其成因），主控者随后在竞技场关闭状态下完成了 propose.completed 的 record（Theseus 推进到 review），17:38:50 回合结束时宿主因竞技场已关没有派发 review 挑战者——流程停在 review 之前，而主控者被禁创建子代理、无法自救。原恢复路径（重开竞技场 + 发「继续」走 k_init 续跑）依赖用户手动操作。

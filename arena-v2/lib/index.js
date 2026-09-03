@@ -5,8 +5,9 @@
 // 挑战者：首轮用 subagent 创建（拿到 durable 的 subagentId），后续轮次用
 // send_message 给同一个 id 续聊，挑战者的上下文跨轮次累积。
 //
-// 挑战者/探索者模型：**固定** deepseek-v4-pro · 推理深度 max，与父代理完全解耦——
-// 父代理用什么模型都不影响。dsh 0.1.2-alpha.4 起按**创建请求**注入：ContinuableStartSpec.request
+// 挑战者/探索者模型：**固定**（挑战者 deepseek-v4-pro · max；knowledge 探索者自 0.33.24
+// 起为官方 deepseek-v4-flash · high），与父代理完全解耦——父代理用什么模型都不影响。
+// dsh 0.1.2-alpha.4 起按**创建请求**注入：ContinuableStartSpec.request
 // 传 agentOptions（provider/model/reasoningEffort，spawn provider 支持）与 persona
 // （阴影 deployment:persona）——两者随 descriptor 持久化、冷恢复重放，不再有
 // registerContinuableSetup 创建窗口钩子。
@@ -225,6 +226,15 @@ const DEFAULT_CHALLENGER_MODEL = {
   reasoningEffort: 'max'
 };
 
+/** 探索者固定模型默认值（knowledge 场景；0.33.24 起与挑战者分离）：
+ *  官方 deepseek-v4-flash · 推理深度 high——探索/提案/就绪评审是高频长链路工件生成，
+ *  flash·high 性价比更高；挑战者（评审对抗，要求更严）仍用 deepseek-v4-pro · max。 */
+const DEFAULT_EXPLORER_MODEL = {
+  provider: 'deepseek-official',
+  model: 'deepseek-v4-flash',
+  reasoningEffort: 'high'
+};
+
 /** 默认主代理 persona：业务探索（Technical Expert）。注入目标会话，阴影覆盖预设 persona（'' = 保留预设）。约束按时机分组：答题时 vs 面对质疑时。 */
 const DEFAULT_MAIN_PERSONA = [
   '[arena-v2 host]',
@@ -422,6 +432,130 @@ function parseStageResult(text) {
   return best;
 }
 
+/**
+ * 0.33.27：判定一段 readiness 结算消息是否已携带「上一题对账」正文。探索者按协议应把对账
+ * （规则揭示、用户答案、答案是否正确）与下一道 NEED_QUESTION 打包在同一条**回合末条**消息
+ * 里回传；若只发成回合中段消息，dsh 只回传回合末条 → 对账丢失（90527e05 的 Q2/Q3 现象）。
+ * @param text - 探索者回传的结算消息原文。
+ * @returns 是否已含对账标记。
+ */
+function hasReadinessReconcileText(text) {
+  if (typeof text !== 'string') return false;
+  return text.includes('答案是否正确') || text.includes('对账');
+}
+
+/**
+ * 0.33.27：从 `user-readiness.review.md` 提取**最后一题已作答**（段落含 `User answer`）的
+ * Reconciliation 段落原文，供宿主在探索者消息缺对账时补发给主控者原样转述。用户在预测题答
+ * 「不确定——一起核对」时同样有 Reconciliation（规则揭示 + 未作预测说明），故对两类作答
+ * 都成立；规则只属于用户已答过的那一题，可正常展示，不会泄露后续题目。
+ * @param markdown - user-readiness.review.md 原文。
+ * @returns Reconciliation 文本（含该题小节标题；去首尾空白）或 null（无已答题）。
+ */
+function lastAnsweredReconciliationOf(markdown) {
+  if (typeof markdown !== 'string') return null;
+  let best = null;
+  for (const raw of markdown.split(/\n###\s+/)) {
+    if (!raw.includes('**User answer**')) continue;
+    const title = (raw.split('\n', 1)[0] ?? '').trim();
+    const m = raw.match(/\*\*Reconciliation\*\*:?\s*([\s\S]*?)(?=\n\*\*[A-Z]|\n###\s|\s*$)/);
+    if (!m || m[1].trim() === '') continue;
+    best = (title === '' ? '' : title + '\n') + m[1].trim();
+  }
+  return best;
+}
+
+/**
+ * 0.33.31：readiness「裸题」回合是否需要在回合开始前由宿主注入上一题对账。
+ * @param st - 竞技场侧文件状态（readArenaState 结果）。
+ * @param msgText - 触发该回合的消息正文（payload.messages 文本）。
+ * @returns true = 主控者即将转问的裸题缺上一题对账（宿主应把文件中的 Reconciliation
+ *   作为 plugin 消息并入本回合，让对账与提问同回合可见，不依赖任何一边模型自觉）。
+ */
+function readinessPreStepShouldInject(st, msgText) {
+  if (!st || !st.active || st.scene !== 'knowledge') return false;
+  // 两类都算「即将转问就绪题」：①宿主已写 k_ask（用户/后续回合）；②仍停在 k_readiness
+  // 待结算（pre-step 与宿主 session/event 写 k_ask 存在竞态——settle 触发回合常先跑
+  // pre-step，0.33.31 只看 k_ask 导致这类裸题回合漏注入，0.33.32 放宽）。
+  const kAskReadiness = st.phase === ARENA_PHASE_K_ASK && st.kPrev === ARENA_PHASE_K_READINESS
+    && typeof st.kQuestion === 'string' && st.kQuestion !== '';
+  const kReadinessPending = st.phase === ARENA_PHASE_K_READINESS && st.pendingDispatch === 'readiness';
+  if (!kAskReadiness && !kReadinessPending) return false;
+  if (hasReadinessReconcileText(msgText)) return false; // 探索者已打包对账 → 不需要注入
+  if (kAskReadiness) return true;
+  // k_readiness 待结算：仅当本回合消息确在携带一道就绪题（NEED_QUESTION）才注入，
+  // 避免在探索者中途状态同步等其它消息上误注入。
+  return typeof msgText === 'string' && msgText.includes('NEED_QUESTION');
+}
+
+/** 0.33.31：把 agent/pre-step payload.messages 里所有文本拼起来（供对账标记检测用）。 */
+function stepTextOf(messages) {
+  if (!Array.isArray(messages)) return '';
+  let out = '';
+  for (const m of messages) {
+    if (!m) continue;
+    const c = m.content;
+    if (typeof c === 'string') out += c + '\n';
+    else if (Array.isArray(c)) {
+      for (const b of c) {
+        if (b && typeof b === 'object' && typeof b.text === 'string') out += b.text + '\n';
+      }
+    }
+  }
+  return out;
+}
+
+/** 0.33.31：plugin 消息信封（与 theseus <theseus-workflow-context> 同机制，用户/模型同回合可见）。 */
+function arenaPluginMessage(text) {
+  return {
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: 'dsh-plugin-arena-v2' },
+    id: 'arena-pre-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
+  };
+}
+
+/**
+ * 0.33.33：宿主直问（ctx.userQuestions）就绪题时构造提问负载——把上一题对账（来自
+ * user-readiness.review.md，只读不改）作为问题文本前缀，随弹窗逐题呈现「答案正确与否」。
+ * 输入为探索者消息里的 NEED_QUESTION JSON；只保留展示字段（id/header/question/options
+ * 的 label/multi_select），任何答案线索字段一律不进入提问负载。
+ * @param questionJsonText - NEED_QUESTION 之后的 JSON 文本。
+ * @param reconc - 上一题 Reconciliation 原文（无则 null）。
+ * @returns userQuestions.ask 的 questions 数组（含对账前缀），解析失败返回 null。
+ */
+function buildReadinessAskQuestions(questionJsonText, reconc) {
+  if (typeof questionJsonText !== 'string') return null;
+  let q = null;
+  try {
+    const parsed = JSON.parse(questionJsonText);
+    q = Array.isArray(parsed) ? parsed[0] : parsed;
+  } catch { return null; }
+  if (!q || typeof q !== 'object' || typeof q.question !== 'string' || q.question === '') return null;
+  const id = typeof q.id === 'string' && q.id !== '' ? q.id : 'readiness_' + Date.now().toString(36);
+  const prefix = typeof reconc === 'string' && reconc !== '' ? '【上一题对账】\n' + reconc + '\n\n' : '';
+  return [{
+    id,
+    header: typeof q.header === 'string' ? q.header : '就绪评审',
+    question: prefix + q.question,
+    options: (Array.isArray(q.options) ? q.options : [])
+      .filter((o) => o && typeof o.label === 'string' && o.label !== '')
+      .map((o) => ({ label: o.label })),
+    multi_select: q.multi_select === true
+  }];
+}
+
+/**
+ * 0.33.33：本回合是否应由宿主代问（k_readiness 待结算且消息携带就绪题 NEED_QUESTION）。
+ * 命中时 pre-step 会把本回合消息替换为「宿主代问」注记——主代理看不到题面 JSON，
+ * 结构性杜绝双重提问；host-ask 失败回退老路（k_ask + 主控者转问 + 0.33.31 注入兜底）。
+ */
+function readinessTurnHostAsk(st, msgText) {
+  if (!st || !st.active || st.scene !== 'knowledge') return false;
+  if (st.phase !== ARENA_PHASE_K_READINESS || st.pendingDispatch !== 'readiness') return false;
+  return typeof msgText === 'string' && msgText.includes('NEED_QUESTION');
+}
+
 /** 知识沉淀固定提问的回答解析（report / revision 两种，否定优先）。输入可为单条结果文本或一组（按各自固定 id 取用）。 */
 function parseKnowledgeChoice(text, kind) {
   const id = kind === 'report' ? ARENA_K_REPORT_QUESTION_ID : ARENA_K_REVISION_QUESTION_ID;
@@ -587,7 +721,7 @@ const KNOWLEDGE_PERSONAS = {
     '- STAGE_DONE <stage> <result>（如 STAGE_DONE explore CONFIRMED）',
     '- NEED_QUESTION <问题JSON>（不含答案与规则）',
     '- BLOCKED <原因>',
-    '每道题用户作答后（尤其 user-readiness 的预测题）：先把**对账正文**放在消息前部原文输出——规则揭示、用户答案、**答案是否正确**、差异说明，全部原文、不摘要——随后再接下一道 NEED_QUESTION 或最终 STAGE_DONE。对账是给用户看的内容，主控者会原样转述。',
+    '【就绪评审对账硬格式（0.33.30，违反=对账永不送达）】user-readiness 每道题用户作答后，必须把「上一题对账 + 下一道题」放进**同一条回合末消息**，固定格式：`**第 N 题对账**：规则揭示（如适用）、用户答案、**答案是否正确（aligned / discrepancy / 未作预测）**——原文不摘要`，空行后接 `下一题（第 N+1 题，<主题>）：NEED_QUESTION <JSON>`。**整个回合只能以这一条 assistant 消息收尾**：先把全部工件写入（user-readiness.review.md 的 Reconciliation），**禁止先把对账作为回合中段文本发出再继续调用工具**——dsh 只把子代理**回合最后一条**消息回传给主控者；回合中段输出对账 = 主控者收不到、用户看不到任何答案对错，只会收到你随后发的「下一题」并被直接转问（这是 90527e05 对账丢失的根因）。本场首题（无上一题）无需对账，直接输出 NEED_QUESTION。',
     '',
     '【工作语言】',
     '工作语言用中文（Theseus 约定：对话、评审讨论、就绪面试均属工作语言）；契约工件按 skill 约定用英文，业务硬信息（代码、枚举值、字段名、路径、API 名、spec id）一律保持英文原文不翻译。'
@@ -771,7 +905,7 @@ const DEFAULT_KNOWLEDGE_INSTRUCTION = [
   '竞技场已开启（知识沉淀场景：Theseus workflow 对抗流程）。回合由系统按阶段推进，探索者与挑战者默认由宿主派发；**创建新子代理的工具（subagent / subagent_fork）已对你禁用**，send_message 对你开放——你只能向**已存在**的探索者/挑战者委派任务（宿主未派发时的补派、门控 blocked 时的修订轮等），任务续跑均以已有代理优先、复用其上下文。goal 工具（get_goal / create_goal / update_goal）与 /goal 命令在竞技场开启期间同样不可用——回合与推进由宿主门控，不由 goal 驱动。你只按当前「竞技阶段」行事：',
   '1. **绑定/续跑阶段**：judge --current 确认 Theseus workflow 绑定（未绑定则 mode on --bind <id> 或 --init <主题>）。**已绑定且阶段已推进时，系统按 openspec/states 自动续跑对应阶段（跳过已完成阶段）**；只需向用户简报当前阶段后结束回合。',
   '2. **阶段确认**：先把子代理结算消息**原文原样**呈现给用户（不要摘要/改写），再调用 ask_user_question 询问是否进入下一阶段（问题 id 固定 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项「' + ARENA_K_ADVANCE_YES + '」/「' + ARENA_K_ADVANCE_NO + '」）；用户确认后 judge --current 验证并 record 对应 stage.completed，结束回合——系统才会派发下一阶段。',
-  '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，先把它结算消息里 JSON 之外的**全部正文（对账、规则揭示、答案正确与否等）原文原样转述给用户**——子代理的一切问题与答案都由你原样转述，需要原文引用时允许用 read 等工具读 openspec 工件（user-readiness.review.md / review.md / decision-log）后逐行引用，禁止改写/摘要；再把问题 JSON 原样转成 ask_user_question 提问（**只取 question/options 等展示字段照抄；JSON 里的 correctIndex / 正确项位置 / why 等答案线索字段一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合——系统会把回答回传给探索者。',
+  '3. **中继提问**：收到探索者返回的 NEED_QUESTION 时，先把它结算消息里 JSON 之外的**全部正文（对账、规则揭示、答案正确与否等）原文原样转述给用户**——子代理的一切问题与答案都由你原样转述，需要原文引用时允许用 read 等工具读 openspec 工件（user-readiness.review.md / review.md / decision-log）后逐行引用，禁止改写/摘要；**user-readiness 必读对账（0.33.29，无条件执行）**：就绪评审中每收到一道新题、转问用户前，**必须先用 read 工具读 `openspec/changes/` 当前 change 下的 `user-readiness.review.md`**（禁止跳步）；读后若末节（含 `User answer` 的最后一节）存在尚未呈现给用户的 `Reconciliation`——无论它写的是"答案正确/aligned"、"不正确/discrepancy"还是"未作预测/一起核对"——先把它**原文原样转述给用户**（含规则揭示与答案正确与否），**再**转问下一题；若末节无未呈现的对账（本场首题或已呈现过）则直接转问。**0.33.33 起就绪题由宿主经 userQuestions 直接代问**：收到探索者就绪题消息时若宿主已代问（回合中会看到「宿主代问」注记），**不得重复调用 ask_user_question**，等待宿主处理；仅在宿主未代问的回退模式下才按本条亲自转问。再把问题 JSON 原样转成 ask_user_question 提问（**只取 question/options 等展示字段照抄；JSON 里的 correctIndex / 正确项位置 / why 等答案线索字段一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合——系统会把回答回传给探索者。',
   '4. **终评分支**：收到挑战者的 Done 后，**把 review.md 的 Overall Verdict / Action Items 原文原样呈现给用户**，按结论行事——READY 一次问两道：是否生成领导层报告（问题 id 固定 `' + ARENA_K_REPORT_QUESTION_ID + '`，选项「' + ARENA_K_REPORT_YES + '」/「' + ARENA_K_REPORT_NO + '」）+ 是否进入 user-readiness（问题 id 固定 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项「' + ARENA_K_ADVANCE_YES + '」/「' + ARENA_K_ADVANCE_NO + '」，选「' + ARENA_K_ADVANCE_NO + '」→ 系统关闭竞技场）。**拿到回答后只结束回合——user-readiness 与 requirement-report 由宿主派探索者执行（探索者 fork reporter 后台生成 PPT），你不得亲自加载/执行 theseus-user-readiness-review / requirement-report skill**；NEEDS_REVISION 问用户是否再来一轮修订（问题 id 固定 `' + ARENA_K_REVISION_QUESTION_ID + '`，选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」，用户选「' + ARENA_K_REVISION_NO + '」→ 本回合内总结并 record review.completed NEEDS_REVISION）；NOT_READY 与 NEEDS_REVISION 同样处理：**把 FAIL 项 / Action Items / 未完成 Anchor Trace 原文逐条呈现**，再用问题 id 固定 `' + ARENA_K_REVISION_QUESTION_ID + '` 问用户是否再来一轮修订（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）——选「' + ARENA_K_REVISION_YES + '」→ 本回合内 record review.completed NEEDS_REVISION（把 workflow 推回 propose），结束回合（系统重新派发探索者修订）；选「' + ARENA_K_REVISION_NO + '」→ 按原 verdict record（NOT_READY / NEEDS_REVISION）后总结，结束回合（系统关闭竞技场）。',
   '5. **apply 阶段**：按 theseus-apply-change 在 worktree 中实现 tasks.md、跑测试报告、record apply.completed IMPLEMENTED，然后结束回合。',
   '6. 每个「记录阶段」都必须真的执行 Theseus CLI 并确认 record 生效；任何阶段完成后向用户简报一句。',
@@ -798,6 +932,12 @@ const Config = z.object({
     model: z.string().default('deepseek-v4-pro'),
     reasoningEffort: z.string().default('max')
   }).default(DEFAULT_CHALLENGER_MODEL),
+  /** 探索者固定模型（knowledge 场景，0.33.24 起独立于挑战者）：官方 deepseek-v4-flash · high。 */
+  explorerModel: z.object({
+    provider: z.string().default('deepseek-official'),
+    model: z.string().default('deepseek-v4-flash'),
+    reasoningEffort: z.string().default('high')
+  }).default(DEFAULT_EXPLORER_MODEL),
   /** 主代理 persona：竞技场开启时注入，阴影覆盖预设 persona（'' = 保留预设 persona）。 */
   mainPersona: z.string().default(DEFAULT_MAIN_PERSONA),
   /** 挑战者子代理的 persona：作为挑战者的系统 persona 注入（阴影覆盖预设 persona）。 */
@@ -861,6 +1001,19 @@ function challengerModelOf(cfg) {
     };
   }
   return DEFAULT_CHALLENGER_MODEL;
+}
+
+/** 生效的探索者模型（knowledge 场景，0.33.24 起独立于挑战者）：配置优先，否则默认 deepseek-v4-flash · high。 */
+function explorerModelOf(cfg) {
+  const m = cfg?.explorerModel;
+  if (m && typeof m === 'object' && m.model) {
+    return {
+      provider: m.provider ?? DEFAULT_EXPLORER_MODEL.provider,
+      model: m.model,
+      reasoningEffort: m.reasoningEffort ?? DEFAULT_EXPLORER_MODEL.reasoningEffort
+    };
+  }
+  return DEFAULT_EXPLORER_MODEL;
 }
 
 /** 宿主创建挑战者的 provider：配置优先，否则默认 spawn。 */
@@ -1142,6 +1295,32 @@ function planKnowledgeGate(advance, revision, actual, expected, childTaskInFligh
 }
 
 /**
+ * 当前回合事件窗口（0.33.25）：取**最后一次 turn/start 之后**的事件（含该 turn/start 起）；
+ * 无 turn/start 时回退最后一次 subagent-settled 之后；两者都没有则返回全量。锚点语义与
+ * collectAskAnswerText 一致（turn/start 优先、settle 兜底）。宿主在 knowledge turn/end 用它
+ * 把「子代理任务在途」信号**窗口化**：只有本回合内主控者对竞技场子代理的 send_message
+ * 才算任务在途——历史回合的合法中继（如 NEED_QUESTION 答案直传）不再让后续 k_gate /
+ * k_verdict 被残留信号永久 stay（0.33.25 修复 0.33.22 用全量历史扫描的回归：
+ * session-90527e05 在 propose 确认门被 09:59:35 的历史中继卡死，review 挑战者从未派发）。
+ * @param events - 会话事件数组。
+ * @returns 当前回合事件数组（无锚点时可能为原引用）。
+ */
+function roundEventsOf(events) {
+  if (!Array.isArray(events) || events.length === 0) return events ?? [];
+  let start = -1;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i]?.type === 'turn/start') { start = i; break; }
+  }
+  if (start < 0) {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const e = events[i];
+      if (e?.type === 'user/message' && e.data?.source?.kind === 'subagent-settled') { start = i; break; }
+    }
+  }
+  return start <= 0 ? events : events.slice(start);
+}
+
+/**
  * 检测一段事件里主控者是否已向**竞技场子代理**（durable id 集合）发起过 send_message
  * 委派。这是「子代理任务在途」的机械信号，与成因无关：修订轮、中断后的 rerun、
  * 宿主漏派后的补派、NEED_QUESTION 答案直传、report fork 催办……都表现为同一形态；
@@ -1150,6 +1329,31 @@ function planKnowledgeGate(advance, revision, actual, expected, childTaskInFligh
  * @param childIds - 竞技场子代理 durable id 列表（按 label 缓存）。
  * @returns 是否在本段事件中发现对竞技场子代理的 send_message。
  */
+
+/**
+ * 0.33.29：宿主执行观测——就绪评审的转问回合里，主控者是否在提问（ask_user_question，
+ * 含 readiness_/就绪评审）之前**没有** read 过 `user-readiness.review.md`（无条件必读
+ * 规则的违例检测；只告警记录，不阻断——阻断需要 dsh 提供宿主可拦截分发的能力）。
+ * @param events - 会话事件数组（turn/end 时全量快照）。
+ * @returns 该回合内存在"未读文档就转问就绪题" → true。
+ */
+function readinessAskSkippedDocRead(events) {
+  if (!Array.isArray(events)) return false;
+  let readDoc = false;
+  for (const e of roundEventsOf(events)) {
+    if (e?.type !== 'tool/call' || typeof e.data?.name !== 'string') continue;
+    const args = typeof e.data?.arguments === 'string' ? e.data.arguments : '';
+    if (e.data.name === 'read') {
+      if (args.includes('user-readiness.review.md')) readDoc = true;
+      continue;
+    }
+    if (e.data.name === 'ask_user_question') {
+      if ((args.includes('readiness_') || args.includes('就绪评审')) && !readDoc) return true;
+    }
+  }
+  return false;
+}
+
 function hasArenaChildDelegation(events, childIds) {
   if (!Array.isArray(events)) return false;
   const ids = new Set((childIds ?? []).filter((v) => typeof v === 'string' && v !== ''));
@@ -1329,6 +1533,15 @@ const GOAL_TOOL_NAMES = ['get_goal', 'create_goal', 'update_goal'];
  *  游离于状态机之外）。send_message 保持开放——主控者只能向已存在的探索者/挑战者委派
  *  任务（如门控 blocked 时的修订轮、宿主漏派时的补派）。 */
 const CHILD_CREATE_TOOL_NAMES = ['subagent', 'subagent_fork'];
+/** 0.33.26：主控者创建类工具的执行级拒绝文案（tools.guard 用；返回 undefined = 放行）。
+ *   tools.restrict 只能过滤 scope「继承」层的工具——subagent 由 dsh-tool-subagent 注册在
+ *   会话 own 层、不在可限制清单，restrict 整单抛错后从未真正禁掉它（90527e05 事故：主代理
+ *   自建挑战者）；guard 是执行级硬门：工具可见但每次调用在 dispatch 前被拒。send_message
+ *   不在名单——主控者向已存在的探索者/挑战者委派（修订轮/补派）保持开放。 */
+function childCreateDenyReason(name) {
+  if (typeof name !== 'string' || !CHILD_CREATE_TOOL_NAMES.includes(name)) return void 0;
+  return '竞技场模式下已禁用 ' + name + '：探索者/挑战者由宿主按阶段创建；主控者只能向已存在的探索者/挑战者委派任务（send_message），禁止创建新子代理（新副本没有阶段上下文、游离于状态机外）。';
+}
 /** /goal 影子命令的固定拒绝文案（遮蔽预设 command-goal 后返回）。 */
 const ARENA_GOAL_BLOCK_TEXT = '竞技场模式下已禁用 /goal：竞技回合与推进由宿主门控，goal 自动续跑会与竞技阶段冲突；如需使用 goal，请先 /arena off 关闭竞技场。';
 
@@ -1433,13 +1646,14 @@ function writeArenaMode(sessionId, active) {
 }
 
 function apply(ctx) {
-  ctx.inject(['settings', 'systemPrompt'], async (settingsCtx) => {
+  ctx.inject(['settings', 'systemPrompt', 'userQuestions'], async (settingsCtx) => {
     let scope;
     try {
       scope = settingsCtx.settings.register(name, Config, {
         base: {
           enabled: true,
           challengerModel: DEFAULT_CHALLENGER_MODEL,
+          explorerModel: DEFAULT_EXPLORER_MODEL,
           mainPersona: DEFAULT_MAIN_PERSONA,
           challengerPrompt: DEFAULT_CHALLENGER_PROMPT,
           challengePrompt: DEFAULT_CHALLENGE_PROMPT,
@@ -1474,6 +1688,8 @@ function apply(ctx) {
     const resolving = new Map();
     const mainPersonas = new Map();
     const kickThrottle = new Map(); // sessionId -> 最近一次断点续跑派发时间（防重复续跑）
+    const preStepInjected = new Map(); // sessionId -> 已注入的上一题对账文本（agent/pre-step 去重，0.33.31）
+    const hostAskInFlight = new Map(); // sessionId -> 宿主直问进行中（userQuestions.ask 挂起，0.33.33）
     const RESOLVE_THROTTLE_MS = 10_000;
     const KICK_THROTTLE_MS = 30_000;
     const subagentKey = (sessionId, label) => sessionId + '::' + label;
@@ -1698,6 +1914,22 @@ function apply(ctx) {
           : [...GOAL_TOOL_NAMES])) {
           disposers.push(d);
         }
+        // 0.33.26 执行级硬门（补 restrict 盲区）：restrict 只能过滤继承层工具——subagent 由
+        // dsh-tool-subagent 注册在会话 own 层、不在 restrictableNames，restrict 对它会整单
+        // 抛错（catch 后逐名重试仍失败、只记 warn），故 0.33.20 起「主控者禁创建新子代理」
+        // 对 subagent 从未真正生效（90527e05：主代理 10:30:40 自建挑战者 ee8feef6，与宿主
+        // 文件真相派发形成双挑战者）。tools.guard 在 dispatch 前按 exec.name 拒绝执行：
+        // 经 agent.ctx 注册只对该会话主代理生效（子代理 own 层不受影响——探索者 fork
+        // reporter 的 subagent_fork 照常可用），send_message 不在名单（向已存在的探索者/
+        // 挑战者委派保持开放）。restrict 仍负责隐藏继承层工具（goal / subagent_fork）。
+        if (scene === 'knowledge') {
+          try {
+            const d = tools?.guard?.((exec) => childCreateDenyReason(exec?.name));
+            if (typeof d === 'function') disposers.push(d);
+          } catch (error) {
+            ctx.logger?.warn?.('arena-v2: guard deny failed: ' + String(error?.message ?? error));
+          }
+        }
         // /goal 命令影子：在主代理会话作用域注册同名命令，遮蔽预设作用域（tool-both 的
         // command-goal）的 /goal——竞技场开启期间键入 /goal（含 goal 条 UI 快捷操作）一律
         // 拒绝并提示，关闭竞技场时随 disposer 恢复原命令。注册后按该会话的命令解析结果
@@ -1828,6 +2060,71 @@ function apply(ctx) {
         // 自动重建侧文件并派发缺失的阶段（含 review 挑战者）。
         if (st.scene === 'knowledge') void reconcileKnowledgeResume(agent, id);
       } catch {}
+    });
+
+    // 0.33.31 宿主可见注入（agent/pre-step，与 theseus <theseus-workflow-context> 同机制）：
+    // knowledge 就绪评审出现「裸题」回合（探索者回合末条只有下一题、没带上一题对账）时，
+    // 宿主在本回合开始前把 user-readiness.review.md 末节 Reconciliation 作为 plugin 消息并入
+    // 回合——对账与提问同回合、对用户/模型都可见，不依赖主控者/探索者任何一边的模型自觉
+    // （0.33.27 注记通道不落地、0.33.28/0.33.29 主控者指令不执行、0.33.30 探索者硬格式仍
+    // 可能漂移后的最后一道机械兜底）。
+    const offPreStep = settingsCtx.on?.('agent/pre-step', async (payload, next) => {
+      let decision;
+      try {
+        decision = await next();
+      } catch (error) {
+        ctx.logger?.warn?.('arena-v2: pre-step base failed: ' + String(error?.message ?? error));
+        return { kind: 'enter', messages: [] };
+      }
+      try {
+        if (!payload || payload.step !== 1) return decision;
+        const agent = payload?.agent;
+        const header = agent?.session?.header;
+        if (!header) return decision;
+        const sessionId = String(header.id ?? agent.id ?? '');
+        const st = readArenaState(sessionId);
+        // 0.33.33 宿主直问：就绪题回合整体替换消息——主代理看不到题面 JSON（结构性杜绝
+        // 双重提问），回合内只留「宿主代问」注记与上一题对账（对用户与模型均可见）。
+        const uq = settingsCtx.get?.('userQuestions');
+        if (uq && typeof uq.ask === 'function') {
+          const turnText = stepTextOf(payload?.messages) + '\n' + stepTextOf(decision?.messages);
+          if (readinessTurnHostAsk(st, turnText)) {
+            const cwd = typeof header.cwd === 'string' ? header.cwd : '';
+            const reconc = (() => {
+              try {
+                if (!cwd || !st.workflowId) return null;
+                return lastAnsweredReconciliationOf(readFileSync(
+                  join(cwd, 'openspec', 'changes', String(st.workflowId), 'user-readiness.review.md'), 'utf8'));
+              } catch { return null; }
+            })();
+            const note = '【宿主代问】' + (reconc ? '上一题对账：\n' + reconc + '\n\n' : '')
+              + '宿主已接管本轮就绪题：将直接向用户提问并回传作答。请勿转问、勿调用 ask_user_question，等待宿主处理即可。';
+            return { kind: 'enter', messages: [arenaPluginMessage(note)] };
+          }
+        }
+        if (!readinessPreStepShouldInject(st, stepTextOf(payload?.messages))) return decision;
+        const cwd = typeof header.cwd === 'string' ? header.cwd : '';
+        if (!cwd || !st.workflowId) return decision;
+        const reconc = (() => {
+          try {
+            return lastAnsweredReconciliationOf(readFileSync(
+              join(cwd, 'openspec', 'changes', String(st.workflowId), 'user-readiness.review.md'), 'utf8'));
+          } catch { return null; }
+        })();
+        if (!reconc) return decision;
+        if (preStepInjected.get(sessionId) === reconc) return decision; // 同一对账只注入一次
+        preStepInjected.set(sessionId, reconc);
+        const note = '【上一题对账 · 宿主注入】探索者本轮消息未附对账。主控者请先把以下 user-readiness.review.md 的 Reconciliation **原文原样呈现给用户**，再转问下一题：\n\n' + reconc;
+        const base = (decision && typeof decision === 'object') ? decision : {};
+        return {
+          ...base,
+          kind: base.kind ?? 'enter',
+          messages: [...(Array.isArray(base.messages) ? base.messages : []), arenaPluginMessage(note)]
+        };
+      } catch (error) {
+        ctx.logger?.warn?.('arena-v2: pre-step reconcile inject failed: ' + String(error?.message ?? error));
+        return decision;
+      }
     });
 
     // 子代理创建/唤醒/冷恢复：尽快重查该父会话的挑战者（按 label 校正，避免把
@@ -2142,8 +2439,10 @@ function apply(ctx) {
         }
         const content = [{ type: 'text', text: sanitizeSessionRefs(text) }];
         // 固定模型 + persona：随创建请求传入（dsh 0.1.2-alpha.4 的机制；spawn 支持，
-        // 并随 descriptor 持久化、冷恢复重放）。
-        const model = challengerModelOf(cfg);
+        // 并随 descriptor 持久化、冷恢复重放）。0.33.24 起探索者与挑战者模型分离：
+        // 探索者 = explorerModel（默认官方 deepseek-v4-flash · high），挑战者 = challengerModel
+        // （默认 deepseek-v4-pro · max）。
+        const model = role === 'explorer' ? explorerModelOf(cfg) : challengerModelOf(cfg);
         const personas = scenePersonasOf(cfg, st.scene);
         const persona = role === 'explorer' ? personas.explorerPrompt : personas.challengerPrompt;
         const agentOptions = {
@@ -2476,6 +2775,47 @@ function apply(ctx) {
             if (st.pendingDispatch !== st.kStage) return; // 错轮结算忽略
             const parsed = parseStageResult(settleText);
             if (parsed?.kind === 'need_question') {
+              // 0.33.33 宿主直问（方案 B）：readiness 的题/答案透传改由宿主经 ctx.userQuestions
+              // 直连用户——上一题对账（读 user-readiness.review.md，只读不改团队文件）作为问题
+              // 前缀随弹窗呈现，作答由宿主原文回传探索者。主代理退出 Q&A 热路径；pre-step 会把
+              // 该回合消息替换为「宿主代问」注记（防双重提问）。userQuestions 不可用/解析失败
+              // 时回退老路（k_ask + 主控者转问，0.33.31 注入兜底仍在）。
+              if (st.phase === ARENA_PHASE_K_READINESS) {
+                const uq = settingsCtx.get?.('userQuestions');
+                const agent = resolveMainAgent(sessionId);
+                if (uq && typeof uq.ask === 'function' && agent) {
+                  const reconc = (() => {
+                    try {
+                      if (!cwd || !st.workflowId) return null;
+                      return lastAnsweredReconciliationOf(readFileSync(
+                        join(cwd, 'openspec', 'changes', String(st.workflowId), 'user-readiness.review.md'), 'utf8'));
+                    } catch { return null; }
+                  })();
+                  const qs = buildReadinessAskQuestions(parsed.question, reconc);
+                  if (qs) {
+                    writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_ASK, pendingDispatch: null, kPrev: st.phase, kQuestion: parsed.question });
+                    hostAskInFlight.set(sessionId, true);
+                    const ac = new AbortController();
+                    void (async () => {
+                      try {
+                        const result = await uq.ask({ questions: qs, agent, signal: ac.signal });
+                        const payload = JSON.stringify(result ?? {});
+                        writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_READINESS, pendingDispatch: 'readiness', kStage: 'readiness', kPrev: '', kQuestion: '' });
+                        void dispatchKnowledge(sessionId, 'explorer', 'readiness',
+                          '【宿主代问·用户作答】' + payload + '\n\n请记录作答（写入 user-readiness.review.md）并按返回协议继续：下一题 NEED_QUESTION <JSON>，或 STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION。', '探索者');
+                        ctx.logger?.info?.('arena-v2: host-ask answered & relayed for ' + sessionId);
+                      } catch (error) {
+                        // 用户中止/无 UI 提供方/非 live 根 → 回退主控者转问（0.33.29 必读规则 + 0.33.31 注入）
+                        ctx.logger?.warn?.('arena-v2: host-ask failed -> fallback main relay: ' + String(error?.message ?? error));
+                        writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_ASK, pendingDispatch: null, kPrev: ARENA_PHASE_K_READINESS, kQuestion: parsed.question });
+                      } finally {
+                        hostAskInFlight.delete(sessionId);
+                      }
+                    })();
+                    return;
+                  }
+                }
+              }
               writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_ASK, pendingDispatch: null, kPrev: st.phase, kQuestion: parsed.question });
               ctx.logger?.info?.('arena-v2: k question relay from ' + st.phase + ' for ' + sessionId);
               return;
@@ -2560,15 +2900,19 @@ function apply(ctx) {
           // 会话事件取 session/event 处理器收到的当前 Session 快照（dsh 0.1.2-alpha.4
           // 的 Session 没有 .events；snapshotEvents() 与持久化 jsonl 同源，含 turn/start）。
           const eventsK = sessionEventsOf(session);
-          // 「子代理任务在途」的机械信号（0.33.22 泛化）：本回合主控者是否已向竞技场
+          // 「子代理任务在途」的机械信号（0.33.22 泛化）：**本回合**主控者是否已向竞技场
           // 子代理（按 label 缓存的 durable id）send_message 委派过任务——修订轮、中断后
           // rerun、宿主漏派后的补派、NEED_QUESTION 答案直传等统一形态。k_gate / k_verdict
           // 据此留场等待结算（不把「未确认/未 record」误判成关场），k_ask 据此跳过重复中继。
+          // 0.33.25：检测窗口限定到当前回合（roundEventsOf，锚点同 collectAskAnswerText）——
+          // 0.33.22 用全量历史扫描，历史回合的合法中继（如 NEED_QUESTION 答案直传）会残留成
+          // 永久在途，导致后续每次 k_gate 都 stay（不派发、不关场、无提示）卡死（session-90527e05
+          // 10:05:33 即因此停在 propose 确认门，review 挑战者从未派发）。
           const arenaChildIds = [
             subagents.get(explorerKey(sessionId, st.scene)),
             subagents.get(challengerKey(sessionId, st.scene))
           ].filter((v) => typeof v === 'string');
-          const childTaskInFlight = hasArenaChildDelegation(eventsK, arenaChildIds);
+          const childTaskInFlight = hasArenaChildDelegation(roundEventsOf(eventsK), arenaChildIds);
           if (st.phase === ARENA_PHASE_K_INIT) {
             // 续跑优先：会话焦点文件已有绑定时，以 Theseus 状态文件为真相跳到对应阶段
             // （跳过意图门控——重启/重开后用户发「继续」即可续跑，不会重跑已完成的阶段）。
@@ -2621,7 +2965,21 @@ function apply(ctx) {
           }
           if (st.phase === ARENA_PHASE_K_GATE) {
             if (st.kNext === 'close') {
-              finishArenaRound(sessionId); // readiness NOT_CLEARED / NEEDS_REVISION：主控者已总结
+              // 0.33.33：readiness NOT_CLEARED / NEEDS_REVISION 的确认门——主控者已按 persona 呈现结算并问用户是否推回修订；
+              // 用户确认后主控者会 record user-readiness-review.completed NEEDS_REVISION（Theseus 推到 propose）。此时
+              // 必须以文件真相为准**派发 propose 修订轮**而不是关场（此前此处无条件 finishArenaRound：即使 record 已生效
+              // 也不派发、直接退出，探索者从未被委派重新 propose——90527e05 13:18 现场）。仅当状态文件仍停在
+              // user-readiness-review / review（未确认/未 record）才收尾关场。
+              const stageAtClose = readWorkflowStage(cwd, st.workflowId);
+              if (stageAtClose === 'propose' && typeof st.workflowId === 'string' && st.workflowId !== '') {
+                const text = renderKnowledgeTemplate(personasK.proposePrompt, st, cwd,
+                  '本轮为修订轮（user-readiness NEEDS_REVISION）：先读 user-readiness.review.md 的差异记录与 Agent Assessment / Action Items 逐条回应，再生成或更新工件。');
+                writeArenaState(sessionId, { active: true, phase: ARENA_PHASE_K_PROPOSE, pendingDispatch: 'propose', kStage: 'propose', kNext: '', kResult: '', workflowId: st.workflowId });
+                ctx.logger?.info?.('arena-v2: k readiness-revision gate -> dispatch propose for ' + sessionId);
+                void dispatchKnowledge(sessionId, 'explorer', 'propose', text, '探索者');
+                return;
+              }
+              finishArenaRound(sessionId); // readiness NOT_CLEARED / NEEDS_REVISION：未确认修订 → 收尾
               return;
             }
             // 阶段推进确认门：用户必须选「确认，进入下一阶段」才推进；选暂停 → 不推进
@@ -2679,6 +3037,13 @@ function apply(ctx) {
             return;
           }
           if (st.phase === ARENA_PHASE_K_ASK) {
+            // 0.33.33 宿主直问进行中：主控者回合只是被替换的「宿主代问」注记回合，
+            // 此时尚无用户作答（作答会由宿主在 ask 返回后直接回传），跳过 k_ask 的
+            // 「未取到回答 → 回等待态」处理，避免打断在途的宿主提问。
+            if (hostAskInFlight.get(sessionId)) return;
+            if (readinessAskSkippedDocRead(eventsK)) {
+              ctx.logger?.warn?.('arena-v2: readiness ask without mandatory doc read (0.33.29 rule) for ' + sessionId);
+            }
             const answers = collectAskAnswerText(eventsK);
             if (answers.length === 0) {
               steerArenaNote(resolveMainAgent(sessionId), '⚠ 未取到用户对中继提问的回答。竞技场已回到等待态，可重试。');
@@ -3033,14 +3398,14 @@ function apply(ctx) {
                 : kNext === 'review'
                   ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE propose。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；\n2. 调用 ask_user_question 询问是否进入下一阶段：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record propose.completed ARTIFACTS_CREATED，简报一句，结束回合（系统会派发挑战者审查）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。若 judge 未通过（存在 FAIL 项，如 design.md 缺失、specs 未登记）→ 先向用户说明失败项，再用问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）询问是否让探索者修订；用户同意 → 用 send_message 向探索者（id 见上方）发送修订轮指令（列出失败项，要求补全后按返回协议输出一行 STAGE_DONE propose ARTIFACTS_CREATED 或 NEED_QUESTION / BLOCKED）后结束回合，等待探索者修订结算后再重新确认；用户拒绝 → 结束回合（系统关闭竞技场）。'
                   : kNext === 'apply'
-                    ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE user-readiness CLEARED。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；\n2. 调用 ask_user_question 询问是否进入 apply：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；\n3. 用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record user-readiness-review.completed CLEARED，结束回合（系统进入 apply 回合）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。若 judge 未通过（存在 FAIL 项）→ 先向用户说明失败项，再用问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）询问是否让探索者修订；用户同意 → 用 send_message 向探索者（id 见上方）发送修订轮指令（列出失败项，要求补全后按返回协议输出一行 STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION 或 NEED_QUESTION / BLOCKED）后结束回合，等待探索者修订结算后再重新确认；用户拒绝 → 结束回合（系统关闭竞技场）。'
+                    ? '[arena-v2 竞技阶段]\n当前阶段：阶段确认——探索者已返回 STAGE_DONE user-readiness CLEARED。\n1. **把探索者结算消息原文原样呈现给用户（不要摘要、不要改写、不要省略协议行）**；再用 read 工具读 openspec/changes/<workflow>/user-readiness.review.md，把 Requirement Alignment 表（每道题规则、用户答案、✅/❌ 正确与否）**原文逐行转述**；\n2. **先去重（0.33.34）**：若已进行的就绪评审 Q&A 已含「apply 启动决定」且用户已选「确认进入 apply」（read user-readiness.review.md 可核对），**不要重复提问**——直接 judge --current 验证产物后 record user-readiness-review.completed CLEARED，简报一句，结束回合（系统进入 apply 回合）；\n3. 仅当评审未含该决定（或用户当时未确认进入）时，才调用 ask_user_question 询问是否进入 apply：问题 id 固定填 `' + ARENA_K_ADVANCE_QUESTION_ID + '`，选项为「' + ARENA_K_ADVANCE_YES + '（' + kNextName + '）」与「' + ARENA_K_ADVANCE_NO + '」；用户选「' + ARENA_K_ADVANCE_YES + '」→ judge --current 验证产物后 record user-readiness-review.completed CLEARED，结束回合（系统进入 apply 回合）；用户选「' + ARENA_K_ADVANCE_NO + '」→ 直接结束回合（系统关闭竞技场）。若 judge 未通过（存在 FAIL 项）→ 先向用户说明失败项，再用问题 id 固定填 `' + ARENA_K_REVISION_QUESTION_ID + '`（选项「' + ARENA_K_REVISION_YES + '」/「' + ARENA_K_REVISION_NO + '」）询问是否让探索者修订；用户同意 → 用 send_message 向探索者（id 见上方）发送修订轮指令（列出失败项，要求补全后按返回协议输出一行 STAGE_DONE user-readiness CLEARED / NOT_CLEARED / NEEDS_REVISION 或 NEED_QUESTION / BLOCKED）后结束回合，等待探索者修订结算后再重新确认；用户拒绝 → 结束回合（系统关闭竞技场）。'
                     : '';
             const phaseText = state.phase === ARENA_PHASE_K_INIT
               ? '[arena-v2 竞技阶段]\n当前阶段：绑定/续跑——judge --current 确认 Theseus workflow 绑定（未绑定则用 bash 执行 mode on --bind <id> 或 --init <主题>）。**已绑定且 Theseus 阶段已推进（propose/review/user-readiness-review/apply）时，宿主会按 openspec/states 状态文件自动跳到对应阶段续跑，跳过已完成阶段**——你只需向用户简报当前阶段，然后结束回合。'
               : state.phase === ARENA_PHASE_K_GATE
                 ? gateText
                 : state.phase === ARENA_PHASE_K_ASK
-                  ? '[arena-v2 竞技阶段]\n当前阶段：中继提问——① 把结算消息正文里 NEED_QUESTION JSON 之外的**全部内容（含对账/规则揭示/答案正确与否）原文原样呈现给用户，不摘要、不改写**；需要原文引用时可用 read 工具读 openspec 工件（如 user-readiness.review.md / review.md）后再转述；② 再用结算消息里的问题 JSON **原样**调用 ask_user_question 提问（只取 question/options 展示字段照抄；若 JSON 里出现 correctIndex / 正确项位置 / why 等答案线索字段，**一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合（系统会把回答回传给探索者）。'
+                  ? '[arena-v2 竞技阶段]\n当前阶段：中继提问——① 把结算消息正文里 NEED_QUESTION JSON 之外的**全部内容（含对账/规则揭示/答案正确与否）原文原样呈现给用户，不摘要、不改写**；需要原文引用时可用 read 工具读 openspec 工件（如 user-readiness.review.md / review.md）后再转述；**user-readiness 必读对账（0.33.29）：每收到一道新题、转问用户前必须先用 read 读 user-readiness.review.md（禁止跳步）——末节若有尚未呈现的 Reconciliation（含 User answer 的最后一节），先原文呈现（无论 aligned/discrepancy/未作预测）再转问下一题；无未呈现对账则直接转问**；0.33.33 起就绪题由宿主经 userQuestions 直接代问——看到「宿主代问」注记时不得重复调用 ask_user_question，等待宿主处理；② 再用结算消息里的问题 JSON **原样**调用 ask_user_question 提问（只取 question/options 展示字段照抄；若 JSON 里出现 correctIndex / 正确项位置 / why 等答案线索字段，**一律忽略、不得向用户展示**；绝不提前揭示规则或答案），拿到回答后结束回合（系统会把回答回传给探索者）。'
                   : state.phase === ARENA_PHASE_K_EXPLORE
                     ? '[arena-v2 竞技阶段]\n当前阶段：探索中——探索者正在执行 theseus-explore，无需操作 即使收到子代理的进度报告、或 Theseus 门控显示 ready，也不要提前行动——阶段完成由系统在结算后切换指示。'
                     : state.phase === ARENA_PHASE_K_PROPOSE
@@ -3191,6 +3556,7 @@ export {
   CHALLENGER_LABEL,
   Config,
   DEFAULT_CHALLENGER_MODEL,
+  DEFAULT_EXPLORER_MODEL,
   DEFAULT_CHALLENGER_PROMPT,
   DEFAULT_CHALLENGE_PROMPT,
   DEFAULT_CONCLUSION_PROMPT,
@@ -3208,6 +3574,7 @@ export {
   apply,
   challengerLabelFor,
   challengerModelOf,
+  childCreateDenyReason,
   childWorkOf,
   collectAnswer,
   collectAnotherRoundChoice,
@@ -3217,14 +3584,17 @@ export {
   collectUserQuestion,
   composeRoundText,
   explorerLabelFor,
+  explorerModelOf,
   foldArenaMode,
   hasArenaChildDelegation,
+  hasReadinessReconcileText,
   inject,
   isChallengerLabel,
   isExplorerLabel,
   kickResumeText,
   knowledgeChildStageOf,
   knowledgeStageResumeOf,
+  lastAnsweredReconciliationOf,
   name,
   normalizeScene,
   parseArenaCommand,
@@ -3238,6 +3608,11 @@ export {
   pickedAnswerText,
   planKnowledgeAdvance,
   planKnowledgeGate,
+  readinessAskSkippedDocRead,
+  roundEventsOf,
+  readinessPreStepShouldInject,
+  buildReadinessAskQuestions,
+  readinessTurnHostAsk,
   sanitizeSessionRefs,
   sceneFromAnyLabel,
   sceneFromLabel,

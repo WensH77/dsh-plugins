@@ -18,6 +18,7 @@ import {
   CHALLENGER_LABEL,
   Config,
   DEFAULT_CHALLENGER_MODEL,
+  DEFAULT_EXPLORER_MODEL,
   DEFAULT_CHALLENGER_PROMPT,
   DEFAULT_CHALLENGE_PROMPT,
   DEFAULT_CONCLUSION_PROMPT,
@@ -35,6 +36,7 @@ import {
   apply,
   challengerLabelFor,
   challengerModelOf,
+  childCreateDenyReason,
   childWorkOf,
   collectAnswer,
   collectAnotherRoundChoice,
@@ -44,8 +46,11 @@ import {
   collectUserQuestion,
   composeRoundText,
   explorerLabelFor,
+  explorerModelOf,
   foldArenaMode,
   hasArenaChildDelegation,
+  hasReadinessReconcileText,
+  lastAnsweredReconciliationOf,
   inject,
   isChallengerLabel,
   isExplorerLabel,
@@ -64,6 +69,11 @@ import {
   parseVerdictOutcome,
   planKnowledgeAdvance,
   planKnowledgeGate,
+  readinessAskSkippedDocRead,
+  roundEventsOf,
+  readinessPreStepShouldInject,
+  buildReadinessAskQuestions,
+  readinessTurnHostAsk,
   sanitizeSessionRefs,
   sceneFromAnyLabel,
   sceneFromLabel,
@@ -247,6 +257,17 @@ assert.deepEqual(
 );
 assert.equal(challengerModelOf({ challengerModel: { model: 'deepseek-v4-pro' } }).reasoningEffort, 'max', '缺省推理深度回退 max');
 
+// 探索者模型（0.33.24 起与挑战者分离）：官方 deepseek-v4-flash · high
+assert.deepEqual(DEFAULT_EXPLORER_MODEL, { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' });
+assert.deepEqual(explorerModelOf({}), DEFAULT_EXPLORER_MODEL, '空配置回退默认探索者模型');
+assert.deepEqual(
+  explorerModelOf({ explorerModel: { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'max' } }),
+  { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'max' },
+  '配置的 explorerModel 生效（可覆盖回 v4-pro）'
+);
+assert.equal(explorerModelOf({ explorerModel: { model: 'deepseek-v4-flash' } }).reasoningEffort, 'high', '缺省推理深度回退 high');
+assert.notDeepEqual(DEFAULT_EXPLORER_MODEL, DEFAULT_CHALLENGER_MODEL, '探索者与挑战者默认模型分离');
+
 // 竞技场模式折叠：会话日志里的 arena/mode 事件，最后一条生效（保留兼容）
 assert.equal(foldArenaMode([]), false, '空事件 = 未开启');
 assert.equal(foldArenaMode([{ type: 'user' }]), false, '无 arena/mode = 未开启');
@@ -336,6 +357,7 @@ assert.equal(defaults.mainPersona, DEFAULT_MAIN_PERSONA, 'mainPersona 默认值�
 assert.equal(defaults.instruction, DEFAULT_INSTRUCTION, 'instruction 默认值一致');
 assert.equal(defaults.maxVerdictRounds, 3, 'maxVerdictRounds 默认 3');
 assert.deepEqual(defaults.challengerModel, DEFAULT_CHALLENGER_MODEL, 'challengerModel 默认值一致');
+assert.deepEqual(defaults.explorerModel, DEFAULT_EXPLORER_MODEL, 'explorerModel 默认值一致');
 // 多源检索指引：目前只注入业务探索（business）；knowledge / qa 默认不注入
 assert.equal(defaults.sceneSearchGuide.business, DEFAULT_SEARCH_GUIDE, 'business 默认注入多源检索指引');
 assert.ok(defaults.sceneSearchGuide.knowledge.includes('openspec/specs'), 'knowledge 注入 Theseus 知识源检索指引');
@@ -536,8 +558,13 @@ assert.equal(parseAdvanceChoice(''), null, '空回答 null（宿主按不推进�
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes(ARENA_K_ADVANCE_QUESTION_ID), 'knowledge 指令含推进确认提问 id');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('原文原样'), 'knowledge 指令要求子代理结论原文呈现');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('一切问题与答案都由你原样转述'), 'knowledge 指令：子代理问题与答案一律原样转述');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('user-readiness 必读对账（0.33.29'), 'knowledge 指令含 readiness 无条件必读规则（0.33.29）');
+assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('必须先用 read 工具读'), 'readiness：转问用户前必须先 read user-readiness.review.md（0.33.29）');
 assert.ok(DEFAULT_KNOWLEDGE_INSTRUCTION.includes('允许用 read 等工具'), 'knowledge 指令：允许用工具读工件原文引用');
 assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('答案是否正确'), '探索者 persona 要求输出对账（答案正确与否）');
+assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('就绪评审对账硬格式'), '探索者 persona：对账+下一题同条硬格式（0.33.30）');
+assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('回合最后一条'), '探索者 persona 明示 dsh 只回传回合最后一条（0.33.30）');
+assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('禁止先把对账作为回合中段文本发出'), '探索者 persona 禁止回合中段先发对账（0.33.30）');
 assert.ok(!scenePersonasOf({}, 'knowledge').explorerPrompt.includes('正确项位置, why'), '问题意图不再携带答案线索字段');
 assert.ok(scenePersonasOf({}, 'knowledge').explorerPrompt.includes('correctIndex'), '探索者 persona 明确禁止 correctIndex 等线索字段');
 assert.ok(scenePersonasOf({}, 'knowledge').readinessPrompt.includes('correctIndex'), 'readiness 委派模板同样禁止答案线索字段');
@@ -690,6 +717,106 @@ assert.equal(hasArenaChildDelegation([{ type: 'tool/call', data: { name: 'bash',
 assert.equal(hasArenaChildDelegation([kSendCall('2bf6aff4-1')], []), false, '无竞技场子代理 id → 不误判');
 assert.equal(hasArenaChildDelegation([kSendCall('2bf6aff4-1')], ['x']), false, '目标不匹配 → 不在途');
 assert.equal(hasArenaChildDelegation(undefined, ['x']), false, '事件缺失 → false');
+// roundEventsOf（0.33.25）：在途检测窗口化到当前回合——修复 0.33.22 全量历史扫描回归
+// （历史中继 send_message 残留 → 后续每次 k_gate 都 stay 卡死，session-90527e05）
+assert.deepEqual(roundEventsOf([]), [], '空事件 → 空');
+assert.deepEqual(roundEventsOf(undefined), [], '事件缺失 → 空');
+const noAnchor = [{ a: 1 }, { a: 2 }];
+assert.equal(roundEventsOf(noAnchor), noAnchor, '无 turn/start、无 settle → 全量原引用');
+const turnStartEv = () => ({ type: 'turn/start' });
+const settleEv = () => ({ type: 'user/message', data: { source: { kind: 'subagent-settled' } } });
+const winFallback = [{ a: 1 }, settleEv(), { a: 2 }];
+assert.deepEqual(roundEventsOf(winFallback), [settleEv(), { a: 2 }], '无 turn/start → 回退最后一次 settle（含锚点起，与 collectAskAnswerText 一致）');
+const winMulti = [{ a: 0 }, turnStartEv(), { a: 1 }, settleEv(), { a: 2 }, turnStartEv(), { a: 3 }];
+assert.deepEqual(roundEventsOf(winMulti), [turnStartEv(), { a: 3 }], '取最后一次 turn/start 起（turn/start 优先于 settle）');
+// 组合回归：历史回合的中继不算在途（可正常派发）；本回合委派仍算在途（stay 留场）
+const evOldRelay = [
+  { type: 'turn/start' },
+  kSendCall('2bf6aff4-1'),
+  { type: 'turn/end' },
+  turnStartEv(), // 当前确认门回合（k_gate）
+  { type: 'turn/end' }
+];
+assert.equal(hasArenaChildDelegation(roundEventsOf(evOldRelay), ['2bf6aff4-1']), false, '0.33.25 回归：历史回合的 send_message 中继不进入当前回合窗口 → 不在途 → k_gate 正常推进');
+assert.equal(
+  planKnowledgeGate('continue', null, 'review', 'review', hasArenaChildDelegation(roundEventsOf(evOldRelay), ['2bf6aff4-1'])).action,
+  'dispatch',
+  '组合：用户确认 + record 生效 + 仅历史中继 → 派发 review（本次事故形态）'
+);
+const evRoundRelay = [turnStartEv(), kSendCall('2bf6aff4-1'), { type: 'turn/end' }];
+assert.equal(hasArenaChildDelegation(roundEventsOf(evRoundRelay), ['2bf6aff4-1']), true, '本回合内委派修订轮 → 仍在途 → stay 等结算');
+// childCreateDenyReason（0.33.26）：tools.guard 执行级硬门的拒绝文案——restrict 够不到
+// own 层注册的 subagent，guard 在 dispatch 前按 exec.name 拦；send_message 放行
+assert.equal(childCreateDenyReason('subagent'), '竞技场模式下已禁用 subagent：探索者/挑战者由宿主按阶段创建；主控者只能向已存在的探索者/挑战者委派任务（send_message），禁止创建新子代理（新副本没有阶段上下文、游离于状态机外）。', 'subagent → 拒绝文案');
+assert.ok(childCreateDenyReason('subagent_fork')?.includes('已禁用 subagent_fork'), 'subagent_fork → 拒绝文案');
+assert.equal(childCreateDenyReason('send_message'), void 0, 'send_message 不在名单 → 放行（向既有子代理委派开放）');
+assert.equal(childCreateDenyReason('list_agents'), void 0, 'list_agents 放行');
+assert.equal(childCreateDenyReason(undefined), void 0, 'exec.name 缺失 → 放行');
+// 0.33.29 执行观测：readinessAskSkippedDocRead（主控者未读文档就转问就绪题 → true，宿主告警）
+const kAskCall=(qid)=>({ type: 'tool/call', data: { name: 'ask_user_question', arguments: JSON.stringify({ questions:[{id:qid}] }) } });
+const kReadCall=()=>({ type: 'tool/call', data: { name: 'read', arguments: JSON.stringify({ file_path: '/x/openspec/changes/event-page-content-types/user-readiness.review.md' }) } });
+const kOtherAsk=()=>({ type: 'tool/call', data: { name: 'ask_user_question', arguments: JSON.stringify({ questions:[{id:'arena_k_advance'}] }) } });
+const kTurnStart=()=>({ type: 'turn/start' });
+assert.equal(readinessAskSkippedDocRead([kTurnStart(), kAskCall('readiness_q1')]), true, '就绪题未先读文档 → 违例');
+assert.equal(readinessAskSkippedDocRead([kTurnStart(), kReadCall(), kAskCall('readiness_q1')]), false, '先读文档再转问 → 合规');
+assert.equal(readinessAskSkippedDocRead([kTurnStart(), kAskCall('arena_k_advance')]), false, '非就绪题不检测');
+assert.equal(readinessAskSkippedDocRead([kTurnStart(), kAskCall('readiness_q1'), kReadCall()]), true, '读在问之后 → 仍违例');
+assert.equal(readinessAskSkippedDocRead(undefined), false, '事件缺失 → false');
+// 0.33.31 readinessPreStepShouldInject：裸题回合（k_ask/k_prev=k_readiness、消息缺对账）→ 宿主回合前注入
+const kAskSt={active:true,scene:'knowledge',phase:'k_ask',kPrev:'k_readiness',kQuestion:'{"question":"q"}'};
+assert.equal(readinessPreStepShouldInject(kAskSt,'下一题：NEED_QUESTION {"question":"x"}'), true, '裸题且缺对账 → 注入');
+assert.equal(readinessPreStepShouldInject({...kAskSt,kQuestion:''},'x'), false, '无待问问题 → 不注入');
+assert.equal(readinessPreStepShouldInject({...kAskSt,kPrev:'k_propose'},'x'), false, '非 readiness 中继 → 不注入');
+assert.equal(readinessPreStepShouldInject({...kAskSt,active:false},'x'), false, '非 active → 不注入');
+assert.equal(readinessPreStepShouldInject({...kAskSt,scene:'business'},'x'), false, '非 knowledge → 不注入');
+assert.equal(readinessPreStepShouldInject(kAskSt,'**第 2 题对账**…答案是否正确：正确'), false, '探索者已打包对账 → 不重复注入');
+// 0.33.32：k_readiness 待结算 + 消息携带 NEED_QUESTION（pre-step 先于宿主写 k_ask 的竞态）也能注入
+const kReadSt={active:true,scene:'knowledge',phase:'k_readiness',pendingDispatch:'readiness',kQuestion:''};
+assert.equal(readinessPreStepShouldInject(kReadSt,'...closing message: 下一题（第 5 题）\nNEED_QUESTION {"question":"x"}'), true, 'settle 裸题回合（pre-step 先于 k_ask 写入）→ 注入');
+assert.equal(readinessPreStepShouldInject(kReadSt,'Agent 消息：requirement-report 已收讫…'), false, 'k_readiness 下非题消息（无 NEED_QUESTION）→ 不注入');
+assert.equal(readinessPreStepShouldInject(kReadSt,'NEED_QUESTION {"question":"y"}'), true, '含 NEED_QUESTION 即注入');
+// 0.33.33 宿主直问（方案 B）：buildReadinessAskQuestions / readinessTurnHostAsk
+const kQJson=JSON.stringify({header:'就绪评审：枚举',question:'Scenario: 第一步做什么？',options:[{label:'A'},{label:'B'},{label:'C',correctIndex:2}],multi_select:false});
+const bq=buildReadinessAskQuestions(kQJson,'用户预测与规则一致 → aligned。');
+assert.ok(bq && bq.length===1, '解析成功返回单题数组');
+assert.ok(bq[0].question.includes('【上一题对账】') && bq[0].question.includes('用户预测与规则一致'), '对账作为问题前缀（答案正确与否随弹窗呈现）');
+assert.deepEqual(bq[0].options.map(o=>o.label), ['A','B','C'], '只保留 label 展示字段（correctIndex 等线索不进负载）');
+assert.equal(bq[0].multi_select, false, 'multi_select 透传');
+assert.equal(buildReadinessAskQuestions('not-json', null), null, '非 JSON → null');
+const kReadStB={active:true,scene:'knowledge',phase:'k_readiness',pendingDispatch:'readiness'};
+assert.equal(readinessTurnHostAsk(kReadStB,'...closing message: NEED_QUESTION {"question":"x"}'), true, 'k_readiness 待结算 + NEED_QUESTION → 宿主代问并替换回合');
+assert.equal(readinessTurnHostAsk(kReadStB,'requirement-report 转达…'), false, '非题消息 → 不代问');
+assert.equal(readinessTurnHostAsk({...kReadStB,active:false},'NEED_QUESTION x'), false, '非 active → 不代问');
+
+
+// 0.33.27 readiness 对账机械兜底（90527e05：探索者把对账发成回合中段消息 → 只回传末条 → 对账丢失）
+assert.equal(hasReadinessReconcileText('**第 1 题对账**\n规则揭示…\n答案是否正确：非错误答案（未预测）'), true, '含对账标记 → true（已打包，宿主不重复补发）');
+assert.equal(hasReadinessReconcileText('下一题（第 3 题，归属分类）：\nNEED_QUESTION {"question":"…"'), false, '仅下一题无对账 → false（触发宿主补发）');
+assert.equal(hasReadinessReconcileText(undefined), false, '消息缺失 → false');
+const fixtureMd = [
+  '# User Readiness Review',
+  '## Questions and Answers',
+  '### 1. 内容类型枚举：新增内容类型的第一步',
+  '**Type**: prediction',
+  '**User answer**: 不确定——一起核对',
+  '**Rule (revealed after answer)**: 内容类型集合开放，ContentTypeInterface 是唯一事实来源。',
+  '**Reconciliation**: 用户未作预测，选择一起核对——规则已揭示：先扩展 ContentTypeInterface。',
+  '**Decision**: accepted',
+  '### 2. 显示标签：CHANNELCHECK 显示什么',
+  '**Type**: prediction',
+  '**User answer**: Pulse',
+  '**Rule (revealed after answer)**: CHANNELCHECK → "Pulse"。',
+  '**Reconciliation**: 用户预测 "Pulse"，与规则一致 → aligned。',
+  '**Decision**: accepted',
+  '### 3. 归属分类（尚未作答）',
+  '**Type**: prediction'
+].join('\n');
+const reconc2 = lastAnsweredReconciliationOf(fixtureMd);
+assert.ok(reconc2 !== null && reconc2.includes('显示标签：CHANNELCHECK') && reconc2.includes('用户预测 "Pulse"，与规则一致'), '取最后一题已作答的 Reconciliation（含小节标题与对账正文，正确预测题）');
+assert.equal(lastAnsweredReconciliationOf('### 1. 未答\n**Type**: prediction\n'), null, '无任何已作答 → null');
+assert.equal(lastAnsweredReconciliationOf(undefined), null, '文件缺失 → null');
+const fixtureUnsure = '# UR\n## Questions and Answers\n### 1. 枚举\n**User answer**: 不确定——一起核对\n**Reconciliation**: 用户未作预测，选择一起核对——规则已揭示：先扩展 ContentTypeInterface，选项 3 为规则行为。\n**Decision**: accepted\n';
+assert.ok(lastAnsweredReconciliationOf(fixtureUnsure)?.includes('未作预测，选择一起核对'), '「不确定——一起核对」作答同样有 Reconciliation → 兜底可处理');
 assert.deepEqual(planKnowledgeAdvance('stop', 'propose', 'propose'), { action: 'close', reason: 'user-paused' }, '用户暂停 → 关闭（即使已 record）');
 assert.deepEqual(
   planKnowledgeAdvance(null, 'propose', 'propose'),
