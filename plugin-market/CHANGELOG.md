@@ -2,6 +2,31 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.14.1
+
+- **refactor：重构后候选批（行为不变的继续瘦身）**——
+  - routes handler 样板收编：9 个 `try{…}catch{sendError(500,errMsg)}` 同构 handler 改由 `asHandler` 统一包装（去 9 份重复的 500 兜底；`handleUpdate` 因 catch 需先写 failed-update 标记、6 个本无样板的 handler 保持原样）；
+  - profile `package.json` 60s TTL 读缓存：`patch.js` 新增 `readProfileManifest`/`invalidateProfileManifest`，`/state`、`/uninstall` 的 manifest 读取走缓存；写路径（bundle 增删、pnpm 安装/移除成功后）即时失效；
+  - repository 三级回退链合一：`/state` 逐条内联回退与 `resolveModuleRepository` 抽共享纯函数 `repositoryFallback`（`/state` 零额外读）；
+  - 清理阈值/审查过期时间常量化（`CLEANUP_AGE_MS`、`REVIEW_EXPIRE_MS`）；删除零引用的 `localDependencyPath` 薄壳 export；`installPlugin` 的 `review !== true` 保守写法补注释（语义与调用方一致，无取反）。
+- **fix：ESM 下 `require('node:fs')` 恒抛 ReferenceError 被 catch 吞**（回溯至 0.14.0 重构前即存在）——`localDependencyInfo` 的 node_modules 符号链接检测与 `resolvePnpm` 的 npx 缓存 pnpm 查找**从未生效**，现改直用 import 的 `lstatSync/realpathSync/readdirSync`，两分支恢复设计意图（本地符号链接安装正确识别为不可卸载/更新；存在 npx 缓存 pnpm 时优先于裸 pnpm）。
+- **test：smoke 契约扩展**——新增 `makeQueue` 串行性、`readJsonFile/writeJsonFile` round-trip（缺失/损坏 fallback）、`localDependencyInfo`（link: 依赖与 symlink 双分支）断言（共 51 断言全绿）。
+
+## 0.14.2
+
+- **fix：client 硬编码中文本地化**——`finishInstall`/`doUpdate` 的「git 通道安装完成/更新完成」提示与 `doCheckUpdate` 弹窗标题改为走字典（新增 `installDone`/`updateDone` 双语键，复用既有 `removedRestart`/`updateReviewTitle`），en 界面不再混入中文；
+- **注释说明**：`doInstall` 的「已中断」错误字面特判（服务端固定文案，中断提示由 interrupted 消息给出）补注释；`busy` 键 `install:`+repo 与 `install:`+packageName 的漂移经核实为**孤儿键**（doInstall 与 doConfirmInstall 忙窗永不同时重叠、`install:*` 前缀无其它消费者、同插件防重已有任务列表禁用/服务端 gitSpec 相等检查/单弹窗槽位三层兜底）——保留现状，不在 0.14.2 内改动。
+
+## 0.14.0
+
+- **代码重构与瘦身（纯重构，外部行为与契约不变：HTTP 16 路端点、响应字段、`~/.dsh` 状态文件格式、localStorage 键、注入契约）**：
+  - **宿主端拆 8 文件**：单文件 `lib/index.js`（约 3682 行）按域拆为 `util`（纯工具/仓库解析/版本比较）、`pnpm`（pnpm 通道与 allowBuilds 恢复、git 子进程）、`patch`（补丁层/manifest/条目与包元）、`install`（来源/pending 持久化与安装/更新任务域）、`review`（L0 扫描/L1-L2 审查通道/审查缓存）、`dsh`（版本检测/L1 契约扫描/升级分析）、`routes`（16 个具名 handler + 分发表）；`lib/index.js` 瘦身为 35 行入口（name/inject/apply）。依赖单向无环，跨域共享状态（任务队列/审查去重/版本缓存/状态文件队列）保持模块级单例不复制；
+  - **机械化去重**：统一错误转字符串 `errMsg`、递归清理 `rmrf`、JSON 状态文件读写 `readJsonFile/writeJsonFile`（归并 5 簇同构读写，保留字段清洗与旧格式兼容）、三队列并 `makeQueue` 工厂、exec 环境 `execEnv`、`isLocalDependency/localDependencyPath` 合体为 `localDependencyInfo`（/state 单次 IO）、注释归位；
+  - **handle 拆分**：575 行单路由函数拆为 16 个具名 handler + `ROUTES` 分发表（GET 门控语义精确复刻：仅 /state 与 /dsh-version 限 GET，其余不限方法）；
+  - **client 保守瘦身**：删 6 个未用字典键与恒等映射 `phaseLabel`；`/state` 轮询从「无条件每秒请求」改为双速（活动期 1s / 空闲 60s，enterBusy/审查生成打点保证操作后立即回 1s——与侧边栏状态灯同策略）；状态灯 5 处裸 fetch 统一走 `call()` 封装；flash 消息定时器卸载清理；`update/help` 双胞胎处理器合并为公共体 + 薄壳；busy 样板收编 `runBusy`（7 处 handler）；severity/verdict 颜色查表；
+  - **测试护栏**：新增 `test/smoke.mjs`（纯函数行为契约 + 16 路路由表双端一致性 + client.js 语法检查），`npm test` 全绿；重构全程 4 个提交（P0 护栏 → P1 机械化 → P2+P3 拆域与分发表 → P4 client）。
+  - **后续候选（本次明确未做，属行为/本地化修复而非纯重构）**：硬编码中文提示（「git 通道安装完成/更新完成」等）未走字典；`doInstall` 的「已中断」错误特判保留；`busy` 键语义漂移（install 用 repo vs packageName）；client 资源（CSS/字典/状态灯 DOM 区）外置多文件需宿主加载器支持验证后另行评估。
+
 ## 0.13.0
 
 - **dsh 升级分析新增 L1 本地插件契约扫描（机器判定，先于 LLM 分析）**：点击状态灯分析前，先做确定性代码级核对，替换原先「把插件名 `name@version` 丢给模型猜」的弱做法——

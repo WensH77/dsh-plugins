@@ -132,8 +132,6 @@ window.__ModuleLoader__.load({
 			installTitle: "安装审查报告",
 			updateReviewTitle: "更新审查报告",
 			reviewInstalledTitle: "安全审查报告",
-			reviewGenerating: "正在生成审查报告…（首次查看会现场审查已安装包）",
-			diffTitle: "更新差异",
 			diffAdded: "新增",
 			diffRemoved: "删除",
 			diffChanged: "修改",
@@ -169,7 +167,6 @@ window.__ModuleLoader__.load({
 			uninstallTitle: "确认卸载",
 			uninstallConfirm: "确定卸载 {name}？该操作会移除插件包与配置，无法撤销。",
 			cancel: "取消",
-			save: "保存",
 			reviewLabel: "安全审查（分层审查：全量文件特征扫描 + 风险信号定向深挖；报告本地缓存 7 天）",
 			reviewModelLabel: "审查模型",
 			reviewEffortLabel: "推理程度",
@@ -228,14 +225,13 @@ window.__ModuleLoader__.load({
 			phase: "状态",
 			removed: "已卸载：{name}",
 			removedRestart: "（需重启 dsh web 生效）",
+			installDone: "git 通道安装完成{restart}",
+			updateDone: "git 通道更新完成{restart}",
 			repoInvalid: "仓库地址格式无效",
-			dshUpToDate: "已是最新版本 v{version}",
 			dshHasUpdate: "有新版本 v{version}",
 			dshBreaking: "有新版本 v{version}，存在破坏性更新",
 			dshUnknown: "无法检查更新",
 			dshAnalyzing: "正在分析新版本…",
-			dshAnalyzeFailed: "分析失败：{error}",
-			dshChecking: "检查更新中…",
 			dshHasUpdateShort: "有新版本",
 			dshBreakingShort: "破坏性更新",
 			dshReportChanges: "变更要点",
@@ -263,8 +259,6 @@ window.__ModuleLoader__.load({
 			installTitle: "Install review report",
 			updateReviewTitle: "Update review report",
 			reviewInstalledTitle: "Security review report",
-			reviewGenerating: "Generating review report… (first view reviews the installed package)",
-			diffTitle: "Update diff",
 			diffAdded: "Added",
 			diffRemoved: "Removed",
 			diffChanged: "Changed",
@@ -296,7 +290,6 @@ window.__ModuleLoader__.load({
 			uninstallTitle: "Confirm uninstall",
 			uninstallConfirm: "Uninstall {name}? This removes the package and its config. This cannot be undone.",
 			cancel: "Cancel",
-			save: "Save",
 			reviewLabel: "Security review (layered: full-file risk scan + targeted deep-dive on signals; reports cached locally for 7 days)",
 			reviewModelLabel: "Review model",
 			reviewEffortLabel: "Reasoning",
@@ -359,14 +352,13 @@ window.__ModuleLoader__.load({
 			phase: "State",
 			removed: "Removed: {name}",
 			removedRestart: " (restart dsh web to apply)",
+			installDone: "Installed via git channel{restart}",
+			updateDone: "Updated via git channel{restart}",
 			repoInvalid: "Invalid repo address",
-			dshUpToDate: "Up to date: v{version}",
 			dshHasUpdate: "New version available: v{version}",
 			dshBreaking: "New version v{version} — breaking changes detected",
 			dshUnknown: "Unable to check for updates",
 			dshAnalyzing: "Analyzing the new version…",
-			dshAnalyzeFailed: "Analysis failed: {error}",
-			dshChecking: "Checking for updates…",
 			dshHasUpdateShort: "update available",
 			dshBreakingShort: "breaking update",
 			dshReportChanges: "Changes",
@@ -392,10 +384,6 @@ window.__ModuleLoader__.load({
 			return (moduleName.startsWith("@") ? moduleName.slice(moduleName.indexOf("/") + 1) : moduleName)
 				.replace(/^cordis:/, "").replace(/^cordis-plugin-/, "").replace(/^dsh-(?:host-|client-)?/, "");
 		}
-		function phaseLabel(phase) {
-			if (phase === null) return "—";
-			return { pending: "pending", loading: "loading", active: "active", failed: "failed", unloading: "unloading" }[phase] ?? phase;
-		}
 		async function call(path, body) {
 			const response = await fetch(path, body === undefined
 				? {}
@@ -412,6 +400,9 @@ window.__ModuleLoader__.load({
 		function cleanRepo(value) {
 			return String(value ?? "").trim();
 		}
+		// 审查严重度/结论 → 主题色（React 弹窗与状态灯 DOM 弹窗共用；fallback 取最轻档）
+		const SEVERITY_COLOR = { high: "var(--dsw-alias-state-error-primary)", medium: "var(--dsw-alias-state-warn-primary)", low: "var(--dsw-alias-state-success-primary)" };
+		const VERDICT_COLOR = { danger: SEVERITY_COLOR.high, caution: SEVERITY_COLOR.medium, safe: SEVERITY_COLOR.low };
 
 		// ── main tab component ───────────────────────────────────────────────
 		function PluginMarketTab({ t, sessions }) {
@@ -420,8 +411,11 @@ window.__ModuleLoader__.load({
 			// 支持并发检查；同一插件的 check/update 等键互斥，避免同一对象上的并行操作
 			const [busy, setBusy] = useState({});
 			const busyNow = (key) => busy[key] === true;
-			const enterBusy = (key) => setBusy((prev) => ({ ...prev, [key]: true }));
+			const enterBusy = (key) => { setPollFast(true); setBusy((prev) => ({ ...prev, [key]: true })); };
 			const leaveBusy = (key) => setBusy((prev) => { if (prev[key] !== true) return prev; const next = { ...prev }; delete next[key]; return next; });
+			// 双速轮询标志：活动期（任务/实时进度）1s，空闲 60s（与侧边栏状态灯同策略）。
+			// enterBusy 打点保证任何操作后立即回到 1s——长流程（拉取/审查/更新）期间卡片实时刷新。
+			const [pollFast, setPollFast] = useState(false);
 			const [message, setMessage] = useState(null);
 			const [messageOk, setMessageOk] = useState(false);
 			const [sources, setSources] = useState([]);
@@ -443,13 +437,17 @@ window.__ModuleLoader__.load({
 			});
 			const setRouteModel = (model) => { setRoute((prev) => ({ ...prev, model })); try { localStorage.setItem("pm-review-model", model); } catch {} };
 			const setRouteEffort = (effort) => { setRoute((prev) => ({ ...prev, effort })); try { localStorage.setItem("pm-review-effort", effort); } catch {} };
-			// 模态框:null 或 { type: "confirm"|"repo", entry, value? }
+			// 模态框:null 或 { type: "confirm"|"review"|"update-loading", entry, value? }
 			const [modal, setModal] = useState(null);
 			const [updateChecks, setUpdateChecks] = useState({});
 			// 弹窗代次：进行中弹窗（审查生成/更新安装）被手动关闭时 +1，
 			// 异步 then 里对比代次，防止用户关闭后又被结果"复活"弹窗
 			const modalGen = useRef(0);
 			const closeModal = () => { modalGen.current += 1; setModal(null); };
+			// flash 消息自动消失定时器：卸载/再次提示时清理，避免泄漏与旧提示覆盖新提示
+			const messageTimer = useRef(null);
+			const clearMessageTimer = () => { if (messageTimer.current !== null) { clearTimeout(messageTimer.current); messageTimer.current = null; } };
+			useEffect(() => () => clearMessageTimer(), []);
 
 			const refresh = () => {
 				call("/plugin-market/state")
@@ -457,7 +455,8 @@ window.__ModuleLoader__.load({
 					.catch((error) => setState({ status: "error", error }));
 			};
 			useEffect(() => { refresh(); }, []);
-			// 待安装任务轮询：有任务时每 1 秒实时刷新（审查耗时/阶段实时跳动）
+			// 待安装任务轮询：活动期（存在任务或实时进度）每 1 秒实时刷新，空闲退避 60s
+			// （与侧边栏状态灯同款双速策略；enterBusy/doViewReview 打点保证操作后立即回到 1s）
 			let lastJobsKey = null;
 			const stageLabel = (stage) => stage === "scan" ? t("stageScan") : stage === "l1" ? t("stageL1") : stage === "aggregate" ? t("stageAggregate") : stage;
 			// 检查更新/审查实时进度文案（服务端 checks 结构化进度 → 本地化显示）
@@ -476,44 +475,48 @@ window.__ModuleLoader__.load({
 						if (!d || !Array.isArray(d.jobs)) return;
 						// 有任务或有实时进度 → 每次刷新；否则只在有变化时更新（清空残留卡片）
 						const checksActive = d.checks && Object.keys(d.checks).length > 0;
+						const active = d.jobs.length > 0 || checksActive;
 						const key = d.jobs.map((j) => j.jobId + ":" + j.status).join(",") + "|" + JSON.stringify(d.checks ?? {});
-						if (d.jobs.length > 0 || checksActive || key !== lastJobsKey) { lastJobsKey = key; setState({ status: "ready", data: d }); }
+						if (active || key !== lastJobsKey) { lastJobsKey = key; setState({ status: "ready", data: d }); }
+						// 服务端回到空闲（无任务/无进度）→ 退避 60s；仍活动 → 保持 1s
+						if (pollFast !== active) setPollFast(active);
 					}).catch(() => {});
-				}, 1000);
+				}, pollFast ? 1000 : 60000);
 				return () => { lastJobsKey = null; clearInterval(timer); };
-			}, []);
+			}, [pollFast]);
 
 			const flash = (text, ok) => {
 				setMessage(text);
 				setMessageOk(ok === true);
 				// 报错给足查看时间（20s），成功提示保持 5s 不遮挡界面
-				setTimeout(() => setMessage(null), ok === true ? 5000 : 20000);
+				clearMessageTimer();
+				messageTimer.current = setTimeout(() => { messageTimer.current = null; setMessage(null); }, ok === true ? 5000 : 20000);
+			};
+
+			// 统一「忙态请求」样板：enter → 请求 → onOk → 默认错误提示 → leave
+			// （各 handler 的差异只在请求参数与成功后动作；catch 均为 flash(error.message, false)）
+			const runBusy = (key, request, onOk) => {
+				enterBusy(key);
+				request()
+					.then((data) => { if (onOk) onOk(data); })
+					.catch((error) => flash(error.message, false))
+					.finally(() => leaveBusy(key));
 			};
 
 			const doToggle = (entry, enabled) => {
-				const key = "toggle:" + entry.entryId;
-				enterBusy(key);
-				call("/plugin-market/toggle", { entryId: entry.entryId, enabled })
-					.then((data) => {
-						refresh();
-						if (data.needsRestart === true) flash(t("toggleNeedsRestart"), false);
-						else flash(enabled ? t("toggleOn") : t("toggleOff"), true);
-					})
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				runBusy("toggle:" + entry.entryId, () => call("/plugin-market/toggle", { entryId: entry.entryId, enabled }), (data) => {
+					refresh();
+					if (data.needsRestart === true) flash(t("toggleNeedsRestart"), false);
+					else flash(enabled ? t("toggleOn") : t("toggleOff"), true);
+				});
 			};
 
 			const doCheckUpdate = (entry) => {
-				const key = "check:" + entry.entryId;
-				enterBusy(key);
-				call("/plugin-market/check-update", { packageName: entry.moduleName, repository: entry.repository ?? "", review, model: route.model, effort: route.effort })
-					.then((data) => {
-						setUpdateChecks((prev) => ({ ...prev, [entry.entryId]: data }));
-						// 审查通过后服务端保留隔离目录（updateJobId）：确认更新时直接从该环境安装
-						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: "更新审查报告", entry, updateJobId: data.updateJobId ?? "" });
-					})
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				runBusy("check:" + entry.entryId, () => call("/plugin-market/check-update", { packageName: entry.moduleName, repository: entry.repository ?? "", review, model: route.model, effort: route.effort }), (data) => {
+					setUpdateChecks((prev) => ({ ...prev, [entry.entryId]: data }));
+					// 审查通过后服务端保留隔离目录（updateJobId）：确认更新时直接从该环境安装
+					if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle"), entry, updateJobId: data.updateJobId ?? "" });
+				});
 			};
 
 			// 安全审查开关：开启 1 次点击；关闭需连点 5 次（点击整个文案计数）；每次切换后 1 秒保护期，防误触又开启
@@ -547,12 +550,10 @@ window.__ModuleLoader__.load({
 			const doUninstall = () => {
 				const entry = modal.entry;
 				setModal(null);
-				const key = "uninstall:" + entry.entryId;
-				enterBusy(key);
-				call("/plugin-market/uninstall", { entryId: entry.entryId })
-					.then((data) => { refresh(); flash(tpl(t("removed"), { name: data.packageName ?? entry.moduleName }) + (data.restart ? t("removedRestart") : "") + (data.uninstallError ? "：" + data.uninstallError : ""), true); })
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				runBusy("uninstall:" + entry.entryId, () => call("/plugin-market/uninstall", { entryId: entry.entryId }), (data) => {
+					refresh();
+					flash(tpl(t("removed"), { name: data.packageName ?? entry.moduleName }) + (data.restart ? t("removedRestart") : "") + (data.uninstallError ? "：" + data.uninstallError : ""), true);
+				});
 			};
 
 			const persistSources = (next) => {
@@ -576,7 +577,7 @@ window.__ModuleLoader__.load({
 
 			const finishInstall = (data) => {
 				refresh();
-				flash("git 通道安装完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
+				flash(tpl(t("installDone"), { restart: data.restart ? t("removedRestart") : "" }), true);
 			};
 			const doInstall = (repo) => {
 				const key = "install:" + repo;
@@ -598,27 +599,19 @@ window.__ModuleLoader__.load({
 							finishInstall(data);
 						}
 					})
+					// 用户主动中断（doInterrupt）时服务端抛「安装已中断」（本插件固定文案，非 dsh 本地化系统）——
+					// 中断提示已由 interrupted 消息给出，这里按字面匹配跳过重复报错
 					.catch((error) => { if (!String(error.message ?? "").includes("已中断")) flash(error.message, false); })
 					.finally(() => leaveBusy(key));
 			};
 			const doConfirmInstall = () => {
 				const pending = modal.pending;
 				setModal(null);
-				const key = "install:" + (pending.packageName ?? "");
-				enterBusy(key);
-				call("/plugin-market/install/confirm", { jobId: pending.jobId })
-					.then(finishInstall)
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				runBusy("install:" + (pending.packageName ?? ""), () => call("/plugin-market/install/confirm", { jobId: pending.jobId }), finishInstall);
 			};
 			const doInterrupt = (jobId, event) => {
 				if (event) event.stopPropagation();
-				const key = "interrupt:" + jobId;
-				enterBusy(key);
-				call("/plugin-market/install/interrupt", { jobId })
-					.then(() => { refresh(); flash(t("interrupted"), true); })
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				runBusy("interrupt:" + jobId, () => call("/plugin-market/install/interrupt", { jobId }), () => { refresh(); flash(t("interrupted"), true); });
 			};
 			const readCurrentSessionId = () => {
 				try {
@@ -627,38 +620,25 @@ window.__ModuleLoader__.load({
 					return snap && typeof snap.current === "string" ? snap.current : "";
 				} catch { return ""; }
 			};
+			// 帮我安装/帮我更新公共体：开启可见 harness 会话交给它完成；会话 id 由服务端幂等返回
+			const doHelp = (key, url, body, doneMsg) => {
+				runBusy(key, () => call(url, body), (data) => {
+					refresh();
+					flash(tpl(doneMsg, { sessionId: data.sessionId ?? "" }), true);
+					if (data && typeof data.sessionId === "string" && data.sessionId !== ""
+						&& sessions && typeof sessions.refresh === "function" && typeof sessions.open === "function") {
+						sessions.refresh().then(() => sessions.open(data.sessionId)).catch(() => {});
+					}
+				});
+			};
 			// 帮我安装：失败任务（拉取/审查/安装任一阶段）→ 开启可见 harness 会话，由会话完成安装
 			const doHelpInstall = (job, event) => {
 				if (event) event.stopPropagation();
-				const key = "help:" + job.jobId;
-				enterBusy(key);
-				call("/plugin-market/install/help", { jobId: job.jobId, sessionId: readCurrentSessionId() })
-					.then((data) => {
-						refresh();
-						flash(tpl(t("helpInstallDone"), { sessionId: data.sessionId ?? "" }), true);
-						if (data && typeof data.sessionId === "string" && data.sessionId !== ""
-							&& sessions && typeof sessions.refresh === "function" && typeof sessions.open === "function") {
-							sessions.refresh().then(() => sessions.open(data.sessionId)).catch(() => {});
-						}
-					})
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				doHelp("help:" + job.jobId, "/plugin-market/install/help", { jobId: job.jobId, sessionId: readCurrentSessionId() }, t("helpInstallDone"));
 			};
 			// 帮我更新：更新失败的插件 → 开启可见 harness 会话，由会话完成更新（与「帮我安装」同一条通道、同一份 prompt）
 			const doHelpUpdate = (entry) => {
-				const key = "help-update:" + entry.entryId;
-				enterBusy(key);
-				call("/plugin-market/update/help", { entryId: entry.entryId, repository: entry.repository ?? "", sessionId: readCurrentSessionId() })
-					.then((data) => {
-						refresh();
-						flash(tpl(t("helpUpdateDone"), { sessionId: data.sessionId ?? "" }), true);
-						if (data && typeof data.sessionId === "string" && data.sessionId !== ""
-							&& sessions && typeof sessions.refresh === "function" && typeof sessions.open === "function") {
-							sessions.refresh().then(() => sessions.open(data.sessionId)).catch(() => {});
-						}
-					})
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy(key));
+				doHelp("help-update:" + entry.entryId, "/plugin-market/update/help", { entryId: entry.entryId, repository: entry.repository ?? "", sessionId: readCurrentSessionId() }, t("helpUpdateDone"));
 			};
 			const reviewingRef = useRef(new Set());
 			const doViewReview = (entry) => {
@@ -667,6 +647,7 @@ window.__ModuleLoader__.load({
 				if (busyNow("check:" + entry.entryId) || busyNow("update:" + entry.entryId)) return;
 				if (reviewingRef.current.has(entry.entryId)) return; // 该插件审查生成中，忽略重复点击（卡片 meta 区显示进度）
 				reviewingRef.current.add(entry.entryId);
+				setPollFast(true); // 审查生成是分钟级长流程：立即回到 1s 轮询以显示实时进度
 				const gen = ++modalGen.current;
 				// 不弹「生成中」弹窗：卡片 meta 区实时显示审查进度（L0 扫描 → LLM 审查 → 聚合终审），完成后弹报告
 				call("/plugin-market/review", { entryId: entry.entryId, model: route.model, effort: route.effort })
@@ -675,11 +656,10 @@ window.__ModuleLoader__.load({
 					.finally(() => reviewingRef.current.delete(entry.entryId));
 			};
 			const doCleanup = () => {
-				enterBusy("cleanup");
-				call("/plugin-market/cleanup")
-					.then((data) => { refresh(); flash(tpl(t("cleanupDone"), { staging: data.removedStaging ?? 0, reviews: data.removedReviews ?? 0 }), true); })
-					.catch((error) => flash(error.message, false))
-					.finally(() => leaveBusy("cleanup"));
+				runBusy("cleanup", () => call("/plugin-market/cleanup"), (data) => {
+					refresh();
+					flash(tpl(t("cleanupDone"), { staging: data.removedStaging ?? 0, reviews: data.removedReviews ?? 0 }), true);
+				});
 			};
 			const clickJob = (job) => {
 				// 待安装状态点击卡片可再次唤起审查报告
@@ -687,27 +667,31 @@ window.__ModuleLoader__.load({
 					setModal({ type: "review", report: job.review, title: t("installTitle"), pending: job });
 				}
 			};
-			const doConfirmUpdate = () => {
-				const entry = modal.entry;
-				const updateJobId = modal.updateJobId ?? "";
-				// 直接从检查更新时已审查的隔离环境安装（不重新拉取/审查）：先打开进度弹窗，让用户知道正在安装；
-				// 更新是长请求：弹窗带「取消」——关闭后请求继续在后台完成，结果只走消息提示，不再弹回报告
+			// 更新执行公共体（进度弹窗 + 结果处理）；body 区分入口：
+			//   确认安装（updateJobId + model/effort，走已审查隔离环境）与直更（review:false）
+			const doUpdate = (entry, body) => {
+				// 更新是长请求：先开进度弹窗（可关闭——关闭后请求在后台完成，结果只走消息提示），
+				// 完成后若弹窗仍在则弹报告（附更新差异），否则只提示
 				const gen = ++modalGen.current;
 				setModal({ type: "update-loading", entry, onCancel: closeModal });
 				const key = "update:" + entry.entryId;
 				enterBusy(key);
-				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", updateJobId, model: route.model, effort: route.effort })
+				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", ...body })
 					.then((data) => {
 						refresh();
 						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
-						flash("git 通道更新完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
-						// 更新也做安全审查：报告附更新差异（相对已装代码改了什么）
+						flash(tpl(t("updateDone"), { restart: data.restart ? t("removedRestart") : "" }), true);
 						if (modalGen.current !== gen) return; // 用户已关闭进度弹窗：不再弹出报告
 						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
 						else setModal(null);
 					})
 					.catch((error) => { if (modalGen.current === gen) setModal(null); refresh(); flash(error.message, false); })
 					.finally(() => leaveBusy(key));
+			};
+			const doConfirmUpdate = () => {
+				const entry = modal.entry;
+				// 直接从检查更新时已审查的隔离环境安装（不重新拉取/审查）
+				doUpdate(entry, { updateJobId: modal.updateJobId ?? "", model: route.model, effort: route.effort });
 			};
 			// 检查更新后出现「有更新」时的更新入口：
 			//   审查开启且已生成隔离任务（updateJobId）→ 打开审查报告弹窗，确认后直接安装；
@@ -720,21 +704,7 @@ window.__ModuleLoader__.load({
 				doDirectUpdate(entry);
 			};
 			const doDirectUpdate = (entry) => {
-				const gen = ++modalGen.current;
-				setModal({ type: "update-loading", entry, onCancel: closeModal });
-				const key = "update:" + entry.entryId;
-				enterBusy(key);
-				call("/plugin-market/update", { entryId: entry.entryId, repository: entry.repository ?? "", review: false })
-					.then((data) => {
-						refresh();
-						setUpdateChecks((prev) => { const next = { ...prev }; delete next[entry.entryId]; return next; });
-						flash("git 通道更新完成" + (data.restart ? "（需重启 dsh web）" : ""), true);
-						if (modalGen.current !== gen) return; // 用户已关闭进度弹窗：不再弹出报告
-						if (data.review && data.review.verdict) setModal({ type: "review", report: data.review, title: t("updateReviewTitle") });
-						else setModal(null);
-					})
-					.catch((error) => { if (modalGen.current === gen) setModal(null); refresh(); flash(error.message, false); })
-					.finally(() => leaveBusy(key));
+				doUpdate(entry, { review: false });
 			};
 
 			if (state.status === "loading") {
@@ -785,9 +755,9 @@ window.__ModuleLoader__.load({
 					const rep = modal.report;
 					const sev = rep.severity ?? "low";
 					const vd = rep.verdict ?? "caution";
-					const sevColor = sev === "high" ? "var(--dsw-alias-state-error-primary)" : (sev === "medium" ? "var(--dsw-alias-state-warn-primary)" : "var(--dsw-alias-state-success-primary)");
+					const sevColor = SEVERITY_COLOR[sev] ?? SEVERITY_COLOR.low;
 					const vdLabel = vd === "danger" ? t("verdictDanger") : (vd === "caution" ? t("verdictCaution") : t("verdictSafe"));
-					const vdColor = vd === "danger" ? "var(--dsw-alias-state-error-primary)" : (vd === "caution" ? "var(--dsw-alias-state-warn-primary)" : "var(--dsw-alias-state-success-primary)");
+					const vdColor = VERDICT_COLOR[vd] ?? VERDICT_COLOR.safe;
 					return h("div", { className: "pm-overlay", onClick: () => setModal(null) },
 						h("div", { className: "pm-modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 480 } },
 							h("p", { className: "pm-modalTitle" }, modal.title),
@@ -962,7 +932,7 @@ window.__ModuleLoader__.load({
 							),
 							h("div", { className: "pm-meta" },
 								h("span", null, t("version") + ": " + (entry.version ?? t("unknown"))),
-								h("span", null, t("phase") + ": " + phaseLabel(entry.fiberPhase)),
+								h("span", null, t("phase") + ": " + (entry.fiberPhase ?? "—")),
 								// 只展示安装来源：拉取时的远端仓库或本地路径（编辑仓库功能已移除）
 								entry.repository ? h("span", { className: "pm-repo" }, t("repo") + ": " + entry.repository) : null,
 								entry.localPath ? h("span", { className: "pm-repo pm-repoPath" }, t("localPath") + ": " + entry.localPath) : null,
@@ -1290,8 +1260,7 @@ window.__ModuleLoader__.load({
 				};
 
 				const fetchState = () => {
-					fetch("/plugin-market/dsh-version", { cache: "no-store" })
-						.then((r) => r.json())
+					call("/plugin-market/dsh-version")
 						.then((d) => {
 							paint(d);
 							const analyzing = !!(d && d.status === "analyzing");
@@ -1306,8 +1275,7 @@ window.__ModuleLoader__.load({
 					if (state === "analyzing") return; // 分析进行中：忽略重复点击（服务端同样不并发起第二次分析）
 					if (state === "update" || state === "breaking") {
 						// 已有判定 → 弹判定弹窗；待分析 → 静默直连 LLM 分析（不弹窗），完成后点击再看弹窗
-						fetch("/plugin-market/dsh-version", { cache: "no-store" })
-							.then((r) => r.json())
+						call("/plugin-market/dsh-version")
 							.then((d) => {
 								if (d && d.hasUpdate === true && (d.verdict === "safe" || d.verdict === "breaking")) {
 									showDshReport(d);
@@ -1316,12 +1284,7 @@ window.__ModuleLoader__.load({
 								analyzeBusy = true;
 								statusEl.dataset.state = "analyzing";
 								startPoll(true);
-								fetch("/plugin-market/dsh-version/analyze", {
-									method: "POST",
-									headers: { "content-type": "application/json" },
-									body: JSON.stringify({}),
-								})
-									.then((r) => r.json())
+								call("/plugin-market/dsh-version/analyze", {})
 									.then((d2) => { if (!d2 || d2.ok !== true) fetchState(); })
 									.catch(() => fetchState())
 									.finally(() => { analyzeBusy = false; });
@@ -1329,8 +1292,7 @@ window.__ModuleLoader__.load({
 							.catch(() => fetchState());
 					} else {
 						// 绿/灰：手动重检
-						fetch("/plugin-market/dsh-version/check", { method: "POST" })
-							.then((r) => r.json())
+						call("/plugin-market/dsh-version/check", {})
 							.then((d) => paint(d))
 							.catch(() => fetchState());
 					}
