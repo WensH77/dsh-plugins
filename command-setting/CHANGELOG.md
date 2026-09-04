@@ -2,6 +2,15 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.6.0
+
+- **代码重构与瘦身（纯重构，外部行为与契约不变：HTTP 端点 / 响应字段 / settings 命名空间与 hidden 语义 / 受保护命令 / /ask 会话语义与侧文件格式 / 注入契约 / 浏览器槽位与按钮行为全部不变）**：
+  - **宿主端按域拆 4 文件**：单文件 `lib/index.js`（约 610 行）拆为 `commands`（命令隐藏域：COMMAND_NAME / DEFAULT_HIDDEN / PROTECTED / cleanHidden + 菜单过滤 shadowCommandList + 命令面全集 collectKnown + 归档清理 sweepArchived）、`ask`（ask 只问答模式域：isBashWrite / askToolDenyReason / buildAskSection / 状态侧文件读写 + 会话级控制器 createAskController——per-agent 拦截安装卸载、/ask 命令注册、agent/created|disposed 生命周期恢复）、`routes`（sendJson / readBody / registerWebRoute + catalog / set / ask-state 三端点）、`index.js` 瘦身为 96 行入口（name/inject/Config/apply 装配 + settings 命名空间注入）；
+  - **共享状态收编**：apply 内部分散闭包改为 `env` 共享对象（ctx / original 未过滤命令面 / hiddenSet / scope / notifyChange / ask 控制器），三个端点与清理逻辑经 env 读写，模块间依赖单向无环；
+  - **client 保守瘦身**：Plan / Ask 两个外置按钮注入块的重复 `execute` 闭包（20+ 行）收编为模块级 `executeSlashCommand`（wire 契约注释随函数归位）；
+  - **死代码清理**：删除零引用的 `askActiveFor`（无调用方、index 未导出）；模块级导出面保持原样（`askToolDenyReason` / `buildAskSection` 仍由 index 转发）。
+  - **测试护栏**：npm test（smoke ALL PASS + client-smoke PASS）全绿。
+
 ## 0.5.0
 
 - **Ask 只问答模式（会话级，/ask + Ask 按钮）**：composer 工具行 Plan 按钮左侧新增 Ask 按钮（`conversation.input.left` 槽 order -1），点击执行 `/ask` / `/ask off`；开启后该会话进入只问答模式——

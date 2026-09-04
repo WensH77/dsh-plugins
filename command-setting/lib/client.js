@@ -389,6 +389,16 @@ window.__ModuleLoader__.load({
 		// property access only resolves once it is injected, like ui-plan does.
 		const inject = ["slots", "locale", "commandUi", "sessions", "remote", "remote.commands"];
 
+		/** 执行一条 slash 命令并返回失败说明（成功返回 null）。Plan/Ask 两个外置
+		 * 切换按钮共用。images 必须显式传：commands/execute 的 wire 契约为
+		 * (agentId, line, images)，images 是必填严格数组参数——省略会校验失败。 */
+		async function executeSlashCommand(ctx, sid, line) {
+			const result = await ctx.remote.commands.execute(sid, line, []);
+			if (!result.ok) return result.error.message + " (" + result.error.code + ")";
+			if (result.value === void 0) return "unknown command: " + line;
+			return null;
+		}
+
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "command-setting: dictionaries");
 			const t = ctx.locale.bind(NS);
@@ -460,15 +470,7 @@ window.__ModuleLoader__.load({
 				locale: NS,
 				inject: (sessionId) => ({
 					sessionId,
-					execute: async (sid, line) => {
-						// images must be passed explicitly: the wire contract for
-						// commands/execute is (agentId, line, images) and images is a
-						// required strict-array parameter — omitting it fails the call.
-						const result = await ctx.remote.commands.execute(sid, line, []);
-						if (!result.ok) return result.error.message + " (" + result.error.code + ")";
-						if (result.value === void 0) return "unknown command: " + line;
-						return null;
-					}
+					execute: (sid, line) => executeSlashCommand(ctx, sid, line)
 				})
 			}, PlanModeToggle));
 
@@ -480,12 +482,7 @@ window.__ModuleLoader__.load({
 				locale: NS,
 				inject: (sessionId) => ({
 					sessionId,
-					execute: async (sid, line) => {
-						const result = await ctx.remote.commands.execute(sid, line, []);
-						if (!result.ok) return result.error.message + " (" + result.error.code + ")";
-						if (result.value === void 0) return "unknown command: " + line;
-						return null;
-					}
+					execute: (sid, line) => executeSlashCommand(ctx, sid, line)
 				})
 			}, AskModeToggle));
 
