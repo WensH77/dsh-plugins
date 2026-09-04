@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.5.0
+
+- **Ask 只问答模式（会话级，/ask + Ask 按钮）**：composer 工具行 Plan 按钮左侧新增 Ask 按钮（`conversation.input.left` 槽 order -1），点击执行 `/ask` / `/ask off`；开启后该会话进入只问答模式——
+  - **专注解答 + 禁改文件（执行级硬拦）**：注入 `ask:policy` 系统提示段（专注问答、可读文件与 run_code/内联命令验证、禁改/禁建文件、禁诱导性改动提问如“需要我帮你改 xxx 吗”）；同时在该会话 agent.ctx 注册 `tools.guard`——`edit` / `write` / `str_replace_editor` 与含写命令/重定向的 `bash`（cp/mv/rm/tee/sed -i/>/>> 等）在 dispatch 前一律拒绝并返回说明，模型层面无法绕过；用户强行要求“直接改”也不会发生（需先 `/ask off`）；
+  - **只读验证不受限**：`read` / `grep` / `glob` / `run_code`、`node -e` / `python3 -c`、运行已有脚本、`ping` / `curl` 等放行；
+  - **会话级 + 重启恢复**：状态按会话存储（`~/.dsh/command-setting-ask.json`），`/ask` 命令只切换当前会话；dsh web 重启后 `agent/created` 时自动恢复拦截（`GET /command-setting/ask-state?session=<id>` 供按钮回显激活态）；子代理/其它会话不受影响；
+  - `ask` 加入受保护命令（不可隐藏——隐藏会失去唯一退出通道）。
+
 ## 0.4.2
 
 - **`cordis` peer 从 `^4.0.1` 改为 `^4.0.2`**：跟随 dsh 0.1.2-alpha 通道（alpha 全家桶统一声明 `cordis ^4.0.2`），与仓库其它插件对齐。

@@ -67,7 +67,15 @@ function makeCtx(routes, extraConfig, options = {}) {
         if (typeof agent === "string") return []; // wrong key type: no agent layer
         return AGENT_DESCRIPTORS.slice();
       },
-      notifyChange: () => {}
+      notifyChange: () => {},
+      register: (definition) => {
+        const registered = (ctx.__registeredCommands ??= []);
+        registered.push(definition.name);
+        return () => {
+          const idx = registered.indexOf(definition.name);
+          if (idx >= 0) registered.splice(idx, 1);
+        };
+      }
     },
     agents: {
       get: (id) => (id === "s1" ? { id: "s1", agent: true } : void 0)
@@ -75,6 +83,15 @@ function makeCtx(routes, extraConfig, options = {}) {
     // sessions 供归档清理的全集收集；缺省给一个 live 会话 s1；显式 undefined
     // 可模拟服务缺失（清理应放弃）。
     sessions: options.sessions === undefined ? { list: () => [{ id: "s1" }] } : options.sessions,
+    on: (event, listener) => {
+      const listeners = (ctx.__events ??= {});
+      const bucket = (listeners[event] ??= []);
+      bucket.push(listener);
+      return () => {
+        const idx = bucket.indexOf(listener);
+        if (idx >= 0) bucket.splice(idx, 1);
+      };
+    },
     webServer: {
       register: ({ path, handler }) => {
         routes.set(path, handler);
@@ -309,6 +326,63 @@ function makeRestartCtx(routes) {
 
   r7 = await postRequest(routes7, "/command-setting/set", { hidden: ["a".repeat(100000)] });
   check("set: oversized body rejected (not 200)", r7.status !== 200, "status=" + r7.status);
+}
+
+// ── context 8: ask 模式 ─────────────────────────────────────────────────────
+// 8a. 纯判定函数 askToolDenyReason：只读放行、写类硬拦、bash 写命令拦、bash 只读放行
+{
+  const { askToolDenyReason } = await import("../lib/index.js");
+  check("ask: edit denied", askToolDenyReason("edit", { file_path: "a.txt" }) !== void 0);
+  check("ask: write denied", askToolDenyReason("write", { file_path: "a.txt" }) !== void 0);
+  check("ask: str_replace_editor denied", askToolDenyReason("str_replace_editor", { command: "str_replace" }) !== void 0);
+  check("ask: read allowed", askToolDenyReason("read", { file_path: "a.txt" }) === void 0);
+  check("ask: grep allowed", askToolDenyReason("grep", {}) === void 0);
+  check("ask: glob allowed", askToolDenyReason("glob", {}) === void 0);
+  check("ask: run_code allowed", askToolDenyReason("run_code", {}) === void 0);
+  check("ask: bash readonly allowed", askToolDenyReason("bash", { command: "node -e 'console.log(1)'" }) === void 0);
+  check("ask: bash cp denied", askToolDenyReason("bash", { command: "cp a b" }) !== void 0);
+  check("ask: bash redirect denied", askToolDenyReason("bash", { command: "echo hi > f.txt" }) !== void 0);
+  check("ask: bash sed -i denied", askToolDenyReason("bash", { command: "sed -i s/a/b/ f" }) !== void 0);
+  // 只读探测命令（for/管道/2>/dev/null/引号内 >）不得误伤（回归：2>/dev/null 曾误判为写重定向）
+  check("ask: bash readonly loop allowed", askToolDenyReason("bash", { command: "for d in a b; do ls -la ~/.dsh/sessions/x/$d/ 2>/dev/null | grep -v \"^total\"; done" }) === void 0);
+  check("ask: bash 2>&1 allowed", askToolDenyReason("bash", { command: "ls -la /tmp 2>&1 | head" }) === void 0);
+  check("ask: bash quoted > allowed", askToolDenyReason("bash", { command: "echo \"a>b\" && grep -n \">\" f.txt" }) === void 0);
+  check("ask: bash append redirect denied", askToolDenyReason("bash", { command: "cat a.txt >> log.txt" }) !== void 0);
+  check("ask: bash tee denied", askToolDenyReason("bash", { command: "tee out.txt" }) !== void 0);
+  check("ask: bash devnull redirect allowed", askToolDenyReason("bash", { command: "echo hi >/dev/null" }) === void 0);
+  check("ask: other tool untouched", askToolDenyReason("subagent", {}) === void 0);
+  // 包装成 heredoc/python 写源码的改动也要拦（open(...,'w').write 落盘现有代码）
+  check("ask: bash heredoc python edit denied", askToolDenyReason("bash", {
+    command: "python3 - <<'EOF'\np='src/messages.ts'\ns=open(p).read()\ns=s.replace('a','b')\nopen(p,'w').write(s)\nEOF\npnpm run typecheck > /tmp/etx45.log 2>&1; echo tc=$?"
+  }) !== void 0);
+  // heredoc 内只有只读 python（不落盘）且无写重定向 → 放行
+  check("ask: bash heredoc python readonly allowed", askToolDenyReason("bash", {
+    command: "python3 - <<'EOF'\np='src/messages.ts'\nprint(open(p).read()[:100])\nEOF"
+  }) === void 0);
+}
+// 8b. ask 提示段：禁改文件 / 禁诱导提问 / 可只读验证 / 退出方式
+{
+  const { buildAskSection } = await import("../lib/index.js");
+  const section = buildAskSection();
+  check("ask: section mentions no file edits", section.includes("edit") || section.includes("改动"));
+  check("ask: section forbids luring questions", section.includes("需要我帮你改") && section.includes("诱导"));
+  check("ask: section allows readonly verify", section.includes("run_code") || section.includes("只读"));
+  check("ask: section mentions exit", section.includes("/ask off"));
+}
+
+// 8c. /ask 命令注册 + ask-state 端点（mock ctx 下：命令注册成功、端点可查、事件监听就绪）
+{
+  const routes8c = new Map();
+  const ctx8c = makeCtx(routes8c, {}, { initialHidden: [] });
+  check("ask: /ask command registered", Array.isArray(ctx8c.__registeredCommands) && ctx8c.__registeredCommands.includes("ask"));
+  check("ask: agent/created listener attached", Array.isArray(ctx8c.__events?.["agent/created"]) && ctx8c.__events["agent/created"].length >= 1);
+  check("ask: agent/disposed listener attached", Array.isArray(ctx8c.__events?.["agent/disposed"]) && ctx8c.__events["agent/disposed"].length >= 1);
+  let r8c = await request(routes8c, "/command-setting/ask-state", { session: "s1" });
+  let body8c = JSON.parse(r8c._body);
+  check("ask: state endpoint ok (off)", r8c.status === 200 && body8c.ok === true && body8c.active === false);
+  r8c = await request(routes8c, "/command-setting/ask-state", { session: "nope;rm" });
+  body8c = JSON.parse(r8c._body);
+  check("ask: state endpoint rejects malformed session", r8c.status === 200 && body8c.ok === true && body8c.active === false);
 }
 
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");

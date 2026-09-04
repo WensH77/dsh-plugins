@@ -21,7 +21,7 @@ const sandbox = {
   encodeURIComponent,
   AbortController,
   fetch: async () => ({ json: async () => ({ ok: true }) }),
-  react: { createElement: () => ({}), useState: (v) => [v, () => {}], useEffect: () => {}, useCallback: (f) => f },
+  react: { createElement: () => ({}), useState: (v) => [v, () => {}], useEffect: () => {}, useCallback: (f) => f, useRef: () => ({ current: null }) },
   "react/jsx-runtime": {},
   "react-dom": { createPortal: (n) => n }
 };
@@ -49,6 +49,7 @@ check("apply exported", typeof loaded.apply === "function");
 check("controller exported", typeof loaded.CommandsSettingController === "function");
 check("section exported", typeof loaded.CommandsSettingSection === "function");
 check("plan toggle exported", typeof loaded.PlanModeToggle === "function");
+check("ask toggle exported", typeof loaded.AskModeToggle === "function");
 
 // locale dictionaries remain in sync
 let dicts = null;

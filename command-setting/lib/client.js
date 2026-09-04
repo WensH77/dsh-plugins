@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react = require("react");
-		const { useState, useEffect } = react;
+		const { useState, useEffect, useRef, useCallback } = react;
 		const h = react.createElement;
 
 		// ── styles (injected once, tagged like the built bundles) ──────────────
@@ -71,7 +71,12 @@ window.__ModuleLoader__.load({
 			planLabel: "Plan",
 			planEnter: "plan mode 已关闭 — 点击开启（/plan）",
 			planExit: "plan mode 已开启 — 点击关闭（/plan off）",
-			planError: "plan 命令执行失败"
+			planError: "plan 命令执行失败",
+			askLabel: "Ask",
+			askEnter: "ask 模式（只问答）已关闭 — 点击开启（/ask）",
+			askExit: "ask 模式（只问答）已开启 — 点击关闭（/ask off）",
+			askError: "ask 命令执行失败",
+			askLoading: "…",
 		};
 		const en = {
 			nav: "Command Settings",
@@ -90,7 +95,12 @@ window.__ModuleLoader__.load({
 			planLabel: "Plan",
 			planEnter: "Plan mode off — click to turn on (/plan)",
 			planExit: "Plan mode on — click to turn off (/plan off)",
-			planError: "failed to run the plan command"
+			planError: "failed to run the plan command",
+			askLabel: "Ask",
+			askEnter: "Ask mode (Q&A only) off — click to turn on (/ask)",
+			askExit: "Ask mode (Q&A only) on — click to turn off (/ask off)",
+			askError: "failed to run the ask command",
+			askLoading: "…",
 		};
 
 		// ── minimal snapshot store (no external deps) ─────────────────────────
@@ -325,6 +335,55 @@ window.__ModuleLoader__.load({
 			}, t("planLabel"));
 		}
 
+		// ── externalized ask-mode toggle ────────────────────────────────────
+		// Always-visible button placed LEFT of the plan button (slot order -1).
+		// Active state is fetched from the host (/command-setting/ask-state);
+		// clicking runs /ask (enter) or /ask off (leave).
+		function AskModeToggle(props) {
+			const { t, sessionId, execute } = props;
+			const [active, setActive] = useState(false);
+			const [busy, setBusy] = useState(false);
+			const [error, setError] = useState(null);
+			const aliveRef = useRef(true);
+			useEffect(() => {
+				aliveRef.current = true;
+				return () => { aliveRef.current = false; };
+			}, []);
+			const restore = useCallback(async () => {
+				if (sessionId === void 0 || sessionId === "") return;
+				try {
+					const res = await fetch("/command-setting/ask-state?session=" + encodeURIComponent(sessionId), { cache: "no-store" });
+					const data = await res.json();
+					if (aliveRef.current) setActive(data !== null && typeof data === "object" && data.ok === true && data.active === true);
+				} catch (_askStateFailure) {
+					// keep local state
+				}
+			}, [sessionId]);
+			useEffect(() => { void restore(); }, [restore]);
+			const onToggle = async () => {
+				if (busy || sessionId === void 0) return;
+				setBusy(true);
+				setError(null);
+				try {
+					const failure = await execute(sessionId, active ? "/ask off" : "/ask");
+					if (failure !== null) setError(failure);
+					else void restore();
+				} catch (reason) {
+					setError(reason instanceof Error ? reason.message : String(reason));
+				}
+				setBusy(false);
+			};
+			return h("button", {
+				type: "button",
+				className: "hc-planbtn", // 与 Plan 按钮共用同一套样式（外形/激活高亮一致）
+				"data-active": active ? "true" : "false",
+				"aria-label": t(active ? "askExit" : "askEnter"),
+				title: error === null ? t(active ? "askExit" : "askEnter") : t("askError") + ": " + error,
+				disabled: busy,
+				onClick: onToggle
+			}, t("askLabel"));
+		}
+
 		// ── plugin entry ──────────────────────────────────────────────────────
 		// "remote.commands" is a separately mounted namespace service (remote.<ns>);
 		// property access only resolves once it is injected, like ui-plan does.
@@ -413,6 +472,23 @@ window.__ModuleLoader__.load({
 				})
 			}, PlanModeToggle));
 
+			// Ask 按钮：注册到同一输入栏左槽，order -1 → 排在 plan（order 0）之前。
+			ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
+				name: "conversation.input.left",
+				id: "ask-mode-toggle",
+				order: -1,
+				locale: NS,
+				inject: (sessionId) => ({
+					sessionId,
+					execute: async (sid, line) => {
+						const result = await ctx.remote.commands.execute(sid, line, []);
+						if (!result.ok) return result.error.message + " (" + result.error.code + ")";
+						if (result.value === void 0) return "unknown command: " + line;
+						return null;
+					}
+				})
+			}, AskModeToggle));
+
 			ctx.effect(() => {
 				const disposers = [
 					ctx.remote.$on("commands/change", () => {
@@ -444,6 +520,7 @@ window.__ModuleLoader__.load({
 		exports.CommandsSettingController = CommandsSettingController;
 		exports.CommandsSettingSection = CommandsSettingSection;
 		exports.PlanModeToggle = PlanModeToggle;
+		exports.AskModeToggle = AskModeToggle;
 		exports.apply = apply;
 		exports.inject = inject;
 		return module.exports;

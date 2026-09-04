@@ -4,18 +4,20 @@ dsh web 命令设置插件：
 
 - **命令菜单管理**：从 “+” / “/” 命令菜单中隐藏/显示指定 slash 命令（默认隐藏 export / feedback / permission），设置页新增「命令设置」区
 - **外置 Plan 按钮**：composer 工具行左侧新增 Plan 切换按钮（点击调用 /plan）
-- **全局生效**：配置保存在全局 settings.yaml（`command-setting` 命名空间），对所有会话一致生效；设置页目录不随当前会话漂移，也不会被某个会话的局部命令面悄悄改写
+- **Ask 只问答模式（/ask）**：composer 工具行 Plan 按钮**左侧**新增 Ask 按钮（点击调用 /ask）——开启后该会话进入**只问答模式**：agent 只回答问题、可读文件与 run_code 验证，**禁止改动或创建任何文件**（执行级硬拦，模型层面无法绕过、用户强行要求也拦不住），并禁止诱导性提问（如“需要我帮你改 xxx 吗”）
+- **全局生效**：命令菜单管理配置保存在全局 settings.yaml（`command-setting` 命名空间），对所有会话一致生效；设置页目录不随当前会话漂移，也不会被某个会话的局部命令面悄悄改写。**ask 模式为会话级开关**（侧文件 `~/.dsh/command-setting-ask.json` 持久化，dsh web 重启后恢复）
 
 ## 功能速览
 
 | 能力 | 说明 |
 |---|---|
 | 隐藏命令 | 从命令菜单移除，直接斜杠输入也不再解析为命令；设置页可随时恢复 |
-| 受保护命令 | `plan` / `goal` 为系统命令，**不可隐藏**（读/写两侧强制） |
+| 受保护命令 | `plan` / `goal` / `ask` 为系统命令，**不可隐藏**（读/写两侧强制） |
 | 全局持久化 | `hidden` 列表写入 settings.yaml（`command-setting` 命名空间），热更新即时生效 |
 | 归档清理 | hidden 中已不存在的命令名（命令被卸载/更名后的残留）**主动检测并自动清理**：设置页读取目录时比对「浏览器贡献命令 ∪ 全局命令 ∪ 所有 live 会话的 agent 命令」全集，幽灵条目自动移除并持久化。**仅在命令面可信时清理**（客户端已上报贡献命令面、存在 live 会话、全集收集成功）——有效隐藏（贡献命令 /model、agent 命令、全局命令）永不被误删 |
 | 双端过滤 | 服务端过滤 host 命令；浏览器端过滤客户端贡献命令（如 /model） |
 | Plan 切换 | composer 工具行左侧独立按钮，点击执行 `/plan`（进入）或 `/plan off`（退出），替换内置的 Plan 芯片 |
+| Ask 只问答模式 | composer 工具行最左侧独立按钮（Plan 左侧），点击执行 `/ask`（进入）或 `/ask off`（退出）；开启后会话级只读——禁改/禁建文件（`tools.guard` 执行级硬拦 + 系统提示约束）、禁诱导改动提问 |
 
 ## 工作原理
 
@@ -23,8 +25,15 @@ dsh web 命令设置插件：
 
 | 文件 | 角色 |
 |---|---|
-| `lib/index.js` | **Node 端** Cordis 插件：shadow `commands.list` 过滤 host 命令；`GET /command-setting/catalog`（未过滤目录）、`POST /command-setting/set`（写 hidden）；settings 命名空间持久化 + `commands/change` 通知 |
-| `lib/client.js` | **浏览器端** bundle：设置页 section（`settings.section` 插槽）+ 命令目录过滤（shadow `commandUi.candidates/matchEnter/matchSpace`）+ Plan 按钮（`conversation.input.left` 插槽） |
+| `lib/index.js` | **Node 端** Cordis 插件：shadow `commands.list` 过滤 host 命令；`GET /command-setting/catalog`（未过滤目录）、`POST /command-setting/set`（写 hidden）、`GET /command-setting/ask-state`（会话 ask 开关）；settings 命名空间持久化 + `commands/change` 通知；`/ask` 命令 + 会话级 ask 拦截安装/恢复（`tools.guard` + `systemPrompt` 段） |
+| `lib/client.js` | **浏览器端** bundle：设置页 section（`settings.section` 插槽）+ 命令目录过滤（shadow `commandUi.candidates/matchEnter/matchSpace`）+ Plan 按钮 + Ask 按钮（`conversation.input.left` 插槽，Ask 在 Plan 左侧） |
+
+### Ask 只问答模式（会话级）
+
+1. **开关**：composer 工具行 Ask 按钮（Plan 左侧，order -1）点击执行 `/ask`（进入）或 `/ask off`（退出）；直接输入 `/ask` 亦可。状态写入 `~/.dsh/command-setting-ask.json`（`{ 会话id: true }`），dsh web 重启后 `agent/created` 时自动恢复（`GET /command-setting/ask-state?session=<id>` 供按钮回显）。
+2. **提示约束**：开启时给该会话注入 `ask:policy` 系统提示段——专注问答、可读文件与 run_code/内联命令验证；**禁止改动或创建文件**；用户强行要求“直接改”时拒绝并提示先 `/ask off`；**禁止诱导性追加提问**（“需要我帮你改 xxx 吗”“需要我现在改 xxx 吗”“要不要顺手把 xxx 也改了”等）。
+3. **执行级硬拦（tools.guard）**：注册在该会话 agent.ctx 的工具守卫在每次工具 dispatch 前判定——`edit` / `write` / `str_replace_editor` 一律拒绝；`bash` 检测到写命令/重定向（`cp`/`mv`/`rm`/`tee`/`sed -i`/`>`/`>>` 等）也拒绝；`read` / `grep` / `glob` / `run_code` 与只读 bash（`node -e` / `python3 -c` / 运行已有脚本 / `ping` / `curl`）放行。守卫返回拒绝文案而非静默放行，模型层面无法绕过（与 arena-v2 的 guard 同机制）；关闭 ask（`/ask off`）或会话销毁时随 disposer 卸载。
+4. **范围**：ask 为**会话级**——只影响开启它的会话主代理，其它会话、子代理不受影响；只读约束只作用于本会话的工具面，不改变全局 sandbox/approval 策略。
 
 ### 隐藏一条命令会发生什么
 
@@ -106,7 +115,24 @@ command-setting:
 ```
 
 `config.hidden`（patch.yml 中的配置）是**初始默认值**，一旦在设置页编辑过，settings.yaml
-中的值即成为事实来源（两者合并，settings.yaml 优先）。`plan` / `goal` 无论配置如何都不可隐藏。
+中的值即成为事实来源（两者合并，settings.yaml 优先）。`plan` / `goal` / `ask` 无论配置如何都不可隐藏。
+
+## 使用
+
+### Ask 只问答模式（会话级）
+
+```bash
+/ask        # 开启：本会话只问答——禁改/禁建文件，可读文件与 run_code/内联命令验证
+/ask off    # 关闭：恢复正常模式
+```
+
+- 或点击 composer 工具行最左侧的 **Ask** 按钮（Plan 按钮左侧）：按钮高亮 = 该会话 ask 已开启，再次点击退出；
+- 开启期间 agent 的系统提示注入 ask 规则（专注解答、禁改文件、禁诱导改动提问），且 `edit` / `write` /
+  `str_replace_editor` 与含写命令的 `bash` 在**执行前被硬拦**（返回拒绝说明）——即便你在对话里要求“直接改”，
+  改动也不会发生；需要改动请先 `/ask off`；
+- 只读验证手段不受限：`read` / `grep` / `glob` / `run_code`、`node -e` / `python3 -c`、运行已有脚本、
+  `ping` / `curl` 等均可用于验证问题；
+- 状态与会话绑定并持久化（`~/.dsh/command-setting-ask.json`），重启 dsh web 后开启 ask 的会话自动恢复。
 
 ## 设置页
 
@@ -117,8 +143,8 @@ command-setting:
 ## 测试
 
 ```bash
-node command-setting/test/smoke.mjs          # node 端：catalog/隐藏过滤/作用域
-node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐
+node command-setting/test/smoke.mjs          # node 端：catalog/隐藏过滤/作用域/ask 判定
+node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐/ask 按钮导出
 ```
 
 ## 变更日志
