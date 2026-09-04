@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-chat-rollback",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "dsh web 对话页扩展：在用户消息气泡下方新增「回滚到此」——回滚到这条消息之前，创建继承相同 cwd/agent preset 的新顶层会话并加入原 workspace，将该消息文本预填进新会话输入框，继续对话。",
   "type": "module",
   "main": "lib/index.js",

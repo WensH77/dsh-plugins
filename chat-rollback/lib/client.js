@@ -197,15 +197,21 @@ window.__ModuleLoader__.load({
 			return control;
 		}
 
+		// 点击流程中止与 ndjson 阶段文案的统一辅助（绑定缺失/请求失败/阶段行共用）。
+		function failControl(control, message) {
+			control.busy = false;
+			control.paint?.();
+			control.showNote?.(message, false);
+		}
+		const STAGE_KEYS = { backup: 'rollback.stage.backup', restore: 'rollback.stage.restore', inherit: 'rollback.stage.inherit', archive: 'rollback.stage.archive' };
+
 		/** First-click preflight: compare per-file hashes server-side and gate the
 		 * confirm (✓) behind a conflict (?) state when another session also changed
 		 * files this rollback would overwrite. */
 		async function runPreflight(control) {
 			const { sessionId, msgId, t } = control.binding ?? {};
 			if (sessionId === undefined || typeof msgId !== 'string' || msgId === '') {
-				control.busy = false;
-				control.paint?.();
-				control.showNote?.(t?.('rollback.error') ?? 'rollback failed', false);
+				failControl(control, t?.('rollback.error') ?? 'rollback failed');
 				return;
 			}
 			try {
@@ -236,9 +242,7 @@ window.__ModuleLoader__.load({
 		async function runRollback(control, force) {
 			const { sessions, sessionId, msgId, t } = control.binding ?? {};
 			if (sessions === undefined || typeof msgId !== 'string' || msgId === '' || sessionId === undefined) {
-				control.busy = false;
-				control.paint?.();
-				control.showNote?.(t?.('rollback.error') ?? 'rollback failed', false);
+				failControl(control, t?.('rollback.error') ?? 'rollback failed');
 				return;
 			}
 			try {
@@ -288,10 +292,8 @@ window.__ModuleLoader__.load({
 						if (line.trim() === '') continue;
 						let msg;
 						try { msg = JSON.parse(line); } catch { continue; }
-						if (msg.phase === 'backup') control.showNote(t('rollback.stage.backup'), false);
-						else if (msg.phase === 'restore') control.showNote(t('rollback.stage.restore'), false);
-						else if (msg.phase === 'inherit') control.showNote(t('rollback.stage.inherit'), false);
-						else if (msg.phase === 'archive') control.showNote(t('rollback.stage.archive'), false);
+						const stageKey = STAGE_KEYS[msg.phase];
+						if (stageKey !== undefined) control.showNote(t(stageKey), false);
 						if (msg.phase === 'done') data = msg;
 					}
 				}
@@ -351,12 +353,14 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			const dbg = (...args) => { try { console.error('[chat-rollback]', ...args); } catch (e) {} };
 			const dbgState = { phase: 'apply-started', scans: 0, rowsSeen: 0, mounted: 0, reasons: [] };
-			try { window.__crbDebug = dbgState; } catch (e) {}
+			const publish = () => { try { window.__crbDebug = dbgState; } catch (e) {} }; // 诊断外露（无声计数）
+			publish();
 			try {
 				ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'chat-rollback: dictionaries');
 			} catch (error) {
 				dbg('locale/effect setup failed:', error);
-				dbgState.phase = "locale-effect-failed"; try { window.__crbDebug = dbgState; } catch (e) {}
+				dbgState.phase = "locale-effect-failed";
+				publish();
 				return;
 			}
 			let t;
@@ -364,7 +368,8 @@ window.__ModuleLoader__.load({
 				t = ctx.locale.bind(NS);
 			} catch (error) {
 				dbg('locale.bind failed:', error);
-				dbgState.phase = "locale-bind-failed"; try { window.__crbDebug = dbgState; } catch (e) {}
+				dbgState.phase = "locale-bind-failed";
+				publish();
 				return;
 			}
 			// Map (not WeakMap): the locale-change repaint iterates mounted.values(),
@@ -397,13 +402,13 @@ window.__ModuleLoader__.load({
 					sessionId = list?.current;
 					if (sessionId === undefined) {
 						dbgState.reasons.push('no-current-session');
-						try { window.__crbDebug = dbgState; } catch (e2) {}
+						publish();
 						return;
 					}
 				} catch (error) {
 					dbg('session list read failed:', error);
 					dbgState.reasons.push('session-ex: ' + String(error?.message ?? error));
-					try { window.__crbDebug = dbgState; } catch (e2) {}
+					publish();
 					return;
 				}
 				for (const row of document.querySelectorAll('[data-chat-anchor-key]')) {
@@ -457,7 +462,7 @@ window.__ModuleLoader__.load({
 					row.appendChild(control.note);
 					mounted.set(row, { msgId, kind, control });
 					dbgState.mounted = mounted.size;
-					try { window.__crbDebug = dbgState; } catch (e) {}
+					publish();
 				}
 			}
 			// Rows appear/update on chat re-renders and paging; the list feed

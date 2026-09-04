@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.3.0
+
+- **代码重构与瘦身（纯重构，外部行为与契约不变：HTTP 端点 / 响应字段 / 快照目录与命名 / Config 字段 / client 注入契约与按钮交互流程全部不变）**：
+  - **宿主端按域拆 7 文件**：单文件 `lib/index.js`（约 1339 行）拆为 `excludes`（tar `--exclude` 匹配引擎：pm 移植 / isExcluded / findPruneExpr / tarExcludeArgs，另导出 `matchPath`/`EXCLUDE_FLAGS` 供 fuzz 直连）、`workspace`（快照/恢复/哈希清单生成侧 + shell 原语 runSh/shq + 空快照守卫辅助）、`conflict`（manifest 读侧 + 双清单差异 + rollbackConflictState）、`session`（事件日志读取 / 预设解析 / turn 归属 / 消息 key 反查 / 回滚点解析）、`snapshot-store`（快照硬链接继承 + 统一清理）、`routes`（端点 handler + 请求解析 + 幂等路由注册）、`index.js` 瘦身为 197 行入口（name/inject/Config/apply 装配）；
+  - **机械化去重**：preflight 与 rollback 的参数校验/目标定位重复块收编为 `parseRequest` + `resolveTarget`（两侧对「回滚到哪、参数是否合法」的判定与错误文案共用一份）；`resolveRollbackTarget` 两处文本拼接去重为 `messageText`；handleRollback 空快照守卫不再直接拼 shell 命令，改走 `snapshotHasEntries` / `workspaceHasEntries`；错误响应收编 `sendError`；
+  - **client 保守瘦身**：诊断外露统一 `publish`（6 处重复样板）、点击中止/失败路径收编 `failControl`（runPreflight/runRollback 绑定守卫共用）、ndjson 阶段文案 4 段 if 链改 `STAGE_KEYS` 查表；
+  - **测试演进**：`test/matcher-fuzz.mjs` 不再字符串截取 `lib/index.js`，改直连导入 `lib/excludes.js` 的 `matchPath`/`EXCLUDE_FLAGS`；21 项 fork-rollback + matcher fuzz + client-emit 全绿。
+
 ## 0.2.4
 
 - **修复回滚按钮在 dsh 0.1.2-alpha.4 前端不渲染（两轮重构后定稿）**：

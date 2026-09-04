@@ -1,21 +1,15 @@
 // dsh-plugin-chat-rollback — 匹配器差分 fuzz：JS 移植（libarchive
-// __archive_pathmatch，见 lib/index.js）vs 本机真实 bsdtar 的 --exclude 判定。
-// 用插件实际使用的 find -T 管线（不含起始点，与生产一致）；固定种子保证可
-// 复现；win32 无 bsdtar 时跳过。防匹配器随改动漂移（0.1.4 曾靠此发现 3 处
-// 移植分歧：'*' 递归重入、'[!a]' 末端差异、'/' 前缀处理）。
+// __archive_pathmatch，见 lib/excludes.js）vs 本机真实 bsdtar 的 --exclude
+// 判定。用插件实际使用的 find -T 管线（不含起始点，与生产一致）；固定种子
+// 保证可复现；win32 无 bsdtar 时跳过。防匹配器随改动漂移（0.1.4 曾靠此发现
+// 3 处移植分歧：'*' 递归重入、'[!a]' 末端差异、'/' 前缀处理）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-
-// 从 lib/index.js 截取匹配器（与包内实现同源，不为此导出测试专用 API）。
-const src = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
-const start = src.indexOf('const MATCH_MAX_RECURSION');
-const end = src.indexOf('/** find 剪枝表达式');
-const { matchPath, EXCLUDE_FLAGS } = new Function(src.slice(start, end) + '\nreturn { matchPath, EXCLUDE_FLAGS };')();
+import { matchPath, EXCLUDE_FLAGS } from '../lib/excludes.js';
 
 /** mulberry32：固定种子 PRNG（确定性，CI 可复现）。 */
 function mulberry32(seed) {
