@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.8.0
+
+- **划词引用（新增，浏览器端）**：在对话消息里拖动选中文字，选区上方浮出「**引用**」胶囊；点击把选中文本逐行加 `> `（空行保留裸 `>`）成 Markdown 引用块，追加到当前会话 composer 末尾——草稿非空时先空一行、引用块后再留一空行，光标停在下方，可直接接着提问：
+  - **只对消息区生效**：`pointerup` 后读 `window.getSelection()`，要求非折叠、文本非空、落在 `[data-conversation-scroll]` 内且不在 `[data-composer-seat]`/输入控件里；浮标 `position:fixed` 贴选区上方，滚动/空白点击/Esc 自动消失；
+  - **保住已有 chip**：点浮标时 `pointerdown` 阻止默认行为保住选区（按住期间忽略 `selectionchange`）；草稿里已有 `@`/`#` 原子引用 chip 时走 shell 的 `paste` 追加，否则用 `setDraft`（保证按段落换行）——`setDraft` 会把 chip 压成纯文本，故分流；
+  - **依赖宿主契约**：`[data-conversation-scroll]`/`[data-composer-seat]` DOM 标记与 `ctx.get("conversation").input.shell(id)`（`SessionInput` 的 `state`/`setDraft`/`paste`）；缺失时特性静默不启用，无 DOM 环境（测试/非浏览器）返回 undefined。
+- 测试：client-smoke 新增 `quoteSelectionText`（逐行 `>`、空行、CRLF、空白/非字符串）、`appendQuoteToDraft`（空草稿/已有草稿/空引用）、`quoteAnchor`（消息区命中、折叠/空文本/composer/区外/输入控件/零矩形/null 拒绝）、`insertQuote`（setDraft 追加、空选区 no-op、有 chip 走 paste、缺会话/缺 shell）与伪 DOM 下的 `installQuoteSelection`（按钮挂载、监听安装、显示与定位、点击写入草稿、折叠隐藏、dispose 移除监听与按钮）。
+
 ## 0.7.2
 
 - **跨工作区候选展示工作区名字**：`#` 菜单「其他工作区」分组里，会话行的位置信息由「缩写目录路径」改为**工作区名字**（`workspaces` 快照 `items` 的 `title`，如 `intranet-aio` / `dsh-browser`），再接相对更新时间；未注册为工作区的目录没有名字，仍退回缩写的目录路径。当前工作区分组的行保持只显示时间（位置即当前工作区，无需重复）。

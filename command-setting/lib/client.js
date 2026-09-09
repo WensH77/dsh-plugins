@@ -42,7 +42,10 @@ window.__ModuleLoader__.load({
 			".hc-planbtn:disabled{opacity:.6;cursor:default}",
 			// The built-in yellow "Plan ✕" chip is replaced by this toggle: hide it.
 			// .rS3zOq_wrap is ui-plan's hashed chip wrapper, pinned to this bundle.
-			".rS3zOq_wrap{display:none!important}"
+			".rS3zOq_wrap{display:none!important}",
+			// 划词引用浮标：选中消息文本后贴着选区上方浮出的小胶囊。
+			".hc-quotebtn{position:fixed;z-index:2147483000;transform:translate(-50%,-100%);align-items:center;padding:3px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer;box-shadow:var(--dsw-elevation-prominent)}",
+			".hc-quotebtn:hover{background:var(--dsw-alias-interactive-bg-hover)}"
 		];
 		const tagId = "dsh-plugin-command-setting/settings.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
@@ -87,6 +90,7 @@ window.__ModuleLoader__.load({
 			hashMonths: "{n}个月",
 			hashYears: "{n}年",
 			hashNoCwd: "（无工作目录）",
+			quote: "引用",
 		};
 		const en = {
 			nav: "Command Settings",
@@ -121,6 +125,7 @@ window.__ModuleLoader__.load({
 			hashMonths: "{n}mo",
 			hashYears: "{n}y",
 			hashNoCwd: "(no cwd)",
+			quote: "Quote",
 		};
 
 		// ── minimal snapshot store (no external deps) ─────────────────────────
@@ -697,6 +702,163 @@ window.__ModuleLoader__.load({
 			};
 		}
 
+		// ── 划词引用（选中消息文本 → 浮标「引用」→ 追加进 composer） ──────────
+		// 纯 DOM 实现：宿主没有暴露"选中→引用"的插槽或服务，这里监听全局选区，
+		// 选中落在消息滚动区内（排除 composer 自身）时在选区上方浮出按钮，点击
+		// 把选中文本转成 Markdown 引用块（每行 `> `）追加到当前会话草稿末尾。
+		/** 引用浮标的样式类（同一时刻只存在一个按钮实例）。 */
+		const QUOTE_BUTTON_CLASS = "hc-quotebtn";
+		/** 只对消息滚动区内的选区生效；composer / 输入控件内的选区不弹浮标。 */
+		const QUOTE_SCOPE_SELECTOR = "[data-conversation-scroll]";
+		const QUOTE_EXCLUDE_SELECTOR = "[data-composer-seat], input, textarea, [contenteditable=\"true\"]";
+
+		/** 选中文本 → 引用块：逐行加 `> `（空行保留 `>`），首尾空白裁掉。 */
+		function quoteSelectionText(text) {
+			if (typeof text !== "string") return "";
+			const trimmed = text.replace(/^\s+|\s+$/gu, "");
+			if (trimmed === "") return "";
+			return trimmed.split(/\r?\n/u).map((line) => (line.trim() === "" ? ">" : "> " + line)).join("\n");
+		}
+
+		/** 把引用块追加到草稿末尾：草稿非空时先空一行，引用块后也留一空行供继续输入。 */
+		function appendQuoteToDraft(draft, quote) {
+			const base = typeof draft === "string" ? draft.replace(/\s+$/u, "") : "";
+			if (quote === "") return base;
+			return (base === "" ? "" : base + "\n\n") + quote + "\n\n";
+		}
+
+		/**
+		 * 判定当前选区是否可引用：非折叠、有文本、落在消息滚动区内且不在
+		 * composer / 输入控件内，并给出浮标锚点矩形。
+		 * @param selection - `window.getSelection()` 的返回值（测试可传等价对象）。
+		 * @returns `{ text, rect }` 或 null。
+		 */
+		function quoteAnchor(selection) {
+			if (selection === null || selection === void 0 || selection.isCollapsed !== false || selection.rangeCount < 1) return null;
+			const text = selection.toString().replace(/^\s+|\s+$/gu, "");
+			if (text === "") return null;
+			const range = selection.getRangeAt(0);
+			const node = range.commonAncestorContainer;
+			const element = node !== null && node !== void 0 && node.nodeType === 1 ? node : node?.parentElement;
+			if (element === null || element === void 0 || typeof element.closest !== "function") return null;
+			if (element.closest(QUOTE_EXCLUDE_SELECTOR) !== null) return null;
+			if (element.closest(QUOTE_SCOPE_SELECTOR) === null) return null;
+			const rect = range.getBoundingClientRect();
+			if (rect === null || rect === void 0 || (rect.width === 0 && rect.height === 0)) return null;
+			return { text, rect };
+		}
+
+		/**
+		 * 把选中文本追加到当前会话 composer（草稿末尾，光标停在引用块下方）。
+		 * 草稿里已有原子引用 chip 时走 `paste`（`setDraft` 会把 chip 压成纯文本）。
+		 * @returns 是否写入成功。
+		 */
+		function insertQuote(ctx, text) {
+			const quote = quoteSelectionText(text);
+			if (quote === "") return false;
+			const sessionId = ctx.get("sessions")?.list.getSnapshot().current;
+			if (typeof sessionId !== "string" || sessionId === "") return false;
+			let shell;
+			try {
+				shell = ctx.get("conversation")?.input?.shell?.(sessionId);
+			} catch (_quoteShellFailure) {
+				return false; // 会话还没有 composer shell（未 materialize）
+			}
+			if (shell === null || shell === void 0) return false;
+			const snapshot = typeof shell.state?.getSnapshot === "function" ? shell.state.getSnapshot() : void 0;
+			const draft = typeof snapshot?.draft === "string" ? snapshot.draft : "";
+			const hasReferences = Array.isArray(snapshot?.occurrences) && snapshot.occurrences.length > 0;
+			if (hasReferences && typeof shell.paste === "function") {
+				shell.paste((draft.replace(/\s+$/u, "") === "" ? "" : "\n\n") + quote + "\n\n");
+				return true;
+			}
+			if (typeof shell.setDraft !== "function") return false;
+			shell.setDraft(appendQuoteToDraft(draft, quote));
+			return true;
+		}
+
+		/**
+		 * 安装划词引用浮标。返回 disposer（无 DOM 环境返回 undefined），随插件
+		 * 停用移除按钮与全部监听。
+		 * @param ctx - 插件 root ctx（读取 sessions / conversation 服务）。
+		 * @param t - 本命名空间字典。
+		 */
+		function installQuoteSelection(ctx, t) {
+			if (typeof document === "undefined" || typeof window === "undefined" || typeof document.addEventListener !== "function" || typeof window.getSelection !== "function") return void 0;
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = QUOTE_BUTTON_CLASS;
+			button.hidden = true;
+			button.dataset.plugin = "command-setting";
+			let text = "";
+			let pressing = false;
+			const hide = () => {
+				text = "";
+				button.hidden = true;
+			};
+			const show = (anchor) => {
+				text = anchor.text;
+				button.textContent = t("quote");
+				const half = 44;
+				button.style.left = Math.min(Math.max(anchor.rect.left + anchor.rect.width / 2, half), Math.max(half, window.innerWidth - half)) + "px";
+				button.style.top = Math.max(anchor.rect.top - 8, 8) + "px";
+				button.hidden = false;
+			};
+			const refresh = () => {
+				const anchor = quoteAnchor(window.getSelection());
+				if (anchor === null) hide();
+				else show(anchor);
+			};
+			const onPointerUp = (event) => {
+				pressing = false;
+				if (event.target === button) return;
+				// 等浏览器完成选区更新（pointerup 时 selection 可能还是旧的）。
+				setTimeout(refresh, 0);
+			};
+			const onPointerDown = (event) => {
+				if (event.target !== button) hide();
+			};
+			const onSelectionChange = () => {
+				if (pressing) return; // 点浮标时保住选区
+				const selection = window.getSelection();
+				if (selection === null || selection.isCollapsed || selection.toString().replace(/^\s+|\s+$/gu, "") === "") hide();
+			};
+			const onKeyDown = (event) => {
+				if (event.key === "Escape") hide();
+			};
+			const onButtonDown = (event) => {
+				pressing = true;
+				event.preventDefault(); // mousedown 默认会清掉选区
+			};
+			const onButtonClick = () => {
+				pressing = false;
+				if (text !== "" && insertQuote(ctx, text)) {
+					window.getSelection()?.removeAllRanges?.();
+					const editor = document.querySelector("[data-composer-seat] [data-lexical-editor]");
+					if (editor !== null && editor !== void 0 && typeof editor.focus === "function") editor.focus();
+				}
+				hide();
+			};
+			document.body.appendChild(button);
+			button.addEventListener("pointerdown", onButtonDown);
+			button.addEventListener("click", onButtonClick);
+			document.addEventListener("pointerup", onPointerUp, true);
+			document.addEventListener("pointerdown", onPointerDown, true);
+			document.addEventListener("selectionchange", onSelectionChange);
+			document.addEventListener("keydown", onKeyDown, true);
+			window.addEventListener("scroll", hide, true);
+			return () => {
+				button.removeEventListener("pointerdown", onButtonDown);
+				button.removeEventListener("click", onButtonClick);
+				document.removeEventListener("pointerup", onPointerUp, true);
+				document.removeEventListener("pointerdown", onPointerDown, true);
+				document.removeEventListener("selectionchange", onSelectionChange);
+				document.removeEventListener("keydown", onKeyDown, true);
+				window.removeEventListener("scroll", hide, true);
+				if (typeof button.remove === "function") button.remove();
+			};
+		}
+
 		// ── plugin entry ──────────────────────────────────────────────────────
 		// "remote.commands" is a separately mounted namespace service (remote.<ns>);
 		// property access only resolves once it is injected, like ui-plan does.
@@ -723,6 +885,9 @@ window.__ModuleLoader__.load({
 				if (inputTriggers === void 0 || typeof inputTriggers.registerSource !== "function") return void 0;
 				return installHashTrigger(inputTriggers, createHashSource(ctx, t));
 			});
+
+			// 划词引用：选中消息文本浮出「引用」按钮，点击追加到当前 composer。
+			ctx.effect(() => installQuoteSelection(ctx, t), "command-setting: quote selection");
 
 			// Shared live hidden set for the menu-side filter; refreshed from the
 			// host on startup, on every settings write, and on change events.
@@ -845,6 +1010,11 @@ window.__ModuleLoader__.load({
 		exports.hashEntries = hashEntries;
 		exports.hashTokenAt = hashTokenAt;
 		exports.hashWorkspaceNames = hashWorkspaceNames;
+		exports.appendQuoteToDraft = appendQuoteToDraft;
+		exports.installQuoteSelection = installQuoteSelection;
+		exports.insertQuote = insertQuote;
+		exports.quoteAnchor = quoteAnchor;
+		exports.quoteSelectionText = quoteSelectionText;
 		exports.installHashTrigger = installHashTrigger;
 		exports.apply = apply;
 		exports.inject = inject;

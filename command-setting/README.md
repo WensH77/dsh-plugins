@@ -6,6 +6,7 @@ dsh web 命令设置插件：
 - **外置 Plan 按钮**：composer 工具行左侧新增 Plan 切换按钮（点击调用 /plan）
 - **Ask 只问答模式（/ask）**：composer 工具行 Plan 按钮**左侧**新增 Ask 按钮（点击调用 /ask）——开启后该会话进入**只问答模式**：agent 只回答问题、可读文件与 run_code 验证，**禁止改动或创建任何文件**（执行级硬拦，模型层面无法绕过、用户强行要求也拦不住），并禁止诱导性提问（如“需要我帮你改 xxx 吗”）
 - **# 引用历史会话**：在输入框输入 `#` 弹出**会话引用**菜单，选中后插入与 `@` 会话引用**完全等效**的原子引用（`@[标题](dsh-session:…)`，宿主照常捕获该会话快照作为背景上下文）。与 `@` 的差别是 `#` **只列会话、不列文件**，且仅限三类会话：**未归档**、**主代理**（排除 subagent 子会话）、**跨工作区**（候选直接读客户端会话列表，跨工作区会话按「其他工作区 / 当前工作区」分组，永不因同工作区会话过多而被挤掉）
+- **划词引用**：在消息文本上拖动选中文字，选区上方浮出「**引用**」小胶囊；点击把选中文本转成 Markdown 引用块（逐行 `> `）追加到当前会话的 composer 末尾，光标停在引用块下方，直接接着提问即可
 - **全局生效**：命令菜单管理配置保存在全局 settings.yaml（`command-setting` 命名空间），对所有会话一致生效；设置页目录不随当前会话漂移，也不会被某个会话的局部命令面悄悄改写。**ask 模式为会话级开关**（侧文件 `~/.dsh/command-setting-ask.json` 持久化，dsh web 重启后恢复）
 
 ## 功能速览
@@ -20,6 +21,7 @@ dsh web 命令设置插件：
 | Plan 切换 | composer 工具行左侧独立按钮，点击执行 `/plan`（进入）或 `/plan off`（退出），替换内置的 Plan 芯片 |
 | Ask 只问答模式 | composer 工具行最左侧独立按钮（Plan 左侧），点击执行 `/ask`（进入）或 `/ask off`（退出）；开启后会话级只读——禁改/禁建文件（`tools.guard` 执行级硬拦 + 系统提示约束）、禁诱导改动提问 |
 | # 会话引用 | 输入 `#` 打开会话引用菜单（**只列会话**）；候选限定「未归档 + 主代理 + 跨工作区」，按「其他工作区 / 当前工作区」分组各限 25 行，跨工作区行显示**工作区名字**；选中插入与 `@` 会话引用同构的原子 mention，宿主按既有 session-reference 机制捕获快照 |
+| 划词引用 | 选中消息文本 → 选区上方浮出「引用」按钮 → 点击把选中文本作为 Markdown 引用块追加到当前会话 composer（草稿已有 `@`/`#` chip 时走 paste 追加，不破坏 chip） |
 
 ## 工作原理
 
@@ -39,6 +41,13 @@ dsh web 命令设置插件：
    - **主代理**：排除 `origin === 'subagent'` 的子会话（fork 出来的主会话仍保留）；
    - **跨工作区**：候选直接读客户端会话列表（含全部工作区），按「**其他工作区** / **当前工作区**」两个分组呈现，各自按最近活动排序、各限 25 行——跨工作区会话因此始终可见；其他工作区的会话在描述里显示其**工作区名字**（未注册目录退回缩写的目录路径），再接更新时间。
 4. **为什么不复用宿主的候选接口**：`remote.sessionReferenceResolver.candidates` 默认只取 `candidateLimit`（50）条、且**同 cwd 优先**排序后截断——当前工作区会话一多（实测 300+），跨工作区候选会被整段挤出，表现就是「# 只能 attach 当前工作区会话」。因此候选与规范 mention（`@[label](dsh-session:<base64url(JSON id)>)`，label 转义 `\`/`]`）都由本插件从客户端会话列表（`sessions` 快照，自带 `displayTitle`/`cwd`/`origin`/`updatedAt`）组装，与宿主 `session-reference` 的编解码逐字节同构。空会话（`blank`，没有可引用的历史）与非 ASCII id 会被跳过；`sessions`/`workspaces` 服务缺失时候选为空、静默降级，不影响其余命令设置功能。
+
+### 划词引用（消息文本 → composer）
+
+1. **触发**：`pointerup` 后读取 `window.getSelection()`——选区非折叠、文本非空、落在消息滚动区 `[data-conversation-scroll]` 内，且不在 `[data-composer-seat]` / 输入控件里，就在选区上方浮出「引用」胶囊（`position:fixed`，随滚动/空白点击/Escape 消失）。`pointerdown` 到浮标上会 `preventDefault` 保住选区，`selectionchange` 在按住期间忽略。
+2. **写入**：点击后把选中文本逐行加 `> `（空行保留裸 `>`）成 Markdown 引用块，追加到当前会话草稿末尾：草稿非空时先空一行，引用块后再留一空行，光标停在下方；随后清空选区并聚焦 composer。
+3. **保 chip**：草稿里已有 `@`/`#` 原子引用 chip 时走 shell 的 `paste`（追加），避免 `setDraft` 把 chip 压成纯文本；没有 chip 时用 `setDraft`（保证按段落换行）。两者都是宿主 `conversation.input.shell(id)` 的既有能力。
+4. **依赖的宿主契约**：`[data-conversation-scroll]` / `[data-composer-seat]` DOM 标记、`ctx.get("conversation").input.shell(id)`（`SessionInput` 的 `state`/`setDraft`/`paste`）。任一缺失时该特性静默不启用，其余功能不受影响。
 
 ### Ask 只问答模式（会话级）
 
@@ -159,6 +168,23 @@ command-setting:
 - 选中后插入原子引用（会话图标 + 标题），发送时序列化为 `@[标题](dsh-session:…)`，与 `@` 会话引用**完全等效**——宿主会把该会话的有界只读快照作为背景上下文交给模型；
 - `#` 后接空白（例如写 Markdown 标题 `# 标题`）不会触发菜单，与 `@` 的 token 规则一致。
 
+### 划词引用
+
+1. 在对话消息里**拖动选中**一段文字（用户提问、模型回答、代码块都可以）；
+2. 选区上方浮出「**引用**」小胶囊，点击它；
+3. 选中内容会以 Markdown 引用块追加到输入框（例如 `> 这段文字`），光标落在引用块下方，接着提问即可：
+
+```
+> 之前的这段结论
+> 第二行
+
+（在这里继续问）
+```
+
+- 只对**消息区**的选区生效：输入框内选中文字不会弹浮标；
+- 草稿里已经有 `@` 文件 / `#` 会话引用 chip 时，引用内容会追加在后面，不会破坏这些 chip；
+- 浮标在滚动、点空白处或按 Esc 时自动消失。
+
 ## 设置页
 
 - 入口：设置页（General）中的「命令设置」区，位于 agent-presets 之后
@@ -169,7 +195,7 @@ command-setting:
 
 ```bash
 node command-setting/test/smoke.mjs          # node 端：catalog/隐藏过滤/作用域/ask 判定
-node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐/交互 + # 检测/候选过滤/controller 包装与还原
+node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐/交互 + # 检测/候选过滤/controller 包装与还原 + 划词引用（纯函数/伪 DOM 浮标）
 ```
 
 ## 变更日志

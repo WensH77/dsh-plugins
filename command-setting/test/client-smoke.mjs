@@ -21,6 +21,8 @@ const sandbox = {
   encodeURIComponent,
   AbortController,
   btoa,
+  setTimeout,
+  clearTimeout,
   fetch: async () => ({ json: async () => ({ ok: true }) }),
   react: { createElement: () => ({}), useState: (v) => [v, () => {}], useEffect: () => {}, useCallback: (f) => f, useRef: () => ({ current: null }) },
   "react/jsx-runtime": {},
@@ -397,6 +399,111 @@ sandbox.fetch = async (url, init) => {
   check("apply: # candidates label the workspace by name", rows[0].description.startsWith("Beta 项目 · "), rows[0].description);
   const filtered = await source.candidates({ sessionId: "me" }, { query: "local", signal: new AbortController().signal });
   check("apply: # candidates honour the live query", filtered.length === 1 && filtered[0].name === "Local", JSON.stringify(filtered.map((r) => r.name)));
+}
+
+// ── 划词引用：纯函数 + 伪 DOM 交互 ─────────────────────────────────────────
+{
+  const { quoteSelectionText, appendQuoteToDraft, quoteAnchor, insertQuote } = loaded;
+
+  check("quote text: blockquote per line", quoteSelectionText("a\nb") === "> a\n> b", quoteSelectionText("a\nb"));
+  check("quote text: blank line kept as bare >", quoteSelectionText("a\n\nb") === "> a\n>\n> b", quoteSelectionText("a\n\nb"));
+  check("quote text: trims + CRLF", quoteSelectionText("  a\r\nb  ") === "> a\n> b", JSON.stringify(quoteSelectionText("  a\r\nb  ")));
+  check("quote text: empty input", quoteSelectionText("   ") === "" && quoteSelectionText(null) === "");
+  check("quote draft: empty draft", appendQuoteToDraft("", "> a") === "> a\n\n", JSON.stringify(appendQuoteToDraft("", "> a")));
+  check("quote draft: appends after existing", appendQuoteToDraft("hi\n", "> a") === "hi\n\n> a\n\n", JSON.stringify(appendQuoteToDraft("hi\n", "> a")));
+  check("quote draft: empty quote keeps draft", appendQuoteToDraft("hi", "") === "hi");
+
+  // quoteAnchor：伪选区（closest 按选择器回答）
+  const fakeElement = ({ composer = false, inScroll = true, control = false } = {}) => ({
+    nodeType: 1,
+    closest: (selector) => {
+      if (selector === "[data-composer-seat], input, textarea, [contenteditable=\"true\"]") return composer || control ? {} : null;
+      if (selector === "[data-conversation-scroll]") return inScroll ? {} : null;
+      return null;
+    }
+  });
+  const fakeSelection = ({ text = "hello", collapsed = false, element = fakeElement(), rect = { left: 10, top: 20, width: 100, height: 10 } } = {}) => ({
+    isCollapsed: collapsed,
+    rangeCount: 1,
+    toString: () => text,
+    getRangeAt: () => ({ commonAncestorContainer: element, getBoundingClientRect: () => rect })
+  });
+  check("quoteAnchor: message selection", JSON.stringify(quoteAnchor(fakeSelection())?.text) === JSON.stringify("hello") && quoteAnchor(fakeSelection()).rect.left === 10);
+  check("quoteAnchor: collapsed / empty text rejected", quoteAnchor(fakeSelection({ collapsed: true })) === null && quoteAnchor(fakeSelection({ text: "   " })) === null);
+  check("quoteAnchor: composer selection rejected", quoteAnchor(fakeSelection({ element: fakeElement({ composer: true }) })) === null);
+  check("quoteAnchor: outside the message scroller rejected", quoteAnchor(fakeSelection({ element: fakeElement({ inScroll: false }) })) === null);
+  check("quoteAnchor: input controls rejected", quoteAnchor(fakeSelection({ element: fakeElement({ control: true }) })) === null);
+  check("quoteAnchor: zero rect rejected", quoteAnchor(fakeSelection({ rect: { left: 0, top: 0, width: 0, height: 0 } })) === null);
+  check("quoteAnchor: null selection rejected", quoteAnchor(null) === null && quoteAnchor({ isCollapsed: false, rangeCount: 0 }) === null);
+
+  // insertQuote：setDraft（无 chip）/ paste（有 chip）/ 缺会话或 shell
+  const drafts = [];
+  const pasted = [];
+  const makeCtx = (snapshot, shellExtras = {}) => ({
+    get: (name) => {
+      if (name === "sessions") return { list: { getSnapshot: () => ({ current: "s1" }) } };
+      if (name === "conversation") return { input: { shell: () => ({ state: { getSnapshot: () => snapshot }, setDraft: (value) => drafts.push(value), ...shellExtras }) } };
+      return void 0;
+    }
+  });
+  check("insertQuote: setDraft appends the quote", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "a\nb") === true && drafts[0] === "hi\n\n> a\n> b\n\n", JSON.stringify(drafts));
+  check("insertQuote: empty selection is a no-op", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "   ") === false);
+  check("insertQuote: existing chips go through paste", insertQuote(makeCtx({ draft: "@file", occurrences: [{}] }, { paste: (value) => pasted.push(value) }), "a") === true && pasted[0] === "\n\n> a\n\n", JSON.stringify(pasted));
+  check("insertQuote: no current session", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => ({ current: void 0 }) } } : void 0 }, "a") === false);
+  check("insertQuote: no shell", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => ({ current: "s1" }) } } : { input: { shell: () => void 0 } } }, "a") === false);
+
+  // installQuoteSelection：伪 DOM 下浮标显示/点击/卸载
+  const originalDocument = sandbox.document;
+  const originalWindow = sandbox.window;
+  const listeners = [];
+  const buttonHandlers = new Map();
+  const button = {
+    dataset: {},
+    style: {},
+    hidden: true,
+    textContent: "",
+    addEventListener: (type, fn) => buttonHandlers.set(type, fn),
+    removeEventListener: (type) => buttonHandlers.delete(type),
+    remove: () => { button.removed = true; }
+  };
+  const fakeTarget = (kind) => ({
+    addEventListener: (type, fn, capture) => listeners.push({ kind, type, fn, capture }),
+    removeEventListener: (type, fn) => {
+      const at = listeners.findIndex((entry) => entry.kind === kind && entry.type === type && entry.fn === fn);
+      if (at >= 0) listeners.splice(at, 1);
+    }
+  });
+  sandbox.document = {
+    ...originalDocument,
+    ...fakeTarget("doc"),
+    body: { appendChild: (element) => { element.parent = "body"; } },
+    createElement: () => button,
+    querySelector: () => null
+  };
+  let currentSelection = null;
+  sandbox.window = { ...fakeTarget("win"), innerWidth: 1000, getSelection: () => currentSelection };
+
+  const disposeQuote = loaded.installQuoteSelection(makeCtx({ draft: "hi", occurrences: [] }), (key) => "L:" + key);
+  check("quote: button appended to body", typeof disposeQuote === "function" && button.parent === "body" && button.hidden === true);
+  check("quote: listeners installed", listeners.some((l) => l.kind === "doc" && l.type === "pointerup" && l.capture === true) && listeners.some((l) => l.kind === "doc" && l.type === "selectionchange") && listeners.some((l) => l.kind === "win" && l.type === "scroll"));
+  currentSelection = fakeSelection();
+  listeners.find((l) => l.kind === "doc" && l.type === "pointerup").fn({ target: {} });
+  await sleep(5);
+  check("quote: button shown and labelled", button.hidden === false && button.textContent === "L:quote", JSON.stringify({ hidden: button.hidden, text: button.textContent }));
+  check("quote: positioned above the selection", button.style.left === "60px" && button.style.top === "12px", JSON.stringify(button.style));
+  drafts.length = 0;
+  buttonHandlers.get("pointerdown")({ preventDefault: () => {} });
+  buttonHandlers.get("click")();
+  check("quote: click writes the quote into the draft", drafts[0] === "hi\n\n> hello\n\n", JSON.stringify(drafts));
+  check("quote: button hidden after click", button.hidden === true);
+  currentSelection = fakeSelection({ collapsed: true });
+  listeners.find((l) => l.kind === "doc" && l.type === "pointerup").fn({ target: {} });
+  await sleep(5);
+  check("quote: collapsed selection keeps it hidden", button.hidden === true);
+  disposeQuote();
+  check("quote: dispose removes listeners and button", button.removed === true && listeners.length === 0, JSON.stringify(listeners.map((l) => l.type)));
+  sandbox.document = originalDocument;
+  sandbox.window = originalWindow;
 }
 
 console.log(failed === 0 ? "CLIENT SMOKE PASS" : failed + " CLIENT SMOKE FAILURES");
