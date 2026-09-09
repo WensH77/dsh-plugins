@@ -30,9 +30,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
-// 0.1.2-alpha.4 起 PERSONA_ORDER 已移除；deployment:persona 的固定槽位序号为 0
-// （SECTION_ORDERS.DEPLOYMENT_PERSONA = 0，旧版 PERSONA_ORDER 亦为 0）。
-import { PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt';
+// 0.1.2-alpha.4 起 PERSONA_ORDER 已移除；0.1.5-alpha.1 起单一 persona 槽位
+// deployment:persona 拆为 deployment:persona-prefix(order 0) / -suffix(order 10200)，
+// 预设 persona 走 prefix，故此处阴影 prefix 槽（序号仍为 0）。
+import { PERSONA_PREFIX_SECTION } from '@deepseek-ai/dsh-system-prompt';
 const PERSONA_ORDER = 0;
 import { createUserMessage, BlockAssembler } from '@deepseek-ai/dsh-llm';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -1868,7 +1869,7 @@ function apply(ctx) {
         const persona = scenePersonasOf(cfg, scene).mainPersona;
         if (persona !== '') {
           const d = agent.ctx?.systemPrompt?.section?.({
-            name: PERSONA_SECTION,
+            name: PERSONA_PREFIX_SECTION,
             order: PERSONA_ORDER,
             text: persona
           });

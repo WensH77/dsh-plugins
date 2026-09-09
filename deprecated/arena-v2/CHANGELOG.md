@@ -2,6 +2,13 @@
 
 > 0.21.0 之前的历史改动未整理成 changelog（本目录当时尚未随版本记录）；此前版本可参考 git 提交与 README。
 
+## 0.33.35（chore：弃用归档 + 适配 dsh 0.1.5-alpha.1）
+
+- **弃用归档**：arena v2 停止维护，目录由 `arena-v2/` 移入 `deprecated/arena-v2/`，README 顶部加弃用横幅；后续方案为 Theseus Crew（由 arena-v2 迁移而来）。
+- **兼容修复（dsh 0.1.5-alpha.1）**：`@deepseek-ai/dsh-system-prompt` 将单一 persona 槽位 `deployment:persona` 拆为 `deployment:persona-prefix`（order 0）/ `deployment:persona-suffix`（order 10200），`PERSONA_SECTION` 导出被移除——导入改为 `PERSONA_PREFIX_SECTION`（主代理 persona 阴影 prefix 槽，序号仍为 0，语义不变），修复 host 半段 ESM 命名导入直接 SyntaxError、整插件无法加载的问题。
+- **声明对齐**：9 个 `@deepseek-ai/dsh-*` peer 由 `^0.1.2-alpha.4` bump 到 `^0.1.5-alpha.1`；`repository` 路径随归档改为 `#path:deprecated/arena-v2`。
+- 测试：`node deprecated/arena-v2/test/smoke.mjs` 全绿（归档版保持可加载）。
+
 ## 0.33.34（opt：readiness→apply 确认门去重——面试已确认「apply 启动决定」时不再重复提问）
 
 - **现象**（90527e05 14:28–14:30）：「进入 apply」被问两次且语义重复：先由就绪评审面试内的 `readiness_q14b`（apply 启动决定）询问并获确认「确认进入 apply」，随后 readiness CLEARED 的确认门又用 `arena_k_advance` 再问一次「是否确认进入 apply 阶段」。

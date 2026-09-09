@@ -9,7 +9,8 @@
 |---|---|---|
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
-| ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**已被 arena-v2 取代**，移入 `deprecated/` 仅作存档 |
+| ~~**arena-v2**~~（已弃用） | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | arena v2：类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者（业务探索/知识沉淀/测试用例场景、双 persona、固定挑战者模型）。**已停止维护**，移入 `deprecated/` 仅作存档；后续方案为 Theseus Crew（由 arena-v2 迁移而来） |
+| ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**曾由 arena-v2 取代（arena-v2 亦已弃用）**，移入 `deprecated/` 仅作存档 |
 | **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab——两阶段安装（隔离拉取 + 分层安全审查 + 确认安装，任务可视化、可中断）、检查更新/更新（git 通道，更新附带与本地已装代码的差异审查）、卸载、开关、仓库地址管理（保存用户填写的仓库）、待重启提示、清理缓存；侧边栏 dsh 版本状态灯（启动+每小时检测 deepseek-harness 新版本，点击开新会话分析破坏性更新） |
 | ~~**session-export**~~（已弃用） | [`deprecated/session-export/`](deprecated/session-export/README.md) | 会话导出长图：会话标题栏「导出长图」按钮，把当前会话从第一条到最新一条导出为长图 PNG——只展示用户输入与模型输出，自动剔除思考（Think/reasoning）与工具调用等过程内容（GFM 子集 Markdown 排版、主题取色、长会话自动拆多张）。**已停止维护**，移入 `deprecated/` 仅作存档 |
 | **tool-both** | [`tool-both/`](tool-both/README.md) | 工具呈现模式（both）：激活时自动安装「BOTH模式」预设——原生工具直调与 run_code 并存、无 code-only 限制（消除 PTC 模式下大量 `unknown tool "read"` 报错），另提供可挂进任意 agent preset 的呈现行组件 |
@@ -47,7 +48,9 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 
 ~~**session-export**（会话导出长图）：已停止维护，移入 `deprecated/session-export/`——不再提供安装指引。~~
 
-~~**model-arena**（模型竞技场 v1）：已弃用，移入 `deprecated/model-arena/`，由 arena-v2 取代——不再提供安装指引。~~
+~~**arena-v2**（竞技场 v2）：已弃用，移入 `deprecated/arena-v2/`，后续方案为 Theseus Crew——不再提供安装指引。~~
+
+~~**model-arena**（模型竞技场 v1）：已弃用，移入 `deprecated/model-arena/`，曾由 arena-v2 取代（arena-v2 亦已弃用）——不再提供安装指引。~~
 
 安装后在补丁层启用（chat-rollback / command-setting / tool-both 示例；plugin-market 为 bundle 包，无需此步，重启即加载）：
 
@@ -98,6 +101,7 @@ node --test chat-rollback/test/fork-rollback.mjs     # chat-rollback 测试（8 
 node chat-rollback/test/client-emit.mjs              # chat-rollback 浏览器端：回滚预填 emit 定向性（防 composer 广播）
 node command-setting/test/smoke.mjs                  # command-setting node 端测试
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
+node deprecated/arena-v2/test/smoke.mjs               # arena-v2（已弃用）node 端测试
 node deprecated/model-arena/test/smoke.mjs           # model-arena（已弃用）node 端测试
 node deprecated/model-arena/test/client-smoke.mjs    # model-arena（已弃用）浏览器端测试
 node deprecated/session-export/test/smoke.mjs        # session-export（已弃用）node 端测试（转录抽取/标题/接口/路由）
@@ -122,8 +126,13 @@ dsh-plugins/
 │   ├── lib/client.js       #   浏览器端：设置页 + Plan 按钮
 │   ├── test/               #   smoke 测试
 │   └── package.json
-├── deprecated/             # 已弃用插件存档（model-arena 竞技场 v1、session-export）
-│   ├── model-arena/        #   模型竞技场 v1（挑战模式，已被 arena-v2 取代）
+├── deprecated/             # 已弃用插件存档（arena-v2、model-arena 竞技场 v1、session-export）
+│   ├── arena-v2/           #   arena v2（已弃用，后续方案 Theseus Crew）
+│   │   ├── lib/index.js    #     Node 端：竞技场状态/子代理编排 + system-prompt persona 注入
+│   │   ├── lib/client.js   #     浏览器端：chip/hero 开关 + 竞技场运行时
+│   │   ├── test/           #     smoke 测试
+│   │   └── package.json
+│   ├── model-arena/        #   模型竞技场 v1（挑战模式，曾由 arena-v2 取代）
 │   │   ├── lib/index.js    #     Node 端：links/persona 持久化 + system-prompt 角色注入
 │   │   ├── lib/client.js   #     浏览器端：hero toggle + 竞技场运行时 + 挑战编排
 │   │   ├── test/           #     smoke 测试
