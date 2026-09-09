@@ -2,6 +2,12 @@
 
 本文件记录 `dsh-plugin-tool-both` 的历次改动（由 git 提交历史整理）。安装、使用、仓库结构见 [README.md](./README.md)。
 
+## 0.2.5
+
+- **预设适配 dsh 0.1.5-alpha.1 的 `dsh-persona` 契约**：`preset/both/agent.cordis.yml` 的 persona 行由旧的单字段 `text:` 改为 `prefix:` + `suffix:`（0.1.5 起 persona 拆为 `deployment:persona-prefix` / `-suffix` 两个槽位，`dsh-persona` 配置随之改为 prefix/suffix）；suffix 仍为 `Your working directory is {{cwd}}.`，prefix 仍为 coding-agent 人格，行为不变。
+- **peer 范围对齐**：`@deepseek-ai/dsh-home-paths` 由 `^0.1.2-alpha.4` bump 到 `^0.1.5-alpha.1`（跟随宿主同版本发布线；旧范围因预发布门槛不覆盖 0.1.5-alpha.1）。
+- 测试：`node tool-both/test/smoke.mjs` 全绿。
+
 ## 0.2.4
 
 - **预设重新生成，BOTH 恢复全能力**：`preset/both/agent.cordis.yml` 按 dsh 0.1.2-alpha.4 自带的 `standard` 预设整体重做（原文件是 0.1.0-rc.8 时代的快照，一直没跟上）。dsh 自 alpha.3 起把 `/goal` 命令从 host 平面移到 preset 层（host 显式禁用、各 preset 自行挂载），旧快照因此缺了 `command-goal` 行——BOTH 模式会话里 `/goal` 斜杠命令消失。本次重做同步带回全部增量：goals 段补挂 `@deepseek-ai/dsh-command-goal`、subagent 配置补 `modelSelectionSettings: true`、`tool-web` 的 `fetch` 改回 `true`，并删去已失效的 `registerContinuableSetup` 时代注释。
