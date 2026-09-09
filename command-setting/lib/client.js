@@ -77,6 +77,14 @@ window.__ModuleLoader__.load({
 			askExit: "ask 模式（只问答）已开启 — 点击关闭（/ask off）",
 			askError: "ask 命令执行失败",
 			askLoading: "…",
+			hashSection: "会话引用（#）",
+			hashNow: "刚刚",
+			hashMinutes: "{n}分钟",
+			hashHours: "{n}小时",
+			hashDays: "{n}天",
+			hashMonths: "{n}个月",
+			hashYears: "{n}年",
+			hashNoCwd: "（无工作目录）",
 		};
 		const en = {
 			nav: "Command Settings",
@@ -101,6 +109,14 @@ window.__ModuleLoader__.load({
 			askExit: "Ask mode (Q&A only) on — click to turn off (/ask off)",
 			askError: "failed to run the ask command",
 			askLoading: "…",
+			hashSection: "Sessions (#)",
+			hashNow: "now",
+			hashMinutes: "{n}min",
+			hashHours: "{n}h",
+			hashDays: "{n}d",
+			hashMonths: "{n}mo",
+			hashYears: "{n}y",
+			hashNoCwd: "(no cwd)",
 		};
 
 		// ── minimal snapshot store (no external deps) ─────────────────────────
@@ -384,6 +400,231 @@ window.__ModuleLoader__.load({
 			}, t("askLabel"));
 		}
 
+		// ── '#' session reference (cross-workspace / unarchived / main-agent) ──
+		// 宿主的 input-trigger 只识别 '/' 与 '@'（TriggerChar 是封闭联合），'#'
+		// 无法直接注册。这里给每个会话 controller 包一层：把活跃的 `#token` 在
+		// **同一 span** 上改写成等价的 `@token`，交给宿主自己的探测器产出 hit；
+		// 再在 controller 的 source roster 上拦截——这个 hit 只解析到 '#' 源，
+		// 不会混进 '@' 的文件/会话统一菜单。
+		/** 注册进 inputTriggers 的 '#' 源名（也是 ReferenceInsert.source）。 */
+		const HASH_SOURCE = "command-setting-sessions";
+		/** 与 reference 的 time.* 同义，本命名空间自带一份时间档位键。 */
+		const HASH_TIME_KEYS = { minutes: "hashMinutes", hours: "hashHours", days: "hashDays", months: "hashMonths", years: "hashYears" };
+
+		/**
+		 * 在 caret 处探测活跃的 `#` 引用 token。沿用宿主 '@' 的词边界规则：'#' 只在
+		 * 草稿开头或空白之后开启，token 一路延伸到 caret 且不含空白。
+		 * @returns `{ start, end, query }`，或 null（无活跃 '#' token）。
+		 */
+		function hashTokenAt(draft, caret) {
+			if (typeof draft !== "string" || !Number.isInteger(caret) || caret < 0 || caret > draft.length) return null;
+			let index = caret - 1;
+			while (index >= 0 && !/\s/u.test(draft.charAt(index))) index -= 1;
+			const start = index + 1;
+			if (draft.charAt(start) !== "#") return null;
+			return { start, end: caret, query: draft.slice(start + 1, caret) };
+		}
+
+		/** 相对时间档位（与宿主 relativeTime 同粒度，文案在本命名空间）。 */
+		function hashAge(updatedAt, now) {
+			const delta = Math.max(0, now - (typeof updatedAt === "number" && Number.isFinite(updatedAt) ? updatedAt : now));
+			const minutes = Math.floor(delta / 60000);
+			if (minutes < 1) return { unit: "now" };
+			if (minutes < 60) return { unit: "minutes", n: minutes };
+			const hours = Math.floor(minutes / 60);
+			if (hours < 24) return { unit: "hours", n: hours };
+			const days = Math.floor(hours / 24);
+			if (days < 30) return { unit: "days", n: days };
+			const months = Math.floor(days / 30);
+			if (months < 12) return { unit: "months", n: months };
+			return { unit: "years", n: Math.floor(months / 12) };
+		}
+
+		/** POSIX home 缩写成 `~`（与宿主的显示口径一致；Windows 路径原样保留）。 */
+		function shortenHomePath(path, home) {
+			if (typeof path !== "string" || typeof home !== "string" || home === "") return path;
+			if (/^[A-Za-z]:[/\\]/u.test(path) || path.startsWith("\\\\") || /^[A-Za-z]:[/\\]/u.test(home)) return path;
+			const root = home.replace(/\/+$/u, "");
+			if (root === "" || root === "/") return path;
+			if (path.replace(/\/+$/u, "") === root) return "~";
+			if (path.startsWith(root + "/")) return "~" + path.slice(root.length);
+			return path;
+		}
+
+		/**
+		 * 把宿主会话候选投影成 '#' 菜单行，只保留三个准入条件：
+		 * **未归档**（不在 registry-global archivedSessionIds 里）、
+		 * **主代理**（origin !== 'subagent'）、**跨工作区**（不按 cwd 过滤，
+		 * 非当前工作区的会话把工作目录显示出来）。mention 直接用宿主给的规范形式，
+		 * 因此选中后的引用与 '@' 会话引用完全等效。
+		 * @param t - 本命名空间字典。
+		 * @param candidates - `sessionReferenceResolver.candidates` 的返回值。
+		 * @param archived - 已归档会话 id 集合。
+		 * @param summaries - 客户端会话列表快照的 byId（提供 origin/updatedAt）。
+		 * @param home - 宿主 home（路径缩写）。
+		 * @param now - 当前时间戳。
+		 * @returns 菜单候选行。
+		 */
+		function buildHashRows(t, candidates, archived, summaries, home, now) {
+			const rows = [];
+			for (const candidate of Array.isArray(candidates) ? candidates : []) {
+				if (candidate === null || typeof candidate !== "object") continue;
+				const sessionId = candidate.sessionId;
+				if (typeof sessionId !== "string" || sessionId === "") continue;
+				// 跨 realm 安全的 Set 判定（插件 bundle 与宿主可能在不同 realm）。
+				if (archived !== null && archived !== void 0 && typeof archived.has === "function" && archived.has(sessionId)) continue;
+				const summary = summaries === null || summaries === void 0 ? void 0 : summaries[sessionId];
+				if (summary !== void 0 && summary.origin === "subagent") continue;
+				if (typeof candidate.mention !== "string" || candidate.mention === "") continue;
+				const label = typeof candidate.label === "string" && candidate.label !== "" ? candidate.label : sessionId;
+				const age = hashAge(summary?.updatedAt ?? candidate.createdAt, now);
+				const ageText = age.unit === "now" ? t("hashNow") : t(HASH_TIME_KEYS[age.unit], { n: age.n });
+				const location = candidate.sameWorkspace === true
+					? void 0
+					: candidate.cwd === void 0 || candidate.cwd === ""
+						? t("hashNoCwd")
+						: shortenHomePath(candidate.cwd, home);
+				rows.push({
+					name: label,
+					description: location === void 0 ? ageText : location + " · " + ageText,
+					icon: "session",
+					section: t("hashSection"),
+					value: JSON.stringify({ kind: "session", label, mention: candidate.mention })
+				});
+			}
+			return rows;
+		}
+
+		/** 构造 '#' 源：候选来自宿主 sessionReferenceResolver，插入与 '@' 会话引用同构。 */
+		function createHashSource(ctx, t) {
+			return {
+				trigger: "#",
+				name: HASH_SOURCE,
+				order: 0,
+				showGroupTitle: false,
+				async candidates(session, req) {
+					const resolver = ctx.get("remote.sessionReferenceResolver");
+					if (resolver === void 0) return [];
+					try {
+						const result = await resolver.candidates(session.sessionId, req.query, req.signal);
+						if (result === null || typeof result !== "object" || result.ok !== true) return [];
+						const archived = new Set(ctx.get("workspaces")?.list.getSnapshot().archivedSessionIds ?? []);
+						const summaries = ctx.get("sessions")?.list.getSnapshot().byId ?? {};
+						return buildHashRows(t, result.value, archived, summaries, ctx.get("remote")?.$host?.home, Date.now());
+					} catch (_hashCandidatesFailure) {
+						// 候选失败保持静默（与宿主 '@' 会话候选的失败语义一致）。
+						return [];
+					}
+				},
+				onPick(pick) {
+					let value;
+					try {
+						value = JSON.parse(pick?.candidate?.value ?? "");
+					} catch (_hashPickFailure) {
+						value = void 0;
+					}
+					if (value === null || value === void 0 || value.kind !== "session") return void 0;
+					return { insert: {
+						source: HASH_SOURCE,
+						ref: value.mention,
+						label: value.label,
+						appearance: "session",
+						clipboardText: value.mention
+					} };
+				},
+				codec: {
+					clipboardText: (ref) => ref,
+					serialize: (ref) => Promise.resolve(ref)
+				}
+			};
+		}
+
+		/**
+		 * 安装 '#' 触发：注册 '#' 源 + 包装 input-trigger 的会话 controller。
+		 *
+		 * controller 包装把 `#token` 改写成 `@token`（span 不变）再交给宿主原
+		 * `track`，同时拦截该 controller 的 roster：这一 hit 的 span.start 命中
+		 * '#' token 时，'@' 查询只返回 '#' 源。返回的 disposer 还原所有改动
+		 * （停用插件后命令菜单/输入触发器回到宿主原样）。
+		 * @param inputTriggers - `ctx.inputTriggers` 服务实例。
+		 * @param source - '#' 触发源。
+		 * @returns disposer（源注册失败时返回 undefined）。
+		 */
+		function installHashTrigger(inputTriggers, source) {
+			if (inputTriggers === null || inputTriggers === void 0 || typeof inputTriggers.registerSource !== "function" || typeof inputTriggers.sessionOf !== "function") return void 0;
+			let unregisterSource;
+			try {
+				unregisterSource = inputTriggers.registerSource(source);
+			} catch (error) {
+				console.warn("[command-setting] '#' session source registration failed:", error);
+				return void 0;
+			}
+			const wrapped = new Set();
+			const wrap = (controller) => {
+				if (controller === null || controller === void 0 || wrapped.has(controller)) return;
+				const roster = controller.deps?.roster;
+				if (roster === void 0 || typeof roster.sources !== "function" || typeof controller.track !== "function") return;
+				wrapped.add(controller);
+				const hadOwnTrack = Object.prototype.hasOwnProperty.call(controller, "track");
+				const ownTrack = controller.track;
+				const originalSources = roster.sources;
+				const originalTrack = controller.track.bind(controller);
+				roster.sources = (trigger) => {
+					const marker = controller.__commandSettingHashToken;
+					const hit = controller.hit;
+					if (trigger === "@" && marker !== null && marker !== void 0 && hit !== null && hit.span.start === marker.start) {
+						return originalSources("#");
+					}
+					return originalSources(trigger);
+				};
+				controller.track = (draft, caret, guard, draftRev) => {
+					const token = guard?.tier === "frozen" ? null : hashTokenAt(draft, caret);
+					const previous = controller.__commandSettingHashToken;
+					controller.__commandSettingHashToken = token;
+					// '#' 与 '@' 在同一位置同 query 时 hit 字段完全一致，宿主 track 的
+					// `same` 短路会把旧 source 的菜单留在屏上（例如把已开的 `@ab` 改成
+					// `#ab`）。哈希性质切换时先关菜单，让原 track 按新 roster 重新播种。
+					if ((token === null) !== (previous === null || previous === void 0)) {
+						controller.hit = null;
+						if (typeof controller.stopFetch === "function") controller.stopFetch();
+						if (typeof controller.reduce === "function") controller.reduce({ type: "close" });
+					}
+					if (token === null) return originalTrack(draft, caret, guard, draftRev);
+					const rewritten = draft.slice(0, token.start) + "@" + draft.slice(token.start + 1);
+					return originalTrack(rewritten, caret, guard, draftRev);
+				};
+				controller.__commandSettingHashRestore = () => {
+					roster.sources = originalSources;
+					if (hadOwnTrack) controller.track = ownTrack;
+					else delete controller.track;
+					delete controller.__commandSettingHashToken;
+					delete controller.__commandSettingHashRestore;
+				};
+			};
+			const controllers = inputTriggers.live?.controllers;
+			if (controllers !== void 0 && typeof controllers.values === "function") {
+				for (const controller of controllers.values()) wrap(controller);
+			}
+			// 晚建的会话 scope 走 sessionOf；包一层实例方法覆盖住后续 controller。
+			const hadOwnSessionOf = Object.prototype.hasOwnProperty.call(inputTriggers, "sessionOf");
+			const ownSessionOf = inputTriggers.sessionOf;
+			const originalSessionOf = inputTriggers.sessionOf.bind(inputTriggers);
+			inputTriggers.sessionOf = (actx) => {
+				const controller = originalSessionOf(actx);
+				wrap(controller);
+				return controller;
+			};
+			return () => {
+				if (hadOwnSessionOf) inputTriggers.sessionOf = ownSessionOf;
+				else delete inputTriggers.sessionOf;
+				for (const controller of wrapped) {
+					if (typeof controller.__commandSettingHashRestore === "function") controller.__commandSettingHashRestore();
+				}
+				wrapped.clear();
+				if (typeof unregisterSource === "function") unregisterSource();
+			};
+		}
+
 		// ── plugin entry ──────────────────────────────────────────────────────
 		// "remote.commands" is a separately mounted namespace service (remote.<ns>);
 		// property access only resolves once it is injected, like ui-plan does.
@@ -402,6 +643,14 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "command-setting: dictionaries");
 			const t = ctx.locale.bind(NS);
+
+			// '#' 会话引用（跨工作区 / 未归档 / 主代理）：依赖 input-trigger 管线，
+			// 该管线缺失时特性静默不启用（其余命令设置功能不受影响）。
+			ctx.inject(["inputTriggers"], (inputCtx) => {
+				const inputTriggers = inputCtx.inputTriggers;
+				if (inputTriggers === void 0 || typeof inputTriggers.registerSource !== "function") return void 0;
+				return installHashTrigger(inputTriggers, createHashSource(ctx, t));
+			});
 
 			// Shared live hidden set for the menu-side filter; refreshed from the
 			// host on startup, on every settings write, and on change events.
@@ -518,6 +767,10 @@ window.__ModuleLoader__.load({
 		exports.CommandsSettingSection = CommandsSettingSection;
 		exports.PlanModeToggle = PlanModeToggle;
 		exports.AskModeToggle = AskModeToggle;
+		exports.HASH_SOURCE = HASH_SOURCE;
+		exports.buildHashRows = buildHashRows;
+		exports.hashTokenAt = hashTokenAt;
+		exports.installHashTrigger = installHashTrigger;
 		exports.apply = apply;
 		exports.inject = inject;
 		return module.exports;

@@ -2,6 +2,16 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.7.0
+
+- **`#` 引用历史会话（新增，浏览器端）**：composer 输入 `#` 弹出会话引用菜单，选中插入与 `@` 会话引用**完全等效**的原子 mention（`@[标题](dsh-session:<base64url id>)`，宿主 `session-reference` 服务照常校验并捕获该会话的有界只读快照）。与 `@` 的差别：**只列会话不列文件**，且仅限「**未归档** + **主代理** + **跨工作区**」——
+  - 未归档：排除 `ctx.workspaces` 快照 `archivedSessionIds` 中的会话；
+  - 主代理：排除客户端会话列表里 `origin === 'subagent'` 的子会话；
+  - 跨工作区：不按当前工作目录过滤，非当前工作区的会话在描述中显示其工作目录（home 缩写为 `~`）与相对更新时间；
+- **宿主适配（input-trigger 只认 `/` 与 `@`）**：`TriggerChar` 是封闭联合，`#` 无法直接 `registerSource`。实现为给每个会话 controller 包一层——把活跃 `#token` 在**同一 span** 改写成等价 `@token` 交给宿主探测器，再拦截该 controller 的 source roster，使该 hit 只解析到插件的 `#` 源（不混入 `@` 的文件/会话统一菜单）；词边界/空白规则与 `@` 一致（`#` 后接空白不触发，Markdown 标题不受影响）。`#ab` 与 `@ab` 的 hit 字段完全相同，宿主 `track` 的 `same` 短路会把旧 source 的菜单留在屏上，故哈希性质切换（`#`↔`@`）时先关菜单再委托，确保 source 正确换面。停用插件时还原 controller 与原 `@` 行为；
+- **数据与降级**：候选复用 `remote.sessionReferenceResolver.candidates`（标题/mention/cwd/时间），归档集与主代理判定分别读客户端 `workspaces` / `sessions` 快照；`inputTriggers` 或任一服务缺失时特性静默不启用，其余命令设置功能不受影响；
+- 测试：client-smoke 新增 `hashTokenAt`（词边界/空白/非法输入）、`buildHashRows`（归档/subagent/无 mention 剔除、同/跨工作区描述、home 缩写、空输入容错）、`installHashTrigger`（源注册、已有/晚建 controller 包装、`#`→`@` 改写与 roster 路由、plain `@` 不受影响、frozen 不触发、claimed 仍触发、dispose 全量还原）。
+
 ## 0.6.0
 
 - **代码重构与瘦身（纯重构，外部行为与契约不变：HTTP 端点 / 响应字段 / settings 命名空间与 hidden 语义 / 受保护命令 / /ask 会话语义与侧文件格式 / 注入契约 / 浏览器槽位与按钮行为全部不变）**：
