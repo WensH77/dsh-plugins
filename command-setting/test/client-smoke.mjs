@@ -169,9 +169,9 @@ sandbox.fetch = async (url, init) => {
 
 // ── '#' 会话引用：token 检测 / 候选过滤 / controller 包装与还原 ─────────────
 {
-  const { hashTokenAt, hashEntries, buildHashRows, formatSessionMention, installHashTrigger, HASH_SOURCE } = loaded;
+  const { hashTokenAt, hashEntries, hashWorkspaceNames, buildHashRows, formatSessionMention, installHashTrigger, HASH_SOURCE } = loaded;
 
-  check("hash exports present", typeof hashTokenAt === "function" && typeof hashEntries === "function" && typeof buildHashRows === "function" && typeof formatSessionMention === "function" && typeof installHashTrigger === "function" && HASH_SOURCE === "command-setting-sessions");
+  check("hash exports present", typeof hashTokenAt === "function" && typeof hashEntries === "function" && typeof hashWorkspaceNames === "function" && typeof buildHashRows === "function" && typeof formatSessionMention === "function" && typeof installHashTrigger === "function" && HASH_SOURCE === "command-setting-sessions");
 
   // token 检测：词边界 + token 到 caret
   const at = (draft, caret) => JSON.stringify(hashTokenAt(draft, caret));
@@ -235,6 +235,22 @@ sandbox.fetch = async (url, init) => {
   check("hash rows: per-bucket cap", buildHashRows(t, many, "/w/a", "/Users/me", now).length === 25);
   check("hash rows: empty/odd input tolerated", buildHashRows(t, null, void 0, void 0, now).length === 0 && buildHashRows(t, "nope", "/w/a", void 0, now).length === 0);
   check("hashEntries: non-ASCII id skipped", hashEntries(session, "", { ids: ["bad id"], byId: { "bad id": { id: "bad id", displayTitle: "Bad", updatedAt: now } } }, archived).entries.length === 0);
+
+  // 工作区名字映射：跨工作区行显示工作区名，未注册目录退回路径
+  const workspaceNames = hashWorkspaceNames({ items: [
+    { path: "/w/b", title: "Beta 项目" },
+    { path: "/w/a", title: "当前项目" },
+    { path: "/w/c", title: "" },
+    { path: "", title: "空路径" },
+    null
+  ] });
+  check("hashWorkspaceNames: path → title map", workspaceNames.get("/w/b") === "Beta 项目" && workspaceNames.size === 2, String(workspaceNames.size));
+  const named = hashEntries(session, "", list, archived, workspaceNames);
+  check("hashEntries: workspace title attached", named.entries.find((e) => e.id === "s2")?.workspace === "Beta 项目" && named.entries.find((e) => e.id === "s7")?.workspace === void 0);
+  const namedRows = buildHashRows(t, named.entries, named.currentCwd, "/Users/me", now);
+  check("hash rows: cross-workspace row shows the workspace name", namedRows[2].description.startsWith("Beta 项目 · "), namedRows[2].description);
+  check("hash rows: unregistered cwd still falls back to path", namedRows[1].description.startsWith("~/proj · "), namedRows[1].description);
+  check("hash rows: same-workspace row still hides any location", namedRows[3].description === "L:hashHours:2", namedRows[3].description);
 
   // controller 包装：'#' → '@' 改写 + roster 拦截 + 还原
   const trackCalls = [];
@@ -359,7 +375,7 @@ sandbox.fetch = async (url, init) => {
   const services = {
     inputTriggers: fakeInputTriggers,
     sessions: { list: { getSnapshot: () => listSnapshot } },
-    workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: ["x3"] }) } },
+    workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: ["x3"], items: [{ path: "/w/b", title: "Beta 项目" }] }) } },
     remote: { $host: { home: "/Users/me" } }
   };
   loaded.apply({
@@ -378,6 +394,7 @@ sandbox.fetch = async (url, init) => {
   const rows = await source.candidates({ sessionId: "me" }, { query: "", signal: new AbortController().signal });
   check("apply: # candidates read client services end-to-end", rows.length === 2 && rows.map((r) => r.name).join(",") === "Other,Local", JSON.stringify(rows.map((r) => r.name)));
   check("apply: # candidates drop archived + self, mention canonical", rows[0].section === "L:hashOtherWorkspaces" && JSON.parse(rows[0].value).mention === loaded.formatSessionMention("Other", "x2"), JSON.stringify(rows[0]));
+  check("apply: # candidates label the workspace by name", rows[0].description.startsWith("Beta 项目 · "), rows[0].description);
   const filtered = await source.candidates({ sessionId: "me" }, { query: "local", signal: new AbortController().signal });
   check("apply: # candidates honour the live query", filtered.length === 1 && filtered[0].name === "Local", JSON.stringify(filtered.map((r) => r.name)));
 }

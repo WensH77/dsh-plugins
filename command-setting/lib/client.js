@@ -470,6 +470,17 @@ window.__ModuleLoader__.load({
 			return "@[" + escaped + "](dsh-session:" + base64UrlEncode(JSON.stringify(sessionId)) + ")";
 		}
 
+		/** 工作区 path → 工作区名（title）映射，供跨工作区候选显示名字而非路径。 */
+		function hashWorkspaceNames(workspaces) {
+			const byPath = new Map();
+			for (const item of Array.isArray(workspaces?.items) ? workspaces.items : []) {
+				if (item === null || typeof item !== "object") continue;
+				if (typeof item.path !== "string" || item.path === "" || typeof item.title !== "string" || item.title === "") continue;
+				byPath.set(item.path, item.title);
+			}
+			return byPath;
+		}
+
 		/**
 		 * 从客户端会话列表挑出 '#' 候选：排除自身、subagent 子会话、空会话与已归档，
 		 * 再按 query（标题 / 会话 id / 工作目录，大小写不敏感）过滤。
@@ -479,8 +490,9 @@ window.__ModuleLoader__.load({
 		 * 当前工作区会话一多（实测 300+），跨工作区候选会被整段挤掉，表现就是
 		 * 「# 只能 attach 当前工作区会话」。客户端列表含全部工作区，且自带
 		 * displayTitle，因此这里自行组装候选与规范 mention。
+		 * @param workspaceNames - 工作区 path → 名字映射（未注册目录没有条目）。
 		 */
-		function hashEntries(session, query, list, archived) {
+		function hashEntries(session, query, list, archived, workspaceNames) {
 			const needle = typeof query === "string" ? query.toLocaleLowerCase() : "";
 			const byId = list.byId ?? {};
 			const currentCwd = byId[session.sessionId]?.cwd;
@@ -500,6 +512,7 @@ window.__ModuleLoader__.load({
 					id,
 					label,
 					cwd,
+					workspace: typeof cwd === "string" && typeof workspaceNames?.get === "function" ? workspaceNames.get(cwd) : void 0,
 					updatedAt: typeof summary.updatedAt === "number" ? summary.updatedAt : 0,
 					same: currentCwd !== void 0 && cwd === currentCwd
 				});
@@ -510,6 +523,7 @@ window.__ModuleLoader__.load({
 		/**
 		 * 把候选投影成 '#' 菜单行：**其他工作区分组在前、当前工作区在后**，各自按最近
 		 * 活动排序并各限 25 行——跨工作区会话因此始终可见（不再被同 cwd 排序挤出）。
+		 * 跨工作区行优先显示**工作区名字**（未注册目录退回缩写的目录路径）。
 		 * 无法确定当前工作目录时不分组，退回单一按最近活动排序的列表。
 		 * mention 用规范形式，选中后的引用与 '@' 会话引用完全等效。
 		 */
@@ -531,9 +545,11 @@ window.__ModuleLoader__.load({
 					const ageText = age.unit === "now" ? t("hashNow") : t(HASH_TIME_KEYS[age.unit], { n: age.n });
 					const location = entry.same === true
 						? void 0
-						: entry.cwd === void 0 || entry.cwd === ""
-							? t("hashNoCwd")
-							: shortenHomePath(entry.cwd, home);
+						: entry.workspace !== void 0
+							? entry.workspace
+							: entry.cwd === void 0 || entry.cwd === ""
+								? t("hashNoCwd")
+								: shortenHomePath(entry.cwd, home);
 					rows.push({
 						name: entry.label,
 						description: location === void 0 ? ageText : location + " · " + ageText,
@@ -563,8 +579,9 @@ window.__ModuleLoader__.load({
 					try {
 						const list = ctx.get("sessions")?.list.getSnapshot();
 						if (list === void 0 || !Array.isArray(list.ids)) return [];
-						const archived = new Set(ctx.get("workspaces")?.list.getSnapshot().archivedSessionIds ?? []);
-						const { entries, currentCwd } = hashEntries(session, req.query, list, archived);
+						const workspaces = ctx.get("workspaces")?.list.getSnapshot();
+						const archived = new Set(workspaces?.archivedSessionIds ?? []);
+						const { entries, currentCwd } = hashEntries(session, req.query, list, archived, hashWorkspaceNames(workspaces));
 						return buildHashRows(t, entries, currentCwd, ctx.get("remote")?.$host?.home, Date.now());
 					} catch (_hashCandidatesFailure) {
 						// 候选失败保持静默（与宿主 '@' 会话候选的失败语义一致）。
@@ -827,6 +844,7 @@ window.__ModuleLoader__.load({
 		exports.formatSessionMention = formatSessionMention;
 		exports.hashEntries = hashEntries;
 		exports.hashTokenAt = hashTokenAt;
+		exports.hashWorkspaceNames = hashWorkspaceNames;
 		exports.installHashTrigger = installHashTrigger;
 		exports.apply = apply;
 		exports.inject = inject;

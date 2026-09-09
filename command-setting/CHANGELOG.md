@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.7.2
+
+- **跨工作区候选展示工作区名字**：`#` 菜单「其他工作区」分组里，会话行的位置信息由「缩写目录路径」改为**工作区名字**（`workspaces` 快照 `items` 的 `title`，如 `intranet-aio` / `dsh-browser`），再接相对更新时间；未注册为工作区的目录没有名字，仍退回缩写的目录路径。当前工作区分组的行保持只显示时间（位置即当前工作区，无需重复）。
+- 测试：client-smoke 新增 `hashWorkspaceNames`（path → title 映射、空 title/空 path/非对象条目跳过）、`hashEntries` 携带工作区名、`buildHashRows` 优先显示名字且未注册目录回退路径、apply 端到端装配断言工作区名。
+
 ## 0.7.1
 
 - **修复 `#` 只能引用当前工作区会话（跨工作区失效）**：候选原先复用宿主的 `remote.sessionReferenceResolver.candidates`，而该接口默认只取 `candidateLimit`（50）条、且**同 cwd 优先**排序后 `slice`——当前工作区会话一多（本机实测 318 个），跨工作区候选被整段挤出，表现就是「# 只能 attach 当前工作区会话」。改为**直接读客户端会话列表**（`sessions` 快照，含全部工作区，自带 `displayTitle`/`cwd`/`origin`/`updatedAt`）自行组装候选：
