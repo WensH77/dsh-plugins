@@ -17,6 +17,7 @@ import { githubRepoInfo, gitSpec, compareVersions, makeQueue, readJsonFile, writ
 import { disableBlock, stripEmptyArrayMarker, readPatchState, localDependencyInfo } from '../lib/patch.js'
 import { reviewKey } from '../lib/review.js'
 import { routeOverrideOf, ROUTES } from '../lib/routes.js'
+import { rangeBreakFinding } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
@@ -188,6 +189,25 @@ console.log('\n[localDependencyInfo ← patch.js]')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+// ── range-break 分层契约：声明所在 section 决定严重度与 kind ──────────────────
+console.log('\n[rangeBreakFinding ← dsh.js]')
+{
+  const target = '0.1.5-alpha.1'
+  const peer = rangeBreakFinding('@deepseek-ai/dsh-agent', '^0.1.2-alpha.2', target, 'peerDependencies')
+  assertEq(peer.severity, 'info', 'peerDependencies 越界 → info（不参与安装，仅声明失真）')
+  assertEq(peer.kind, 'range-break-peer', 'peerDependencies 越界 kind = range-break-peer')
+  const dev = rangeBreakFinding('@deepseek-ai/dsh-llm', '0.1.2-rc.1', target, 'devDependencies')
+  assertEq(dev.severity, 'medium', 'devDependencies 越界 → medium（本地抢先命中）')
+  assertEq(dev.kind, 'range-break-dev', 'devDependencies 越界 kind = range-break-dev')
+  const dep = rangeBreakFinding('@deepseek-ai/dsh-llm', '0.1.2-rc.1', target, 'dependencies')
+  assertEq(dep.severity, 'high', 'dependencies 越界 → high（污染 profile 根）')
+  assertEq(dep.kind, 'range-break', 'dependencies 越界 kind = range-break')
+  assert(peer.message.includes(target) && dep.message.includes('0.1.2-rc.1'), 'message 带上声明范围与目标版本')
+  const clientText = readFileSync(LIB_CLIENT, 'utf8')
+  assert(clientText.includes('pm-scanInfo') && clientText.includes('dshReportScanPeerGroup') && clientText.includes('dshReportScanPeerNote'),
+    'client.js 含 info 档可收起渲染与双语键')
 }
 
 // ── 2) 路由表契约：routes.js 分发表 16 条固定 + client 引用 ⊆ 全集 ───────────

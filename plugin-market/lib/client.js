@@ -86,6 +86,11 @@ window.__ModuleLoader__.load({
 			".pm-modalInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;border-radius:7px;padding:8px 12px;width:100%;box-sizing:border-box}",
 			".pm-modalRow{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}",
 			".pm-reviewRisks{margin:0;padding:0 0 0 18px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;gap:4px;display:flex;flex-direction:column;list-style:disc}",
+			// 报告里"仅声明失真"的 info 档：可折叠，默认收起
+			".pm-scanInfo{margin:2px 0}",
+			".pm-scanInfo>summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}",
+			".pm-scanInfo>summary:hover{color:var(--dsw-alias-label-primary)}",
+			".pm-scanInfo[open]>summary{font-weight:600}",
 			".pm-loadingRow{display:flex;align-items:center;gap:10px;color:var(--dsw-alias-label-tertiary);font-size:13px;padding:10px 0}",
 			// 拉取/安装进度条
 			".pm-progress{display:flex;flex-direction:column;gap:4px;margin:8px 0 2px}",
@@ -247,6 +252,8 @@ window.__ModuleLoader__.load({
 			dshReportScanClean: "{count} 个插件机器判定未命中",
 			dshReportScanLocalOnly: "（registry 不可达，仅指纹、无闭包核对）",
 			dshReportScanCleanNone: "（机器判定未发现受影响插件）",
+			dshReportScanPeerGroup: "另有 {count} 条 peer 声明未覆盖目标版本（无运行期影响，点击展开）",
+			dshReportScanPeerNote: "peer 依赖不参与安装（profile 模板 autoInstallPeers:false），以上仅为声明失真；如需消除，由插件作者把范围放宽到目标版本。",
 		};
 		const en = {
 			tab: "Plugin Market",
@@ -374,6 +381,8 @@ window.__ModuleLoader__.load({
 			dshReportScanClean: "{count} plugin(s) machine-clean",
 			dshReportScanLocalOnly: "(registry unreachable — fingerprints only, no closure check)",
 			dshReportScanCleanNone: "(no machine findings)",
+			dshReportScanPeerGroup: "{count} peer range declaration(s) do not cover the target version (no runtime effect — click to expand)",
+			dshReportScanPeerNote: "Peer dependencies are never installed (the profile template sets autoInstallPeers:false), so these are declaration-only. Plugin authors can widen the range to the target version to clear them.",
 		};
 
 		// ── helpers ──────────────────────────────────────────────────────────
@@ -1180,36 +1189,82 @@ window.__ModuleLoader__.load({
 								note.textContent = scan.errors.join("；");
 								body.appendChild(note);
 							}
-							const hits = (Array.isArray(scan.plugins) ? scan.plugins : []).filter((p) => p && Array.isArray(p.findings) && p.findings.length > 0);
-							const cleanCount = (Array.isArray(scan.plugins) ? scan.plugins : []).filter((p) => p && p.machine === "clean").length;
-							if (hits.length === 0) {
+							// 分层渲染：high/medium（removed-module、dependency/devDependency 越界）平铺展开；
+							// info（peer 声明越界 = 声明失真、无运行期影响）收进可折叠的 <details>，默认收起，
+							// 避免十几条同源噪声把真正的破坏点淹掉。
+							const scanPlugins = Array.isArray(scan.plugins) ? scan.plugins : [];
+							const isInfoFinding = (f) => f !== null && typeof f === "object" && (f.severity === "info" || f.kind === "range-break-peer");
+							const findingsOf = (p) => (p && Array.isArray(p.findings) ? p.findings : []);
+							const blockingOf = (p) => findingsOf(p).filter((f) => !isInfoFinding(f));
+							const hits = scanPlugins.filter((p) => p && blockingOf(p).length > 0);
+							const infoGroups = scanPlugins
+								.map((p) => ({ plugin: p, items: findingsOf(p).filter((f) => isInfoFinding(f)) }))
+								.filter((g) => g.plugin && g.items.length > 0);
+							const infoCount = infoGroups.reduce((n, g) => n + g.items.length, 0);
+							const cleanCount = scanPlugins.filter((p) => p && blockingOf(p).length === 0).length;
+							if (hits.length === 0 && infoCount === 0) {
 								const p = document.createElement("p");
 								p.className = "pm-modalText";
 								p.style.opacity = "0.8";
 								p.textContent = cleanCount > 0 ? tpl(t("dshReportScanClean"), { count: String(cleanCount) }) + " · " + t("dshReportScanCleanNone") : t("dshReportScanCleanNone");
 								body.appendChild(p);
 							} else {
-								const ul = document.createElement("ul");
-								ul.className = "pm-reviewRisks";
-								hits.forEach((p) => {
-									const li = document.createElement("li");
-									const head = document.createElement("span");
-									head.style.fontWeight = "600";
-									head.textContent = p.moduleName + (p.version ? "@" + p.version : "") + "：";
-									li.appendChild(head);
-									const sub = document.createElement("ul");
-									sub.className = "pm-reviewRisks";
-									p.findings.forEach((f) => {
-										const subLi = document.createElement("li");
-										subLi.textContent = f.message ?? "";
-										if (f.severity === "high") subLi.style.color = "var(--dsw-alias-state-error-primary)";
-										else if (f.severity === "medium") subLi.style.color = "var(--dsw-alias-state-warn-primary)";
-										sub.appendChild(subLi);
+								if (hits.length > 0) {
+									const ul = document.createElement("ul");
+									ul.className = "pm-reviewRisks";
+									hits.forEach((p) => {
+										const li = document.createElement("li");
+										const head = document.createElement("span");
+										head.style.fontWeight = "600";
+										head.textContent = p.moduleName + (p.version ? "@" + p.version : "") + "：";
+										li.appendChild(head);
+										const sub = document.createElement("ul");
+										sub.className = "pm-reviewRisks";
+										blockingOf(p).forEach((f) => {
+											const subLi = document.createElement("li");
+											subLi.textContent = f.message ?? "";
+											if (f.severity === "high") subLi.style.color = "var(--dsw-alias-state-error-primary)";
+											else if (f.severity === "medium") subLi.style.color = "var(--dsw-alias-state-warn-primary)";
+											sub.appendChild(subLi);
+										});
+										li.appendChild(sub);
+										ul.appendChild(li);
 									});
-									li.appendChild(sub);
-									ul.appendChild(li);
-								});
-								body.appendChild(ul);
+									body.appendChild(ul);
+								}
+								if (infoCount > 0) {
+									const details = document.createElement("details");
+									details.className = "pm-scanInfo";
+									const summary = document.createElement("summary");
+									summary.textContent = tpl(t("dshReportScanPeerGroup"), { count: String(infoCount) });
+									details.appendChild(summary);
+									const note = document.createElement("p");
+									note.className = "pm-modalText";
+									note.style.opacity = "0.7";
+									note.style.fontSize = "12px";
+									note.textContent = t("dshReportScanPeerNote");
+									details.appendChild(note);
+									const infoUl = document.createElement("ul");
+									infoUl.className = "pm-reviewRisks";
+									infoGroups.forEach((g) => {
+										const li = document.createElement("li");
+										const head = document.createElement("span");
+										head.style.fontWeight = "600";
+										head.textContent = g.plugin.moduleName + (g.plugin.version ? "@" + g.plugin.version : "") + "：";
+										li.appendChild(head);
+										const sub = document.createElement("ul");
+										sub.className = "pm-reviewRisks";
+										g.items.forEach((f) => {
+											const subLi = document.createElement("li");
+											subLi.textContent = f.message ?? "";
+											sub.appendChild(subLi);
+										});
+										li.appendChild(sub);
+										infoUl.appendChild(li);
+									});
+									details.appendChild(infoUl);
+									body.appendChild(details);
+								}
 								if (cleanCount > 0) {
 									const p = document.createElement("p");
 									p.className = "pm-modalText";

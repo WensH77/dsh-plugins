@@ -411,13 +411,17 @@ async function readPluginSurface(ctx, moduleName) {
     try { pkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')) } catch { return null }
   }
   const injectIds = Array.isArray(pkg?.dsh?.client?.inject) ? pkg.dsh.client.inject.filter((s) => typeof s === 'string' && s !== '') : []
-  // 声明的宿主依赖（dependencies + peerDependencies 里的 @deepseek-ai/*，含范围）
+  // 声明的宿主依赖（dependencies / devDependencies / peerDependencies 里的 @deepseek-ai/*），
+  // 记录范围与来源 section —— 分层判定要用：dependency 会被 pnpm hoist 进 profile 根、
+  // devDependency 只在本地装了 devDeps 时抢先命中、peerDependency 不参与安装（profile 模板
+  // autoInstallPeers:false）。同名包以更靠前的 section 为准（deps > devDeps > peers）。
   const declared = {}
-  for (const section of ['dependencies', 'peerDependencies']) {
+  for (const section of ['dependencies', 'devDependencies', 'peerDependencies']) {
     const deps = pkg?.[section]
     if (deps === null || typeof deps !== 'object') continue
     for (const [k, v] of Object.entries(deps)) {
-      if (typeof v === 'string' && (k.startsWith('@deepseek-ai/') || k === '@deepseek-ai/cordis' || k === '@deepseek-ai/schemastery')) declared[k] = v
+      if (typeof v !== 'string' || !(k.startsWith('@deepseek-ai/') || k === '@deepseek-ai/cordis' || k === '@deepseek-ai/schemastery')) continue
+      if (declared[k] === undefined) declared[k] = { range: v, section }
     }
   }
   // 代码里引用的宿主模块（lib/*.js 中 import/require/from 语句引用的 "@deepseek-ai/xxx"，
@@ -442,11 +446,44 @@ async function readPluginSurface(ctx, moduleName) {
 /**
  * L1 契约扫描：对每个已装用户插件做「使用指纹 × 宿主闭包」机器判定（不依赖 LLM）：
  *  - removed-module：插件引用的宿主模块在已装闭包中存在、在目标版本闭包中消失 → 高置信破坏点；
- *  - range-break：插件声明 @deepseek-ai/dsh-* 依赖范围已不覆盖目标版本 → 版本越界破坏点；
+ *  - range-break：插件声明 @deepseek-ai/dsh-* 依赖范围已不覆盖目标版本，**按声明所在 section 分层**：
+ *    dependencies → high（会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本）；
+ *    devDependencies → medium（只在本地装了 devDeps 时在插件自己的 node_modules 里抢先命中）；
+ *    peerDependencies → info（不参与安装，仅声明失真、无运行期后果）；
+ *    info 档不计入 machine=affected，但仍保留在 findings 里供报告折叠展示与模型参考。
  *  - 其余引用（短 inject id、cordis/schemastery 等 infra、代码内字面量）收集为上下文证据，
  *    供模型结合 diff 判断，不做机器结论。
  * 返回 { method, installed, target, errors, removedModules, plugins:[{moduleName,version,machine,findings,evidence}], checkedAt }。
  */
+/**
+ * 把一条「声明范围不覆盖目标版本」转成分层 finding（纯函数，扫描与 smoke 测试共用）。
+ * section 决定严重度：
+ *  - dependencies → high：会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本；
+ *  - devDependencies → medium：不随发布安装，但本地装了就在插件自己的 node_modules 里抢先命中；
+ *  - peerDependencies → info：profile 模板 autoInstallPeers:false，peer 不参与安装，仅声明失真。
+ */
+function rangeBreakFinding(depName, range, target, section) {
+  if (section === 'peerDependencies') {
+    return {
+      severity: 'info',
+      kind: 'range-break-peer',
+      message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 未覆盖目标版本 ' + target + '（peer 不参与安装，profile 模板 autoInstallPeers:false，仅声明失真、无运行期影响）',
+    }
+  }
+  if (section === 'devDependencies') {
+    return {
+      severity: 'medium',
+      kind: 'range-break-dev',
+      message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 未覆盖目标版本 ' + target + '（devDependencies 不随发布安装，但本地开发装了就可能在插件自己的 node_modules 里抢先命中旧副本）',
+    }
+  }
+  return {
+    severity: 'high',
+    kind: 'range-break',
+    message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 不再覆盖目标版本 ' + target + '（宿主同版本发布，直接越界；dependency 会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本）',
+  }
+}
+
 async function runDshCompatScan(ctx, target) {
   const scan = {
     method: 'registry-closure',
@@ -476,7 +513,7 @@ async function runDshCompatScan(ctx, target) {
     const surface = await readPluginSurface(ctx, plugin.moduleName)
     if (surface === null) continue
     const findings = []
-    const evidence = { injects: surface.injectIds, declared: {}, codeRefs: [] }
+    const evidence = { injects: surface.injectIds, declared: {}, declaredSections: {}, codeRefs: [] }
     // 1) 引用核对：只有「确在已装宿主闭包中」的模块才有资格做移除判定（防止把从未
     //    直挂宿主闭包的包——如 cordis/schemastery/传递依赖——误判为"被移除"）；
     //    不在已装闭包的引用（infra 或非宿主包）收集为上下文证据，供模型结合 diff 判断。
@@ -493,17 +530,20 @@ async function runDshCompatScan(ctx, target) {
         findings.push({ severity: 'high', kind: 'removed-module', message: '引用宿主模块 ' + m + ' 在目标版本 dsh 宿主闭包（dsh-web-app/dsh-base 直接依赖）中消失（可能被移除/改名/更换为其它包）' })
       }
     }
-    // 2) 版本范围判定：插件声明 @deepseek-ai/dsh-*（宿主同版本发布的包）范围 vs 目标版本
-    for (const [depName, range] of Object.entries(surface.declared)) {
+    // 2) 版本范围判定：插件声明 @deepseek-ai/dsh-*（宿主同版本发布的包）范围 vs 目标版本。
+    //    按 section 分层给出严重度 —— 只有 dependency/devDependency 越界才算机器判定受影响，
+    //    peerDependency 越界降为 info（声明失真，profile 模板 autoInstallPeers:false 决定了
+    //    peer 根本不会被安装），避免十几条同源噪声淹掉真正的破坏点。
+    for (const [depName, decl] of Object.entries(surface.declared)) {
+      const range = decl.range
       evidence.declared[depName] = range
+      evidence.declaredSections[depName] = decl.section
       if (!depName.startsWith('@deepseek-ai/dsh-') && !depName.startsWith('@deepseek-ai/cordis-plugin-')) continue
       if (scan.target === null || scan.target === undefined || scan.target === '') continue
-      const allow = rangeAllowsVersion(range, scan.target)
-      if (allow === false) {
-        findings.push({ severity: 'high', kind: 'range-break', message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 不再覆盖目标版本 ' + scan.target + '（宿主同版本发布，直接越界）' })
-      }
+      if (rangeAllowsVersion(range, scan.target) !== false) continue
+      findings.push(rangeBreakFinding(depName, range, scan.target, decl.section))
     }
-    const machine = findings.length > 0 ? 'affected' : 'clean'
+    const machine = findings.some((f) => f.severity === 'high' || f.severity === 'medium') ? 'affected' : 'clean'
     scan.plugins.push({ moduleName: plugin.moduleName, version: plugin.version, machine, findings, evidence })
   }
   return scan
@@ -523,11 +563,24 @@ function buildScanPromptSection(scan) {
   } else {
     for (const p of scan.plugins) {
       const label = p.moduleName + (p.version ? '@' + p.version : '')
-      if (p.findings.length === 0) {
-        lines.push('- ' + label + '：机器判定未命中（引用模块均在目标闭包 / 声明范围覆盖目标版本）')
+      const blocking = p.findings.filter((f) => f.severity === 'high' || f.severity === 'medium')
+      const infoCount = p.findings.length - blocking.length
+      if (blocking.length === 0) {
+        lines.push('- ' + label + '：机器判定未命中' + (infoCount > 0
+          ? '（另有 ' + infoCount + ' 条 peer 声明未覆盖目标版本，无运行期影响，见下方指纹）'
+          : '（引用模块均在目标闭包 / 声明范围覆盖目标版本）'))
         continue
       }
-      lines.push('- ' + label + '：机器判定受影响 —— ' + p.findings.map((f) => f.message).join('；'))
+      lines.push('- ' + label + '：机器判定受影响 —— ' + blocking.map((f) => f.message).join('；'))
+    }
+    // 仅声明失真的 info 档（peer 越界）：单独列出并显式标注"勿计入受影响插件"，
+    // 避免模型把十几条同源噪声当成破坏证据。
+    const peerNotes = []
+    for (const p of scan.plugins) {
+      for (const f of p.findings) if (f.severity === 'info') peerNotes.push(p.moduleName + '→' + f.message)
+    }
+    if (peerNotes.length > 0) {
+      lines.push('（仅声明失真、无运行期影响，**勿**据此把插件列入 affectedPlugins）' + peerNotes.slice(0, 40).join('；'))
     }
     // 使用指纹（无法机器判定的短 inject id / infra 依赖），供模型结合 diff 补充判断
     const fingerprints = []
@@ -588,7 +641,7 @@ function buildDshUpdatePrompt(installed, latest, versions, compare, installedPlu
   }
   lines.push('--- 当前已安装插件 ---')
   lines.push(installedPlugins.length > 0 ? installedPlugins.join(', ') : '（无用户安装的第三方插件）')
-  lines.push('判断指引：affectedPlugins 应**优先依据上方「本地插件契约扫描」的机器判定**——机器判定受影响的插件（removed-module / range-break）应列入；机器判定未命中（clean）的插件，仅当你从版本材料或 diff 中看到明确破坏证据（该插件引用的服务/inject 名/slot 出现在变更中）时才可补入，不得仅凭插件名猜测；机器扫描不可用（local-only）时仍按 diff 判断。')
+  lines.push('判断指引：affectedPlugins 应**优先依据上方「本地插件契约扫描」的机器判定**——机器判定受影响的插件（removed-module / dependency 或 devDependency 的 range-break）应列入；机器判定未命中（clean）的插件，仅当你从版本材料或 diff 中看到明确破坏证据（该插件引用的服务/inject 名/slot 出现在变更中）时才可补入，不得仅凭插件名猜测；**peer 声明未覆盖目标版本属于声明失真、无运行期影响，不得作为列入 affectedPlugins 的依据**；机器扫描不可用（local-only）时仍按 diff 判断。')
   return lines.join('\n').slice(0, PROMPT_CAP)
 }
 
@@ -785,4 +838,4 @@ async function analyzeDshUpdate(ctx) {
   }
 }
 
-export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, attachSessionToWorkspace, createVisibleAnalysisSession }
+export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, attachSessionToWorkspace, createVisibleAnalysisSession, rangeBreakFinding }

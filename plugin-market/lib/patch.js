@@ -14,7 +14,6 @@ const PROTECTED_MODULE_PATTERNS = [
   /^@deepseek-ai\/dsh-client-modules$/u,
   /^@deepseek-ai\/dsh-client-connection$/u,
   /^@deepseek-ai\/dsh-client-hmr$/u,
-  /^@deepseek-ai\/dsh-client-runtime$/u,
   /^@deepseek-ai\/dsh-client-locale$/u,
   /^@deepseek-ai\/dsh-client-web/u,
   /^@deepseek-ai\/dsh-web-frontend$/u,

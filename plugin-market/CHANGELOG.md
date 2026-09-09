@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.14.3
+
+- **feat：升级报告 range-break 按声明 section 分层 + 可收起**——`dsh.js` 的 `readPluginSurface` 改为记录每条宿主依赖声明的来源 section（并纳入 `devDependencies`），`runDshCompatScan` 据此分层：`dependencies` 越界保持 **high**（会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本）、`devDependencies` 越界降为 **medium**（只在本地装了 devDeps 时在插件自己的 node_modules 里抢先命中）、`peerDependencies` 越界降为 **info**（profile 模板 `autoInstallPeers:false`，peer 不参与安装，仅声明失真、无运行期后果）；`machine=affected` 只由 high/medium 决定，info 档仍保留在 `findings` 里供报告与模型参考。
+- **feat：报告弹窗分层渲染**——`client.js` 把 info 档收进默认收起的 `<details>`（新增样式 `pm-scanInfo`），high/medium 保持平铺展开与红/橙配色；新增双语键 `dshReportScanPeerGroup` / `dshReportScanPeerNote`（zh/en 各 127 键，保持对齐）。
+- **fix：升级分析 prompt 口径同步**——`buildScanPromptSection` 不再把 peer 越界写进「机器判定受影响」，改为单独一段并显式标注「勿据此列入 affectedPlugins」；`buildDshUpdatePrompt` 的判断指引同步收紧（只有 removed-module 与 dependency/devDependency 越界可驱动 affectedPlugins）。
+- **兼容**：旧缓存 `~/.dsh/plugin-market-dsh.json` 中没有 `kind` 的 finding 仍按原严重度渲染，重跑一次扫描即切换到新口径。
+- **fix：清理声明失真**——移除 `@deepseek-ai/dsh-client-runtime`（dsh 宿主无此包）：它出现在 `dsh.client.inject`、`peerDependencies`、`peerDependenciesMeta` 与 `lib/patch.js` 的 `PROTECTED_MODULE_PATTERNS` 四处，属历史遗留。inject 未命中只是不加模块图边（不报错），实际 client 仅 `require("react")`，故无运行期影响；保留真正存在的 `@deepseek-ai/dsh-client-locale` / `-ui-settings`。
+
 ## 0.14.1
 
 - **refactor：重构后候选批（行为不变的继续瘦身）**——
