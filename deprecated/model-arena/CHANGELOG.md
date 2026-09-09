@@ -4,6 +4,7 @@
 
 ## 决策记录
 
+- **peer 范围对齐 dsh 0.1.5-alpha.1 + 归档路径修正（→ 0.7.5）**：`@deepseek-ai/dsh-system-prompt` peer 由 `^0.1.2-alpha.4` bump 到 `^0.1.5-alpha.1`（跟随宿主同版本发布线；此前 `^0.1.2-alpha.4` 的预发布门槛不覆盖 0.1.5-alpha.1）；`repository` 路径随归档修正为 `#path:deprecated/model-arena`。归档存档，仅声明对齐，无运行期行为改动。
 - **peer 范围切到 alpha 线（→ 0.7.4）**：`@deepseek-ai/dsh-system-prompt` 从 `^0.1.0-rc.7` 改为 `^0.1.2-alpha.4`、`cordis` 从 `^4.0.1` 改为 `^4.0.2`——跟随 dsh 0.1.2-alpha 通道（`alpha` dist-tag 全家桶互相声明 `^0.1.2-alpha.4` / `cordis ^4.0.2`）。semver 下 `^0.1.2-alpha.4` 只匹配同一元组的预发布（上游切 `0.1.3-alpha` 需再 bump）；安装/运行期不受其强制，旧 rc 宿主照常运行。
 
 - **业务探索主模型 persona 允许逐条修正、不认可可用 ask_user_question 提出（v34 → 0.7.3，纯浏览器端）**：按用户指示，`buildMainRoleSeed` business 分支（默认分支，Technical Expert）由「再针对挑战者的质疑进行修正」改为「再针对挑战者的质疑逐条修正，但不必全盘接受质疑，如有不认可的条目，可以使用ask_user_question工具提出」——主模型不再全盘接受挑战者的质疑，可对不认可的条目用 `ask_user_question` 与用户确认（平台 v8 `hasPendingInteraction` 守卫保证提问不中断流程、不会误判停止）；qa 协作者/知识沉淀 persona 不变。测试：client-smoke 新增 1 条断言（business main seed 含「逐条修正」「不必全盘接受质疑」「ask_user_question」且不含旧措辞「进行修正」）。依赖：client 改动刷新生效。
