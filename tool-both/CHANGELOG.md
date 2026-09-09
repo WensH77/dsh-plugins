@@ -2,9 +2,16 @@
 
 本文件记录 `dsh-plugin-tool-both` 的历次改动（由 git 提交历史整理）。安装、使用、仓库结构见 [README.md](./README.md)。
 
+## 0.2.6
+
+- **恢复 0.1.2 线兼容：persona 配置改为跨版本三键 shim**——0.2.5 把 persona 行改成 `prefix:`/`suffix:` 后，只覆盖 dsh **0.1.3-alpha.2+**；而 `dsh-persona` 的配置契约正是**在 0.1.3-alpha.2 从 `text` 改为 `prefix`+`suffix`**（不是 0.1.5），于是 0.1.2-alpha.4 / alpha.5 / 0.1.2-rc.1 上预设挂载失败（`$.text missing required value`）。现同时写 `text`（旧版合并人格）+ `prefix`/`suffix`（新版拆分人格）：两版 schema 只校验各自必填键、schemastery 保留未知键，故两版都能挂载且注入一致的系统提示。
+- **待办（迟早要删）**：预设与 README 内已留 `TODO(兼容 shim)`——当本插件不再需要覆盖 0.1.2 线时，删掉预设 persona 行的 `text:` 键及其注释即可。
+- 测试：smoke 增加「persona 行同时带 text/prefix/suffix」断言；`node tool-both/test/smoke.mjs` 全绿。
+- 注意：预设安装是幂等跳过已存在文件的（保护手改），已装过 0.2.5 副本的部署需手动同步 `~/.dsh/.agent-presets/both/agent.cordis.yml` 或删目录重装。
+
 ## 0.2.5
 
-- **预设适配 dsh 0.1.5-alpha.1 的 `dsh-persona` 契约**：`preset/both/agent.cordis.yml` 的 persona 行由旧的单字段 `text:` 改为 `prefix:` + `suffix:`（0.1.5 起 persona 拆为 `deployment:persona-prefix` / `-suffix` 两个槽位，`dsh-persona` 配置随之改为 prefix/suffix）；suffix 仍为 `Your working directory is {{cwd}}.`，prefix 仍为 coding-agent 人格，行为不变。
+- **预设适配 dsh 0.1.5-alpha.1 的 `dsh-persona` 契约**：`preset/both/agent.cordis.yml` 的 persona 行由旧的单字段 `text:` 改为 `prefix:` + `suffix:`（该契约自 dsh **0.1.3-alpha.2** 起生效——persona 拆为 `deployment:persona-prefix` / `-suffix` 两个槽位，`dsh-persona` 配置随之改为 prefix/suffix；0.2.6 起补回 `text` 做跨版本兼容）；suffix 仍为 `Your working directory is {{cwd}}.`，prefix 仍为 coding-agent 人格，行为不变。
 - **peer 范围对齐**：`@deepseek-ai/dsh-home-paths` 由 `^0.1.2-alpha.4` bump 到 `^0.1.5-alpha.1`（跟随宿主同版本发布线；旧范围因预发布门槛不覆盖 0.1.5-alpha.1）。
 - 测试：`node tool-both/test/smoke.mjs` 全绿。
 

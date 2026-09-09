@@ -101,6 +101,11 @@ const unnamed = rowBlocks.filter((block) => {
 check('every non-group row names a plugin', unnamed.length === 0, JSON.stringify(unnamed.map((b) => b.split('\n')[0])));
 const presRow = rowBlocks.find((b) => b.startsWith('tool-presentation'));
 check('tool-presentation row resolves mode: both', presRow !== void 0 && presRow.includes('mode: both') && presRow.includes('@deepseek-ai/dsh-agent-tool-presentation'), JSON.stringify(presRow ?? null));
+// Cross-version persona shim: dsh-persona's config changed from `text` to `prefix`+`suffix`
+// at dsh 0.1.3-alpha.2. The row must carry all three so both schema generations mount.
+// Remove this assertion together with the `text:` key when the 0.1.2 line is dropped.
+const personaRow = rowBlocks.find((b) => b.startsWith('persona'));
+check('persona row carries cross-version keys (text + prefix + suffix)', personaRow !== void 0 && personaRow.includes('text:') && personaRow.includes('prefix:') && personaRow.includes('suffix:'), JSON.stringify(personaRow ?? null));
 
 // ── presentation row ────────────────────────────────────────────────────────
 console.log('presentation row:');

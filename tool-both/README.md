@@ -93,6 +93,7 @@ node tool-both/test/smoke.mjs    # 导出 / 预设安装 / 幂等 / 不覆盖手
 ## 已知限制
 
 - **预设是快照**：`preset/both/agent.cordis.yml` 基于安装时 dsh 自带的 `standard` 预设复制（标准全部组成 + presentation 行），当前基线为 **dsh 0.1.2-alpha.4**（含 `/goal` 命令等标准全能力）。dsh 后续版本给标准预设加新行时，需要重新生成本包的预设（重新 `cp` standard 并追加 presentation 行）。手改过 `~/.dsh/.agent-presets/both/*` 的部署不会被插件覆盖（安装幂等跳过已存在文件），升级后需手动同步或删目录重装。
+- **persona 跨版本 shim（临时，迟早要删）**：`dsh-persona` 的配置在 dsh **0.1.3-alpha.2** 从单字段 `text` 改为 `prefix` + `suffix`（persona 槽位同步拆为 `deployment:persona-prefix` / `-suffix`）。预设的 persona 行**同时写 `text` + `prefix` + `suffix`**——两版 schema 只校验各自必填键、且 schemastery 保留未知键，故 0.1.2-alpha.4/alpha.5/rc.1 取 `text`、0.1.3-alpha.2/0.1.5+ 取 `prefix`/`suffix`，两版注入一致。**待本插件不再需要覆盖 0.1.2 线时，删掉 `preset/both/agent.cordis.yml` 中 persona 行的 `text:` 键及注释即可**（文件内已留 `TODO(兼容 shim)` 标记）。
 - **需要 code runtime**：`both` 与 `code` 一样依赖 host 的 code runtime；没有 runtime 的部署会在挂载时失败（报出 `tool-presentation` 行）。dsh web 自带 runtime，普通使用无感。
 - **呈现行不能放 host 层**：`presentAs` 需要 agent 作用域，`./presentation` 行只适用于 agent preset 组成。
 
