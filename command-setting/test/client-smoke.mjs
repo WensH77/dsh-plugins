@@ -20,6 +20,7 @@ const sandbox = {
   URLSearchParams,
   encodeURIComponent,
   AbortController,
+  btoa,
   fetch: async () => ({ json: async () => ({ ok: true }) }),
   react: { createElement: () => ({}), useState: (v) => [v, () => {}], useEffect: () => {}, useCallback: (f) => f, useRef: () => ({ current: null }) },
   "react/jsx-runtime": {},
@@ -168,9 +169,9 @@ sandbox.fetch = async (url, init) => {
 
 // ── '#' 会话引用：token 检测 / 候选过滤 / controller 包装与还原 ─────────────
 {
-  const { hashTokenAt, buildHashRows, installHashTrigger, HASH_SOURCE } = loaded;
+  const { hashTokenAt, hashEntries, buildHashRows, formatSessionMention, installHashTrigger, HASH_SOURCE } = loaded;
 
-  check("hash exports present", typeof hashTokenAt === "function" && typeof buildHashRows === "function" && typeof installHashTrigger === "function" && HASH_SOURCE === "command-setting-sessions");
+  check("hash exports present", typeof hashTokenAt === "function" && typeof hashEntries === "function" && typeof buildHashRows === "function" && typeof formatSessionMention === "function" && typeof installHashTrigger === "function" && HASH_SOURCE === "command-setting-sessions");
 
   // token 检测：词边界 + token 到 caret
   const at = (draft, caret) => JSON.stringify(hashTokenAt(draft, caret));
@@ -183,35 +184,57 @@ sandbox.fetch = async (url, init) => {
   check("hashTokenAt: empty draft", hashTokenAt("", 0) === null);
   check("hashTokenAt: invalid input", hashTokenAt(null, 0) === null && hashTokenAt("#a", 9) === null);
 
-  // 候选过滤：未归档 + 主代理 + 跨工作区（cwd 仅在不同工作区时显示）
+  // mention 编码与宿主 encodeSessionReferenceUri 同构：base64url(JSON.stringify(id))
+  const uri = (id) => "dsh-session:" + Buffer.from(JSON.stringify(id), "utf8").toString("base64url");
+  check("hash mention: canonical URI payload", formatSessionMention("Alpha", "abc") === "@[Alpha](" + uri("abc") + ")", formatSessionMention("Alpha", "abc"));
+  check("hash mention: label escaping", formatSessionMention("a]b\\c", "x") === "@[a\\]b\\\\c](" + uri("x") + ")", formatSessionMention("a]b\\c", "x"));
+  check("hash mention: empty label falls back to id", formatSessionMention("", "abc") === "@[abc](" + uri("abc") + ")");
+
+  // 客户端列表 → 候选：排除自身/subagent/空/归档，query 命中标题/会话 id/工作目录
   const t = (key, params) => params?.n === void 0 ? "L:" + key : "L:" + key + ":" + params.n;
   const now = 1_000_000_000;
   const hour = 3_600_000;
-  const candidates = [
-    { sessionId: "s1", label: "Alpha", mention: "M:Alpha", cwd: "/w/a", sameWorkspace: true, createdAt: now - hour },
-    { sessionId: "s2", label: "Beta", mention: "M:Beta", cwd: "/w/b", sameWorkspace: false, createdAt: now - hour },
-    { sessionId: "s3", label: "Archived", mention: "M:Archived", cwd: "/w/c", sameWorkspace: false, createdAt: now - hour },
-    { sessionId: "s4", label: "Child", mention: "M:Child", cwd: "/w/d", sameWorkspace: false, createdAt: now - hour },
-    { sessionId: "s5", label: "NoMention", cwd: "/w/e", sameWorkspace: false, createdAt: now - hour },
-    { sessionId: "s6", label: "NoCwd", mention: "M:NoCwd", sameWorkspace: false, createdAt: now - hour },
-    { sessionId: "s7", label: "HomeProj", mention: "M:HomeProj", cwd: "/Users/me/proj", sameWorkspace: false, createdAt: now - hour }
-  ];
-  const summaries = {
-    s1: { updatedAt: now - 2 * hour },
-    s2: { updatedAt: now - 3 * hour },
-    s3: { updatedAt: now - hour },
-    s4: { updatedAt: now - hour, origin: "subagent" },
-    s6: { updatedAt: now },
-    s7: { updatedAt: now - 30 * 60_000 }
+  const list = {
+    ids: ["me", "s1", "s2", "s3", "s4", "s5", "s6", "s7"],
+    byId: {
+      me: { id: "me", displayTitle: "Self", cwd: "/w/a", updatedAt: now },
+      s1: { id: "s1", displayTitle: "Alpha", cwd: "/w/a", updatedAt: now - 2 * hour },
+      s2: { id: "s2", displayTitle: "Beta", cwd: "/w/b", updatedAt: now - 3 * hour },
+      s3: { id: "s3", displayTitle: "Archived", cwd: "/w/c", updatedAt: now - hour },
+      s4: { id: "s4", displayTitle: "Child", cwd: "/w/d", updatedAt: now - hour, origin: "subagent" },
+      s5: { id: "s5", displayTitle: "Blank", cwd: "/w/e", updatedAt: now, blank: true },
+      s6: { id: "s6", displayTitle: "NoCwd", updatedAt: now },
+      s7: { id: "s7", displayTitle: "HomeProj", cwd: "/Users/me/proj", updatedAt: now - 30 * 60_000 }
+    }
   };
-  const rows = buildHashRows(t, candidates, new Set(["s3"]), summaries, "/Users/me", now);
-  check("hash rows: archived + subagent + mention-less dropped", rows.length === 4 && !rows.some((r) => ["Archived", "Child", "NoMention"].includes(r.name)), JSON.stringify(rows.map((r) => r.name)));
-  check("hash rows: same-workspace hides cwd", rows[0].description === "L:hashHours:2", rows[0].description);
-  check("hash rows: cross-workspace shows cwd", rows[1].description.startsWith("/w/b · "), rows[1].description);
-  check("hash rows: home abbreviated", rows[3].description.startsWith("~/proj · "), rows[3].description);
-  check("hash rows: missing cwd labelled", rows[2].description.startsWith("L:hashNoCwd · "), rows[2].description);
-  check("hash rows: session icon + section + pick payload", rows[0].icon === "session" && rows[0].section === "L:hashSection" && JSON.parse(rows[0].value).mention === "M:Alpha");
-  check("hash rows: empty/odd input tolerated", buildHashRows(t, null, null, null, void 0, now).length === 0 && buildHashRows(t, [{ sessionId: "" }], new Set(), {}, void 0, now).length === 0);
+  const session = { sessionId: "me" };
+  const archived = new Set(["s3"]);
+  const picked = hashEntries(session, "", list, archived);
+  check("hashEntries: self/subagent/blank/archived dropped", picked.entries.map((e) => e.id).join(",") === "s1,s2,s6,s7", picked.entries.map((e) => e.id).join(","));
+  check("hashEntries: current cwd resolved", picked.currentCwd === "/w/a", picked.currentCwd);
+  check("hashEntries: same flag set per workspace", picked.entries.find((e) => e.id === "s1")?.same === true && picked.entries.find((e) => e.id === "s2")?.same === false);
+  check("hashEntries: query matches title", hashEntries(session, "beta", list, archived).entries.map((e) => e.id).join(",") === "s2");
+  check("hashEntries: query matches cwd", hashEntries(session, "w/b", list, archived).entries.map((e) => e.id).join(",") === "s2");
+  check("hashEntries: query matches session id", hashEntries(session, "s7", list, archived).entries.map((e) => e.id).join(",") === "s7");
+  check("hashEntries: filtered-out rows never match", hashEntries(session, "archived", list, archived).entries.length === 0 && hashEntries(session, "child", list, archived).entries.length === 0);
+  check("hashEntries: missing list tolerated", hashEntries(session, "", {}, archived).entries.length === 0);
+
+  // 行投影：其他工作区分组在前、当前工作区在后，各按最近活动排序
+  const rows = buildHashRows(t, picked.entries, picked.currentCwd, "/Users/me", now);
+  check("hash rows: other-workspace section first", rows.slice(0, 3).every((r) => r.section === "L:hashOtherWorkspaces"), JSON.stringify(rows.map((r) => r.section)));
+  check("hash rows: current-workspace section last", rows.at(-1).section === "L:hashCurrentWorkspace" && rows.at(-1).name === "Alpha", JSON.stringify(rows.at(-1)));
+  check("hash rows: buckets sorted by recency", rows.map((r) => r.name).join(",") === "NoCwd,HomeProj,Beta,Alpha", rows.map((r) => r.name).join(","));
+  check("hash rows: cross-workspace shows cwd", rows[2].description.startsWith("/w/b · "), rows[2].description);
+  check("hash rows: home abbreviated", rows[1].description.startsWith("~/proj · "), rows[1].description);
+  check("hash rows: missing cwd labelled", rows[0].description.startsWith("L:hashNoCwd · "), rows[0].description);
+  check("hash rows: same-workspace hides cwd", rows[3].description === "L:hashHours:2", rows[3].description);
+  check("hash rows: session icon + canonical mention", rows[3].icon === "session" && JSON.parse(rows[3].value).mention === formatSessionMention("Alpha", "s1"), rows[3].value);
+  const flat = buildHashRows(t, picked.entries, void 0, "/Users/me", now);
+  check("hash rows: no current cwd → single section", flat.length === 4 && flat.every((r) => r.section === "L:hashSection"), JSON.stringify(flat.map((r) => r.section)));
+  const many = Array.from({ length: 40 }, (_, index) => ({ id: "m" + index, label: "M" + index, cwd: "/w/b", updatedAt: now - index, same: false }));
+  check("hash rows: per-bucket cap", buildHashRows(t, many, "/w/a", "/Users/me", now).length === 25);
+  check("hash rows: empty/odd input tolerated", buildHashRows(t, null, void 0, void 0, now).length === 0 && buildHashRows(t, "nope", "/w/a", void 0, now).length === 0);
+  check("hashEntries: non-ASCII id skipped", hashEntries(session, "", { ids: ["bad id"], byId: { "bad id": { id: "bad id", displayTitle: "Bad", updatedAt: now } } }, archived).entries.length === 0);
 
   // controller 包装：'#' → '@' 改写 + roster 拦截 + 还原
   const trackCalls = [];
@@ -310,6 +333,53 @@ sandbox.fetch = async (url, init) => {
   check("hash: dispose restores the wrapped controller", !Object.prototype.hasOwnProperty.call(ctl, "track"));
   ctl.track("hi #ab", 6, { tier: "plain" }, 5);
   check("hash: after dispose # is no longer a trigger", trackCalls.at(-1).draft === "hi #ab" && trackCalls.at(-1).trigger === null, JSON.stringify(trackCalls.at(-1)));
+}
+
+// ── apply 装配 '#' 源：ctx.get 服务读取 + candidates 端到端 ────────────────
+{
+  const registered = [];
+  const fakeInputTriggers = {
+    live: { controllers: new Map(), sources: [] },
+    registerSource(src) {
+      registered.push(src);
+      fakeInputTriggers.live.sources.push(src);
+      return () => {};
+    },
+    sessionOf: () => ({})
+  };
+  const listSnapshot = {
+    ids: ["me", "x1", "x2", "x3"],
+    byId: {
+      me: { id: "me", displayTitle: "Self", cwd: "/w/a", updatedAt: 9 },
+      x1: { id: "x1", displayTitle: "Local", cwd: "/w/a", updatedAt: 3 },
+      x2: { id: "x2", displayTitle: "Other", cwd: "/w/b", updatedAt: 2 },
+      x3: { id: "x3", displayTitle: "Gone", cwd: "/w/c", updatedAt: 1 }
+    }
+  };
+  const services = {
+    inputTriggers: fakeInputTriggers,
+    sessions: { list: { getSnapshot: () => listSnapshot } },
+    workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: ["x3"] }) } },
+    remote: { $host: { home: "/Users/me" } }
+  };
+  loaded.apply({
+    effect: (fn) => fn(),
+    locale: { register: () => () => {}, bind: () => (key, params) => params?.n === void 0 ? "L:" + key : "L:" + key + ":" + params.n },
+    slots: { inject: () => {} },
+    inject: (deps, callback) => callback({ inputTriggers: services.inputTriggers }),
+    get: (name) => services[name],
+    commandUi: { candidates: async () => [], matchEnter: async () => void 0, matchSpace: () => void 0, live: { contributions: new Map() } },
+    sessions: services.sessions,
+    remote: { $on: () => () => {}, $host: services.remote.$host },
+    on: () => () => {}
+  });
+  const source = registered.find((s) => s.name === loaded.HASH_SOURCE);
+  check("apply: # source registered through ctx.inject", source !== undefined && source.trigger === "#");
+  const rows = await source.candidates({ sessionId: "me" }, { query: "", signal: new AbortController().signal });
+  check("apply: # candidates read client services end-to-end", rows.length === 2 && rows.map((r) => r.name).join(",") === "Other,Local", JSON.stringify(rows.map((r) => r.name)));
+  check("apply: # candidates drop archived + self, mention canonical", rows[0].section === "L:hashOtherWorkspaces" && JSON.parse(rows[0].value).mention === loaded.formatSessionMention("Other", "x2"), JSON.stringify(rows[0]));
+  const filtered = await source.candidates({ sessionId: "me" }, { query: "local", signal: new AbortController().signal });
+  check("apply: # candidates honour the live query", filtered.length === 1 && filtered[0].name === "Local", JSON.stringify(filtered.map((r) => r.name)));
 }
 
 console.log(failed === 0 ? "CLIENT SMOKE PASS" : failed + " CLIENT SMOKE FAILURES");

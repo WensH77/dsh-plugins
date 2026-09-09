@@ -78,6 +78,8 @@ window.__ModuleLoader__.load({
 			askError: "ask 命令执行失败",
 			askLoading: "…",
 			hashSection: "会话引用（#）",
+			hashOtherWorkspaces: "其他工作区",
+			hashCurrentWorkspace: "当前工作区",
 			hashNow: "刚刚",
 			hashMinutes: "{n}分钟",
 			hashHours: "{n}小时",
@@ -110,6 +112,8 @@ window.__ModuleLoader__.load({
 			askError: "failed to run the ask command",
 			askLoading: "…",
 			hashSection: "Sessions (#)",
+			hashOtherWorkspaces: "Other workspaces",
+			hashCurrentWorkspace: "Current workspace",
 			hashNow: "now",
 			hashMinutes: "{n}min",
 			hashHours: "{n}h",
@@ -451,51 +455,104 @@ window.__ModuleLoader__.load({
 			return path;
 		}
 
+		/** '#' 菜单分组上限：其他工作区 / 当前工作区 各自最多展示的行数。 */
+		const HASH_BUCKET_LIMIT = 25;
+
+		/** base64url（无填充）。会话 id 为 ASCII（UUID），与宿主 encodeSessionReferenceUri 的载荷一致。 */
+		function base64UrlEncode(text) {
+			return btoa(text).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+		}
+
+		/** 规范会话 mention：`@[label](dsh-session:<base64url(JSON id)>)`（与宿主同构，label 转义 \ 与 ]）。 */
+		function formatSessionMention(label, sessionId) {
+			const text = label === void 0 || label === "" ? sessionId : String(label);
+			const escaped = text.replace(/[\\\]]/gu, (match) => "\\" + match);
+			return "@[" + escaped + "](dsh-session:" + base64UrlEncode(JSON.stringify(sessionId)) + ")";
+		}
+
 		/**
-		 * 把宿主会话候选投影成 '#' 菜单行，只保留三个准入条件：
-		 * **未归档**（不在 registry-global archivedSessionIds 里）、
-		 * **主代理**（origin !== 'subagent'）、**跨工作区**（不按 cwd 过滤，
-		 * 非当前工作区的会话把工作目录显示出来）。mention 直接用宿主给的规范形式，
-		 * 因此选中后的引用与 '@' 会话引用完全等效。
-		 * @param t - 本命名空间字典。
-		 * @param candidates - `sessionReferenceResolver.candidates` 的返回值。
-		 * @param archived - 已归档会话 id 集合。
-		 * @param summaries - 客户端会话列表快照的 byId（提供 origin/updatedAt）。
-		 * @param home - 宿主 home（路径缩写）。
-		 * @param now - 当前时间戳。
-		 * @returns 菜单候选行。
+		 * 从客户端会话列表挑出 '#' 候选：排除自身、subagent 子会话、空会话与已归档，
+		 * 再按 query（标题 / 会话 id / 工作目录，大小写不敏感）过滤。
+		 *
+		 * 直接读客户端列表，而不是宿主的 `sessionReferenceResolver.candidates`：
+		 * 后者默认只取 `candidateLimit`（50）条、且**同 cwd 优先**排序后截断——
+		 * 当前工作区会话一多（实测 300+），跨工作区候选会被整段挤掉，表现就是
+		 * 「# 只能 attach 当前工作区会话」。客户端列表含全部工作区，且自带
+		 * displayTitle，因此这里自行组装候选与规范 mention。
 		 */
-		function buildHashRows(t, candidates, archived, summaries, home, now) {
-			const rows = [];
-			for (const candidate of Array.isArray(candidates) ? candidates : []) {
-				if (candidate === null || typeof candidate !== "object") continue;
-				const sessionId = candidate.sessionId;
-				if (typeof sessionId !== "string" || sessionId === "") continue;
-				// 跨 realm 安全的 Set 判定（插件 bundle 与宿主可能在不同 realm）。
-				if (archived !== null && archived !== void 0 && typeof archived.has === "function" && archived.has(sessionId)) continue;
-				const summary = summaries === null || summaries === void 0 ? void 0 : summaries[sessionId];
-				if (summary !== void 0 && summary.origin === "subagent") continue;
-				if (typeof candidate.mention !== "string" || candidate.mention === "") continue;
-				const label = typeof candidate.label === "string" && candidate.label !== "" ? candidate.label : sessionId;
-				const age = hashAge(summary?.updatedAt ?? candidate.createdAt, now);
-				const ageText = age.unit === "now" ? t("hashNow") : t(HASH_TIME_KEYS[age.unit], { n: age.n });
-				const location = candidate.sameWorkspace === true
-					? void 0
-					: candidate.cwd === void 0 || candidate.cwd === ""
-						? t("hashNoCwd")
-						: shortenHomePath(candidate.cwd, home);
-				rows.push({
-					name: label,
-					description: location === void 0 ? ageText : location + " · " + ageText,
-					icon: "session",
-					section: t("hashSection"),
-					value: JSON.stringify({ kind: "session", label, mention: candidate.mention })
+		function hashEntries(session, query, list, archived) {
+			const needle = typeof query === "string" ? query.toLocaleLowerCase() : "";
+			const byId = list.byId ?? {};
+			const currentCwd = byId[session.sessionId]?.cwd;
+			const entries = [];
+			for (const id of Array.isArray(list.ids) ? list.ids : []) {
+				if (id === session.sessionId) continue; // 自身不可引用（宿主同样拒绝）
+				if (!/^[A-Za-z0-9_-]+$/u.test(id)) continue; // mention URI 只编码 ASCII id
+				const summary = byId[id];
+				if (summary === void 0) continue;
+				if (summary.origin === "subagent") continue; // 仅主代理
+				if (summary.blank === true) continue; // 空会话没有可引用的历史
+				if (archived !== null && archived !== void 0 && typeof archived.has === "function" && archived.has(id)) continue;
+				const label = summary.displayTitle || summary.title || id;
+				const cwd = summary.cwd;
+				if (needle !== "" && !id.toLocaleLowerCase().includes(needle) && !(cwd ?? "").toLocaleLowerCase().includes(needle) && !label.toLocaleLowerCase().includes(needle)) continue;
+				entries.push({
+					id,
+					label,
+					cwd,
+					updatedAt: typeof summary.updatedAt === "number" ? summary.updatedAt : 0,
+					same: currentCwd !== void 0 && cwd === currentCwd
 				});
+			}
+			return { entries, currentCwd };
+		}
+
+		/**
+		 * 把候选投影成 '#' 菜单行：**其他工作区分组在前、当前工作区在后**，各自按最近
+		 * 活动排序并各限 25 行——跨工作区会话因此始终可见（不再被同 cwd 排序挤出）。
+		 * 无法确定当前工作目录时不分组，退回单一按最近活动排序的列表。
+		 * mention 用规范形式，选中后的引用与 '@' 会话引用完全等效。
+		 */
+		function buildHashRows(t, entries, currentCwd, home, now) {
+			const sectioned = currentCwd !== void 0;
+			const other = [];
+			const same = [];
+			for (const entry of Array.isArray(entries) ? entries : []) {
+				if (sectioned && entry.same === true) same.push(entry);
+				else other.push(entry);
+			}
+			const byRecency = (a, b) => b.updatedAt - a.updatedAt;
+			other.sort(byRecency);
+			same.sort(byRecency);
+			const rows = [];
+			const push = (bucket, section) => {
+				for (const entry of bucket.slice(0, HASH_BUCKET_LIMIT)) {
+					const age = hashAge(entry.updatedAt, now);
+					const ageText = age.unit === "now" ? t("hashNow") : t(HASH_TIME_KEYS[age.unit], { n: age.n });
+					const location = entry.same === true
+						? void 0
+						: entry.cwd === void 0 || entry.cwd === ""
+							? t("hashNoCwd")
+							: shortenHomePath(entry.cwd, home);
+					rows.push({
+						name: entry.label,
+						description: location === void 0 ? ageText : location + " · " + ageText,
+						icon: "session",
+						section,
+						value: JSON.stringify({ kind: "session", label: entry.label, mention: formatSessionMention(entry.label, entry.id) })
+					});
+				}
+			};
+			if (sectioned) {
+				push(other, t("hashOtherWorkspaces"));
+				push(same, t("hashCurrentWorkspace"));
+			} else {
+				push(other, t("hashSection"));
 			}
 			return rows;
 		}
 
-		/** 构造 '#' 源：候选来自宿主 sessionReferenceResolver，插入与 '@' 会话引用同构。 */
+		/** 构造 '#' 源：候选来自客户端会话列表（全工作区），插入与 '@' 会话引用同构。 */
 		function createHashSource(ctx, t) {
 			return {
 				trigger: "#",
@@ -503,14 +560,12 @@ window.__ModuleLoader__.load({
 				order: 0,
 				showGroupTitle: false,
 				async candidates(session, req) {
-					const resolver = ctx.get("remote.sessionReferenceResolver");
-					if (resolver === void 0) return [];
 					try {
-						const result = await resolver.candidates(session.sessionId, req.query, req.signal);
-						if (result === null || typeof result !== "object" || result.ok !== true) return [];
+						const list = ctx.get("sessions")?.list.getSnapshot();
+						if (list === void 0 || !Array.isArray(list.ids)) return [];
 						const archived = new Set(ctx.get("workspaces")?.list.getSnapshot().archivedSessionIds ?? []);
-						const summaries = ctx.get("sessions")?.list.getSnapshot().byId ?? {};
-						return buildHashRows(t, result.value, archived, summaries, ctx.get("remote")?.$host?.home, Date.now());
+						const { entries, currentCwd } = hashEntries(session, req.query, list, archived);
+						return buildHashRows(t, entries, currentCwd, ctx.get("remote")?.$host?.home, Date.now());
 					} catch (_hashCandidatesFailure) {
 						// 候选失败保持静默（与宿主 '@' 会话候选的失败语义一致）。
 						return [];
@@ -769,6 +824,8 @@ window.__ModuleLoader__.load({
 		exports.AskModeToggle = AskModeToggle;
 		exports.HASH_SOURCE = HASH_SOURCE;
 		exports.buildHashRows = buildHashRows;
+		exports.formatSessionMention = formatSessionMention;
+		exports.hashEntries = hashEntries;
 		exports.hashTokenAt = hashTokenAt;
 		exports.installHashTrigger = installHashTrigger;
 		exports.apply = apply;

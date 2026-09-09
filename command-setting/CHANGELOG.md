@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.7.1
+
+- **修复 `#` 只能引用当前工作区会话（跨工作区失效）**：候选原先复用宿主的 `remote.sessionReferenceResolver.candidates`，而该接口默认只取 `candidateLimit`（50）条、且**同 cwd 优先**排序后 `slice`——当前工作区会话一多（本机实测 318 个），跨工作区候选被整段挤出，表现就是「# 只能 attach 当前工作区会话」。改为**直接读客户端会话列表**（`sessions` 快照，含全部工作区，自带 `displayTitle`/`cwd`/`origin`/`updatedAt`）自行组装候选：
+  - 分组呈现「**其他工作区**（在前）/ **当前工作区**（在后）」，各自按最近活动排序、各限 25 行，跨工作区会话始终可见；无法确定当前工作目录时退回单一按最近活动排序的列表；
+  - query 仍匹配标题 / 会话 id / 工作目录（大小写不敏感）；继续排除自身、subagent 子会话、已归档会话，并额外跳过空会话（`blank`，没有可引用的历史）与非 ASCII id；
+  - 规范 mention 改由本插件生成（`@[label](dsh-session:<base64url(JSON id)>)`，label 转义 `\`/`]`），与宿主 `formatSessionReferenceMention`/`encodeSessionReferenceUri` 逐字节一致（已用真实宿主编解码器对拍），因此选中后的引用仍与 `@` 会话引用完全等效；
+- 测试：client-smoke 新增 mention 编码对拍（URI 载荷 + label 转义 + 空 label 回退）、`hashEntries`（自身/subagent/空/归档剔除、当前 cwd 解析、same 标记、标题/cwd/id 三种 query 命中、缺失列表容错、非 ASCII id 跳过）、`buildHashRows`（其他工作区分组在前、当前工作区在后、分组内按最近活动排序、跨工作区显示 cwd、home 缩写、缺 cwd 文案、单列表回退、每组 25 行上限、非法输入容错）。
+
 ## 0.7.0
 
 - **`#` 引用历史会话（新增，浏览器端）**：composer 输入 `#` 弹出会话引用菜单，选中插入与 `@` 会话引用**完全等效**的原子 mention（`@[标题](dsh-session:<base64url id>)`，宿主 `session-reference` 服务照常校验并捕获该会话的有界只读快照）。与 `@` 的差别：**只列会话不列文件**，且仅限「**未归档** + **主代理** + **跨工作区**」——
