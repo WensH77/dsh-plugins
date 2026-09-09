@@ -44,8 +44,9 @@ window.__ModuleLoader__.load({
 			// .rS3zOq_wrap is ui-plan's hashed chip wrapper, pinned to this bundle.
 			".rS3zOq_wrap{display:none!important}",
 			// 划词引用浮标：选中消息文本后贴着选区上方浮出的小胶囊。
+			// hover 用不透明底色（interactive-bg-hover 是半透明叠加色，会让按钮发灰发透）。
 			".hc-quotebtn{position:fixed;z-index:2147483000;transform:translate(-50%,-100%);align-items:center;padding:3px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer;box-shadow:var(--dsw-elevation-prominent)}",
-			".hc-quotebtn:hover{background:var(--dsw-alias-interactive-bg-hover)}"
+			".hc-quotebtn:hover{background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-specific-menu,var(--dsw-alias-bg-layer-1)));border-color:var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary)}"
 		];
 		const tagId = "dsh-plugin-command-setting/settings.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {

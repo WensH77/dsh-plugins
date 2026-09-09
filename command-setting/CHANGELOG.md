@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.8.1
+
+- **修复划词引用浮标 hover 发透**：hover 底色原用 `--dsw-alias-interactive-bg-hover`（半透明叠加色，在消息背景上看起来像变透明），改为不透明变量 `--dsw-alias-interactive-bg-hover-solid`（该变量缺失时回退到与常态一致的不透明菜单底色），并加深边框 `--dsw-alias-border-l3`；hover 反馈保留、不再发透。
+
 ## 0.8.0
 
 - **划词引用（新增，浏览器端）**：在对话消息里拖动选中文字，选区上方浮出「**引用**」胶囊；点击把选中文本逐行加 `> `（空行保留裸 `>`）成 Markdown 引用块，追加到当前会话 composer 末尾——草稿非空时先空一行、引用块后再留一空行，光标停在下方，可直接接着提问：
