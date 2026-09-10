@@ -17,7 +17,7 @@ import { githubRepoInfo, gitSpec, compareVersions, makeQueue, readJsonFile, writ
 import { disableBlock, stripEmptyArrayMarker, readPatchState, localDependencyInfo } from '../lib/patch.js'
 import { reviewKey } from '../lib/review.js'
 import { routeOverrideOf, ROUTES } from '../lib/routes.js'
-import { rangeBreakFinding } from '../lib/dsh.js'
+import { rangeBreakFinding, scanFindingTag } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
@@ -205,9 +205,225 @@ console.log('\n[rangeBreakFinding ← dsh.js]')
   assertEq(dep.severity, 'high', 'dependencies 越界 → high（污染 profile 根）')
   assertEq(dep.kind, 'range-break', 'dependencies 越界 kind = range-break')
   assert(peer.message.includes(target) && dep.message.includes('0.1.2-rc.1'), 'message 带上声明范围与目标版本')
+  // 分层理由由 kind + 短标签承担，不再逐条把同一句括号解释刷进 message
+  assert(!peer.message.includes('（') && !dev.message.includes('（') && !dep.message.includes('（'), 'message 不含括号解释（解释只出现一次，不逐条重复）')
+  assertEq(
+    [scanFindingTag(dep), scanFindingTag(dev), scanFindingTag(peer), scanFindingTag({ severity: 'high', kind: 'removed-module' }), scanFindingTag({ severity: 'high' })],
+    ['dependencies 越界', 'devDependencies 越界', 'peer 声明失真', '宿主模块消失', '高'],
+    'scanFindingTag：kind → 短标签（旧缓存无 kind 时退化为严重度标签）'
+  )
   const clientText = readFileSync(LIB_CLIENT, 'utf8')
-  assert(clientText.includes('pm-scanInfo') && clientText.includes('dshReportScanPeerGroup') && clientText.includes('dshReportScanPeerNote'),
-    'client.js 含 info 档可收起渲染与双语键')
+  assert(clientText.includes('pm-scanInfo') && clientText.includes('dshReportScanPluginCount') && clientText.includes('pm-scanPluginName'),
+    'client.js 按插件折叠渲染机器结论（每个插件一个 <details>）')
+  assert(!clientText.includes('dshReportScanPeerGroup') && !clientText.includes('devDependencies 不随发布安装'),
+    'client.js 不再使用旧的「全网 peer 汇总组」与逐条括号解释文案')
+  assert(clientText.includes('dshInstallCommand') && clientText.includes('@deepseek-ai/dsh@next') && clientText.includes('@deepseek-ai/dsh@latest') && clientText.includes('/-alpha\\./u'),
+    'client.js 带可复制的安装命令推导（rc/beta → @next、alpha → 精确版本、正式版 → @latest）')
+  assert(clientText.includes('pm-cmdText') && clientText.includes('navigator.clipboard'), 'client.js 安装命令行可复制（Clipboard API + 选中复制回退）')
+  assert(clientText.includes('findingMessage'), 'client.js 渲染时裁掉旧缓存 finding 里重复的括号解释（无需重跑扫描即可看新版文案）')
+}
+
+// ── 渲染行为契约：把 client.js 里真实的「按插件折叠」渲染块抽出来，用假 DOM 跑一遍 ──
+// 浏览器脚本不经 node 加载（只能 --check 语法），这里用源码锚点抽出该块 + 假 DOM 执行，
+// 覆盖真实执行路径：折叠分组、档位圆点/标签、默认展开、括号裁剪、clean 计数。
+console.log('\n[扫描报告按插件折叠 ← client.js 渲染块 @ 假 DOM]')
+{
+  const src = readFileSync(LIB_CLIENT, 'utf8')
+  const start = src.indexOf('if (d && d.scan && (Array.isArray(d.scan.plugins)')
+  const end = src.indexOf('if (d.details)', start)
+  assert(start > 0 && end > start, '能定位渲染块（锚点：if (d && d.scan …) / if (d.details)）')
+  if (start > 0 && end > start) {
+    const createElement = (tag) => ({
+      tagName: tag, className: '', style: {}, dataset: {}, children: [], textContent: '',
+      appendChild(child) { this.children.push(child); return child },
+      addEventListener() {}, querySelector() { return null }, remove() {},
+    })
+    const document = { createElement, createTextNode: (text) => ({ kind: 'text', text: String(text) }) }
+    const dict = {
+      dshReportScan: '本地插件契约扫描（机器判定）',
+      dshReportScanIntro: '用「本地插件使用指纹 × 目标版本宿主模块闭包」做的确定性核对，先于 LLM 分析。',
+      dshReportScanClean: '{count} 个插件机器判定未命中',
+      dshReportScanLocalOnly: '（registry 不可达，仅指纹、无闭包核对）',
+      dshReportScanCleanNone: '（机器判定未发现受影响插件）',
+      dshReportScanPluginCount: '{count} 条机器结论（点击展开）',
+      dshReportScanKindRemoved: '宿主模块消失',
+      dshReportScanKindDeps: 'dependencies 越界',
+      dshReportScanKindDevDeps: 'devDependencies 越界',
+      dshReportScanKindPeer: 'peer 声明失真',
+      dshReportScanKindHigh: '高', dshReportScanKindMedium: '中', dshReportScanKindInfo: '提示',
+    }
+    const t = (key) => dict[key] ?? key
+    const tpl = (template, params) => String(template).replace(/\{(\w+)\}/g, (_, key) => (params[key] !== undefined ? String(params[key]) : ''))
+    // 渲染块依赖的 module 级小工具：同样从源码抽出来执行（保证测的是线上实现，不是副本）
+    const fmStart = src.indexOf('function findingMessage(f)')
+    const fmEnd = src.indexOf('\n\t\t}', fmStart)
+    assert(fmStart > 0 && fmEnd > fmStart, '能定位 findingMessage（锚点：function findingMessage）')
+    const findingMessage = new Function('return ' + src.slice(fmStart, fmEnd + 4))()
+    // client.js 渲染块只依赖 document / t / tpl / findingMessage / d / body，故可直接在假 DOM 上执行
+    const render = (scan) => {
+      const body = createElement('div')
+      new Function('document', 't', 'tpl', 'findingMessage', 'd', 'body', src.slice(start, end))(document, t, tpl, findingMessage, { scan }, body)
+      return body
+    }
+    const textOf = (node) => (node.kind === 'text' ? node.text : String(node.textContent ?? '') + (node.children ?? []).map(textOf).join(''))
+    const groupOf = (body) => body.children.filter((n) => n.tagName === 'details')
+
+    // 1) 复刻线上真实缓存形状：单插件 20 条 devDependencies 越界（旧版平铺 20 行）
+    const devFindings = Array.from({ length: 20 }, (_, i) => ({
+      severity: 'medium',
+      kind: 'range-break-dev',
+      message: '声明的 @deepseek-ai/dsh-p' + i + ' 依赖范围 1.0.7 未覆盖目标版本 0.1.5-rc.1（devDependencies 不随发布安装，但本地开发装了就可能在插件自己的 node_modules 里抢先命中旧副本）',
+    }))
+    const body = render({
+      method: 'registry-closure',
+      errors: [],
+      plugins: [
+        { moduleName: '@yuxianglin/dsh-bridge-browser', version: '0.0.3', machine: 'affected', findings: devFindings, evidence: {} },
+        { moduleName: 'dsh-plugin-market', version: '0.14.4', machine: 'clean', findings: [], evidence: {} },
+      ],
+    })
+    const groups = groupOf(body)
+    assertEq(groups.length, 1, '一个插件一个 <details>（20 条同源结论收成一个折叠组）')
+    const summary = groups[0].children[0]
+    assertEq(summary.tagName, 'summary', '折叠组首子节点是 <summary>')
+    assertEq(summary.children[0].dataset.severity, 'medium', '组行首圆点按最高档位着色（medium）')
+    assert(textOf(summary).includes('@yuxianglin/dsh-bridge-browser@0.0.3') && textOf(summary).includes('20 条机器结论'),
+      '组标题 = 包名@版本 + 结论条数：' + JSON.stringify(textOf(summary)))
+    assert(groups[0].open !== true, 'medium-only 组默认收起')
+    const items = groups[0].children[1].children
+    assertEq(items.length, 20, '20 条 finding 全部收进组内（不丢条目）')
+    assertEq(items[0].children[0].textContent, 'devDependencies 越界', 'finding 首列是短标签（devDependencies 越界）')
+    assertEq(items[0].children[0].dataset.severity, 'medium', 'finding 标签按严重度着色')
+    assertEq(textOf(items[0]), 'devDependencies 越界声明的 @deepseek-ai/dsh-p0 依赖范围 1.0.7 未覆盖目标版本 0.1.5-rc.1',
+      '旧缓存里的括号解释在渲染时被裁掉')
+    assert(textOf(body).endsWith('1 个插件机器判定未命中'), 'clean 插件仍只计数：' + JSON.stringify(textOf(body).slice(-40)))
+
+    // 2) dependencies 越界（high）默认展开，免得不小心把真破坏点折住
+    const bodyHigh = render({
+      method: 'registry-closure',
+      errors: [],
+      plugins: [{
+        moduleName: 'dsh-plugin-x', version: '1.0.0', machine: 'affected', evidence: {},
+        findings: [
+          { severity: 'high', kind: 'range-break', message: '声明的 @deepseek-ai/dsh-llm 依赖范围 0.1.2-rc.1 未覆盖目标版本 0.1.5-rc.1' },
+          { severity: 'info', kind: 'range-break-peer', message: '声明的 @deepseek-ai/dsh-agent 依赖范围 ^0.1.2 未覆盖目标版本 0.1.5-rc.1' },
+        ],
+      }],
+    })
+    const highGroup = groupOf(bodyHigh)[0]
+    assertEq(highGroup.open, true, '含 high 的组默认展开')
+    assertEq(highGroup.children[0].children[0].dataset.severity, 'high', '组圆点取最高档位（high 覆盖同组 info）')
+    assertEq(highGroup.children[1].children.map((li) => li.children[0].textContent), ['dependencies 越界', 'peer 声明失真'],
+      '同组不同档位的 finding 各自带短标签')
+
+    // 3) 无任何 finding：只输出 clean 计数（区块标题/说明/local-only 提示照旧）
+    const bodyClean = render({ method: 'local-only', errors: [], plugins: [{ moduleName: 'a', version: '1.0.0', findings: [], evidence: {} }] })
+    assertEq(groupOf(bodyClean).length, 0, '无 finding 时不产生折叠组')
+    assertEq(textOf(bodyClean), '本地插件契约扫描（机器判定）：用「本地插件使用指纹 × 目标版本宿主模块闭包」做的确定性核对，先于 LLM 分析。（registry 不可达，仅指纹、无闭包核对）1 个插件机器判定未命中 · （机器判定未发现受影响插件）',
+      '全 clean + local-only 文案（区块标题/说明保留，折叠组为空）')
+  }
+}
+
+// ── 升级命令推导契约：同样抽 client.js 真实函数执行 ──────────────────────────
+console.log('\n[dshInstallCommand ← client.js 抽取]')
+{
+  const src = readFileSync(LIB_CLIENT, 'utf8')
+  const start = src.indexOf('function dshInstallCommand(version)')
+  const end = src.indexOf('\n\t\t}', start)
+  assert(start > 0 && end > start, '能定位 dshInstallCommand（锚点：function dshInstallCommand）')
+  if (start > 0 && end > start) {
+    const dshInstallCommand = new Function('return ' + src.slice(start, end + 4))()
+    assertEq(dshInstallCommand('0.1.5-rc.1'), 'npm install -g @deepseek-ai/dsh@next', 'rc → @next（线上缓存的目标版本即此档）')
+    assertEq(dshInstallCommand('0.1.5-beta.2'), 'npm install -g @deepseek-ai/dsh@next', 'beta → @next')
+    assertEq(dshInstallCommand('0.1.5-alpha.2'), 'npm install -g @deepseek-ai/dsh@0.1.5-alpha.2', 'alpha → 精确版本（alpha 线无 dist-tag）')
+    assertEq(dshInstallCommand('0.1.4'), 'npm install -g @deepseek-ai/dsh@latest', '正式版 → @latest')
+    assertEq(dshInstallCommand(undefined), 'npm install -g @deepseek-ai/dsh@latest', '缺版本号 → @latest 兜底')
+  }
+}
+
+// ── 状态灯契约：paint 文案 + 「正在分析」轮询时间线（同样抽 client.js 真实实现执行） ──
+// 背景：服务端要等「拉版本材料 + L1 契约扫描」跑完才把 status 翻成 analyzing，期间仍是 idle。
+// 没有守卫时，点击后第一次 1s 轮询就会拿陈旧 idle 覆盖并退回 60s —— analyzing 整个窗口被跳过，
+// 「正在分析新版本…」实际显示不出来，判定也要等下一次 60s 轮询才出现。
+console.log('\n[状态灯「正在分析」← client.js 抽取]')
+{
+  const src = readFileSync(LIB_CLIENT, 'utf8')
+  // 1) paint：状态 → 圆点档位 + 文案
+  const pStart = src.indexOf('const paint = (d) => {')
+  const pEnd = src.indexOf('let dshReportOverlay = null;', pStart)
+  assert(pStart > 0 && pEnd > pStart, '能定位 paint（锚点：const paint / let dshReportOverlay）')
+  if (pStart > 0 && pEnd > pStart) {
+    const ver = { textContent: '' }
+    const statusEl = { dataset: {}, title: '', querySelector: () => ver }
+    const dict = { dshAnalyzing: '正在分析新版本…', dshHasUpdateShort: '有新版本', dshBreakingShort: '破坏性更新', dshUnknown: '无法检查更新' }
+    const h = new Function('t', `
+      let statusEl = null; let lastState = null;
+      ${src.slice(pStart, pEnd)}
+      return { paint, mount: (el) => { statusEl = el } };
+    `)((key) => dict[key] ?? key)
+    h.mount(statusEl)
+    const shot = (d) => { h.paint(d); return statusEl.dataset.state + ' | ' + ver.textContent }
+    assertEq(shot({ ok: true, status: 'analyzing', installed: '0.1.5-rc.1' }), 'analyzing | v0.1.5-rc.1 · 正在分析新版本…',
+      'analyzing 状态确实会渲染出「正在分析新版本…」（圆点档位 = analyzing）')
+    assertEq(shot({ ok: true, hasUpdate: true, verdict: 'breaking', installed: '0.1.5-rc.1' }), 'breaking | v0.1.5-rc.1 · 破坏性更新', 'breaking 文案/档位')
+    assertEq(shot({ ok: true, hasUpdate: true, installed: '0.1.5-rc.1' }), 'update | v0.1.5-rc.1 · 有新版本', 'update 文案/档位')
+    assertEq(shot({ ok: true, checked: true, hasUpdate: false, installed: '0.1.5-rc.1' }), 'ok | v0.1.5-rc.1', '已是最新文案/档位')
+  }
+
+  // 2) 轮询时间线：抽真实的 startPoll / fetchState，用假定时器跑「点击 → 材料/扫描 → LLM → 判定」
+  const sStart = src.indexOf('const startPoll = (f) => {')
+  const sEnd = src.indexOf('const onClick = () => {', sStart)
+  assert(sStart > 0 && sEnd > sStart, '能定位 startPoll/fetchState（锚点：const startPoll / const onClick）')
+  if (sStart > 0 && sEnd > sStart) {
+    let clock = 0
+    let seq = 0
+    const timers = new Map()
+    const setIntervalFn = (fn, ms) => { const id = ++seq; timers.set(id, { fn, ms, next: clock + ms }); return id }
+    const clearIntervalFn = (id) => { timers.delete(id) }
+    const paints = []
+    let server = { ok: true, status: 'idle', installed: '0.1.5-rc.1', hasUpdate: true, verdict: null }
+    const call = () => Promise.resolve(server)
+    const paint = (d) => paints.push(clock + ':' + d.status)
+    const h = new Function('call', 'paint', 'setInterval', 'clearInterval', 'FAST_POLL_MS', 'NORMAL_POLL_MS', `
+      let fast = false; let pollTimer = null; let analyzeUntil = 0;
+      ${src.slice(sStart, sEnd)}
+      return { startPoll, fetchState, fast: () => fast, guard: () => { analyzeUntil = Date.now() + 120000 }, unguard: () => { analyzeUntil = 0 } };
+    `)(call, paint, setIntervalFn, clearIntervalFn, 1000, 60000)
+    const tick = async (ms) => {
+      const target = clock + ms
+      for (;;) {
+        let due = null
+        for (const [id, timer] of timers) if (timer.next <= target && (due === null || timer.next < timers.get(due).next)) due = id
+        if (due === null) break
+        const timer = timers.get(due)
+        clock = timer.next
+        timer.next = clock + timer.ms
+        timer.fn()
+        for (let k = 0; k < 5; k++) await Promise.resolve()
+      }
+      clock = target
+      for (let k = 0; k < 5; k++) await Promise.resolve()
+    }
+    h.guard()             // 点击：起「正在分析」守卫
+    h.startPoll(true)     // 点击：切 1s 快轮询
+    await tick(3000)      // 服务端拉 release/compare + L1 契约扫描（status 仍 idle）
+    assertEq(paints, [], '材料/扫描阶段的陈旧 idle 响应不画（不会把「正在分析」打回去）')
+    assertEq(h.fast(), true, '守卫期内不退回 60s 轮询（否则整个 analyzing 窗口会被跳过）')
+    server = { ...server, status: 'analyzing' } // 服务端翻 analyzing 并返回响应
+    h.unguard()
+    await tick(1000)
+    assertEq(paints, ['4000:analyzing'], '服务端一翻 analyzing，1s 轮询立刻画出')
+    assertEq(h.fast(), true, 'LLM 阶段保持 1s 轮询')
+    await tick(16000)
+    server = { ...server, status: 'idle', verdict: 'breaking' } // LLM 完成，写回判定
+    await tick(1000)
+    assertEq(paints[paints.length - 1], '21000:idle', '判定写回后 1s 内更新文案（不必再等 60s）')
+    assertEq(h.fast(), false, '分析结束自动降回 60s 轮询')
+  }
+  const clientText = readFileSync(LIB_CLIENT, 'utf8')
+  assert(clientText.includes('paint({ ...(lastState ?? {}), ok: true, status: "analyzing" })'),
+    '点击瞬间就切「正在分析」文案（不等服务端翻状态，也不再只把圆点置橙）')
+  assert(clientText.includes('ANALYZE_GUARD_MS'), '守卫带上限，请求卡死时不会把灯永久钉在「正在分析」')
 }
 
 // ── 2) 路由表契约：routes.js 分发表 16 条固定 + client 引用 ⊆ 全集 ───────────

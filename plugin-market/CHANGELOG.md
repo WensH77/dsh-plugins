@@ -2,6 +2,16 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.14.4
+
+- **fix：升级报告「本地插件契约扫描」改为按插件折叠**——上一版只是把 `info`（peer）档收进一个「全网汇总」的 `<details>`，high/medium 仍逐条平铺，同一个插件的十几条同源结论照样糊满弹窗。现在**每个有机器结论的插件一个 `<details>`**：行首状态圆点按最高档位着色（红 high / 橙 medium / 灰 info），标题为 `包名@版本 · N 条机器结论`；**含 `high` 的默认展开**（避免真正可能污染 profile 根的破坏点被折住），其余默认收起；clean 插件仍只计数。旧的 `dshReportScanPeerGroup`/`dshReportScanPeerNote` 两个键随之删除。
+- **fix：finding 文案去掉逐条重复的括号解释**——`rangeBreakFinding` 的 message 只保留事实（`声明的 X 依赖范围 R 未覆盖目标版本 T`），分层理由改由 `kind` + 新增的 `scanFindingTag`（dsh.js，prompt 与测试共用）与报告侧双语短标签（`dshReportScanKindDeps` / `KindDevDeps` / `KindPeer` / `KindRemoved`，旧缓存无 `kind` 时退化为「高/中/提示」）承担，不再每条刷一遍「（devDependencies 不随发布安装，但本地开发装了…）」。
+- **fix：旧缓存无需重跑也能看到新文案**——`client.js` 渲染时用 `findingMessage` 裁掉 ≤0.14.3 缓存的 range-break 末尾括号（只按「声明的 …」句型裁剪，`removed-module` 的句中括号是信息量所在、保持原样），`~/.dsh/plugin-market-dsh.json` 里的旧判定直接以新样式展示。
+- **feat：判定弹窗标题与概览正下方新增一行可复制的升级命令**——按目标版本推导：rc/beta → `npm install -g @deepseek-ai/dsh@next`，alpha → `npm install -g @deepseek-ai/dsh@<精确版本>`（alpha 线没有指向它的 dist-tag），正式版 → `@latest`；命令文本 `user-select:all` 可整条选中，右侧「复制」按钮走 `navigator.clipboard`（不可用时回退 `execCommand`），复制后按钮短暂显示「已复制」。新增双语键 `dshReportInstallHint` / `copy` / `copied`（zh/en 各 136 键，保持对齐）。
+- **fix：状态灯「正在分析新版本…」此前实际显示不出来**——服务端 `analyzeDshUpdate` 要等「拉版本材料 + 拉 compare + L1 契约扫描」跑完才把 `status` 翻成 `analyzing`（这几步是网络 + registry 闭包核对，几秒到几十秒），而客户端点击时 `startPoll(true)` 起的 1s 快轮询会在**第一次**（t+1s）拿到仍是 `idle` 的陈旧响应后 `startPoll(false)` 退回 60s——于是 LLM 阶段整个被跳过：文案始终停在「有新版本」，判定也要等下一次 60s 轮询才出现（用真实 `startPoll/fetchState` 模拟时间线可复现：paint 只有 `1000ms:idle` 与 `61000ms:idle`）。修法（全在 `client.js`）：① 点击瞬间主动 `paint({…, status:'analyzing'})`，不再只把圆点置橙；② 新增 `ANALYZE_GUARD_MS`（120s）守卫期 `analyzeUntil`，期内忽略仍是 `idle` 的陈旧响应，既不回退文案也不退回慢轮询；③ `/analyze` 响应回来即撤销守卫，并带上限以防请求卡死把灯钉住。
+- **test：smoke 扩展**——新增「状态灯」契约：抽真实 `paint` 断言四档文案/圆点档位（含 `v0.1.5-rc.1 · 正在分析新版本…`），并用假定时器抽真实 `startPoll/fetchState` 跑「点击 → 材料/扫描 → LLM → 判定」时间线：陈旧响应不画、守卫期不降速、翻 `analyzing` 后 1s 内画出、判定写回 1s 内更新并降回 60s（删掉守卫后其中 5 条会失败，可作变异验证）。
+- **test：smoke 扩展**——新增 `scanFindingTag` 契约断言、message 不含括号断言；并新增两个**抽真实实现执行**的行为测试（client.js 无法 import，用源码锚点抽出函数/渲染块 + 假 DOM 在 node 里跑）：①「渲染块 @ 假 DOM」覆盖折叠分组、档位圆点/短标签、含 high 默认展开、旧缓存括号裁剪、clean 计数与全 clean 文案；②「`dshInstallCommand` 抽取」覆盖 rc/beta→`@next`、alpha→精确版本、正式版/缺参→`@latest`（共 102 断言全绿）。
+
 ## 0.14.3
 
 - **feat：升级报告 range-break 按声明 section 分层 + 可收起**——`dsh.js` 的 `readPluginSurface` 改为记录每条宿主依赖声明的来源 section（并纳入 `devDependencies`），`runDshCompatScan` 据此分层：`dependencies` 越界保持 **high**（会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本）、`devDependencies` 越界降为 **medium**（只在本地装了 devDeps 时在插件自己的 node_modules 里抢先命中）、`peerDependencies` 越界降为 **info**（profile 模板 `autoInstallPeers:false`，peer 不参与安装，仅声明失真、无运行期后果）；`machine=affected` 只由 high/medium 决定，info 档仍保留在 `findings` 里供报告与模型参考。

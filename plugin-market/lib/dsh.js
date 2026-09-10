@@ -461,26 +461,27 @@ async function readPluginSurface(ctx, moduleName) {
  *  - dependencies → high：会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本；
  *  - devDependencies → medium：不随发布安装，但本地装了就在插件自己的 node_modules 里抢先命中；
  *  - peerDependencies → info：profile 模板 autoInstallPeers:false，peer 不参与安装，仅声明失真。
+ * message 只陈述事实（谁的范围没覆盖哪个版本），**不带括号解释**——分层理由由 kind 承担，
+ * 报告侧用 scanFindingTag 给出短标签，避免同一句解释在每条 finding 里重复刷屏。
  */
 function rangeBreakFinding(depName, range, target, section) {
-  if (section === 'peerDependencies') {
-    return {
-      severity: 'info',
-      kind: 'range-break-peer',
-      message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 未覆盖目标版本 ' + target + '（peer 不参与安装，profile 模板 autoInstallPeers:false，仅声明失真、无运行期影响）',
-    }
-  }
-  if (section === 'devDependencies') {
-    return {
-      severity: 'medium',
-      kind: 'range-break-dev',
-      message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 未覆盖目标版本 ' + target + '（devDependencies 不随发布安装，但本地开发装了就可能在插件自己的 node_modules 里抢先命中旧副本）',
-    }
-  }
-  return {
-    severity: 'high',
-    kind: 'range-break',
-    message: '声明的 ' + depName + ' 依赖范围 ' + range + ' 不再覆盖目标版本 ' + target + '（宿主同版本发布，直接越界；dependency 会被 pnpm hoist 进 profile 根，可能让同 profile 的其它插件也加载旧副本）',
+  const message = '声明的 ' + depName + ' 依赖范围 ' + range + ' 未覆盖目标版本 ' + target
+  if (section === 'peerDependencies') return { severity: 'info', kind: 'range-break-peer', message }
+  if (section === 'devDependencies') return { severity: 'medium', kind: 'range-break-dev', message }
+  return { severity: 'high', kind: 'range-break', message }
+}
+
+/**
+ * finding → 短标签（报告 UI 与 prompt 共用同一口径；界面侧另有双语字典，此处供 prompt 与测试）。
+ * 旧缓存里没有 kind 的 finding 退化为严重度标签。
+ */
+function scanFindingTag(finding) {
+  switch (finding?.kind) {
+    case 'removed-module': return '宿主模块消失'
+    case 'range-break': return 'dependencies 越界'
+    case 'range-break-dev': return 'devDependencies 越界'
+    case 'range-break-peer': return 'peer 声明失真'
+    default: return finding?.severity === 'high' ? '高' : finding?.severity === 'medium' ? '中' : '提示'
   }
 }
 
@@ -571,13 +572,13 @@ function buildScanPromptSection(scan) {
           : '（引用模块均在目标闭包 / 声明范围覆盖目标版本）'))
         continue
       }
-      lines.push('- ' + label + '：机器判定受影响 —— ' + blocking.map((f) => f.message).join('；'))
+      lines.push('- ' + label + '：机器判定受影响 —— ' + blocking.map((f) => scanFindingTag(f) + '：' + f.message).join('；'))
     }
     // 仅声明失真的 info 档（peer 越界）：单独列出并显式标注"勿计入受影响插件"，
     // 避免模型把十几条同源噪声当成破坏证据。
     const peerNotes = []
     for (const p of scan.plugins) {
-      for (const f of p.findings) if (f.severity === 'info') peerNotes.push(p.moduleName + '→' + f.message)
+      for (const f of p.findings) if (f.severity === 'info') peerNotes.push(p.moduleName + '→' + scanFindingTag(f) + '：' + f.message)
     }
     if (peerNotes.length > 0) {
       lines.push('（仅声明失真、无运行期影响，**勿**据此把插件列入 affectedPlugins）' + peerNotes.slice(0, 40).join('；'))
@@ -838,4 +839,4 @@ async function analyzeDshUpdate(ctx) {
   }
 }
 
-export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, attachSessionToWorkspace, createVisibleAnalysisSession, rangeBreakFinding }
+export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, attachSessionToWorkspace, createVisibleAnalysisSession, rangeBreakFinding, scanFindingTag }

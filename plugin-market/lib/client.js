@@ -86,11 +86,21 @@ window.__ModuleLoader__.load({
 			".pm-modalInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;border-radius:7px;padding:8px 12px;width:100%;box-sizing:border-box}",
 			".pm-modalRow{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}",
 			".pm-reviewRisks{margin:0;padding:0 0 0 18px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;gap:4px;display:flex;flex-direction:column;list-style:disc}",
-			// 报告里"仅声明失真"的 info 档：可折叠，默认收起
+			// 报告里「本地插件契约扫描」：一个插件一个可折叠组（默认收起，含 high 时展开）
 			".pm-scanInfo{margin:2px 0}",
-			".pm-scanInfo>summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}",
+			".pm-scanInfo>summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;display:flex;align-items:center;gap:6px}",
 			".pm-scanInfo>summary:hover{color:var(--dsw-alias-label-primary)}",
 			".pm-scanInfo[open]>summary{font-weight:600}",
+			".pm-scanDot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-label-caption)}",
+			".pm-scanDot[data-severity=high]{background:var(--dsw-alias-state-error-primary)}",
+			".pm-scanDot[data-severity=medium]{background:var(--dsw-alias-state-warn-primary)}",
+			".pm-scanPluginName{font-family:var(--dsw-font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".pm-scanTag{font-family:var(--dsw-font-mono);font-size:11px;line-height:17px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:0 7px;margin-right:6px;flex:none;color:var(--dsw-alias-label-tertiary);white-space:nowrap;vertical-align:middle}",
+			".pm-scanTag[data-severity=high]{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}",
+			".pm-scanTag[data-severity=medium]{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}",
+			// 升级命令行：命令可整体选中复制，右侧「复制」按钮走 Clipboard API
+			".pm-cmdRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0}",
+			".pm-cmdText{font-family:var(--dsw-font-mono);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:5px 10px;user-select:all;word-break:break-all;min-width:0}",
 			".pm-loadingRow{display:flex;align-items:center;gap:10px;color:var(--dsw-alias-label-tertiary);font-size:13px;padding:10px 0}",
 			// 拉取/安装进度条
 			".pm-progress{display:flex;flex-direction:column;gap:4px;margin:8px 0 2px}",
@@ -252,8 +262,17 @@ window.__ModuleLoader__.load({
 			dshReportScanClean: "{count} 个插件机器判定未命中",
 			dshReportScanLocalOnly: "（registry 不可达，仅指纹、无闭包核对）",
 			dshReportScanCleanNone: "（机器判定未发现受影响插件）",
-			dshReportScanPeerGroup: "另有 {count} 条 peer 声明未覆盖目标版本（无运行期影响，点击展开）",
-			dshReportScanPeerNote: "peer 依赖不参与安装（profile 模板 autoInstallPeers:false），以上仅为声明失真；如需消除，由插件作者把范围放宽到目标版本。",
+			dshReportScanPluginCount: "{count} 条机器结论（点击展开）",
+			dshReportScanKindRemoved: "宿主模块消失",
+			dshReportScanKindDeps: "dependencies 越界",
+			dshReportScanKindDevDeps: "devDependencies 越界",
+			dshReportScanKindPeer: "peer 声明失真",
+			dshReportScanKindHigh: "高",
+			dshReportScanKindMedium: "中",
+			dshReportScanKindInfo: "提示",
+			dshReportInstallHint: "升级命令",
+			copy: "复制",
+			copied: "已复制",
 		};
 		const en = {
 			tab: "Plugin Market",
@@ -381,8 +400,17 @@ window.__ModuleLoader__.load({
 			dshReportScanClean: "{count} plugin(s) machine-clean",
 			dshReportScanLocalOnly: "(registry unreachable — fingerprints only, no closure check)",
 			dshReportScanCleanNone: "(no machine findings)",
-			dshReportScanPeerGroup: "{count} peer range declaration(s) do not cover the target version (no runtime effect — click to expand)",
-			dshReportScanPeerNote: "Peer dependencies are never installed (the profile template sets autoInstallPeers:false), so these are declaration-only. Plugin authors can widen the range to the target version to clear them.",
+			dshReportScanPluginCount: "{count} machine finding(s) — click to expand",
+			dshReportScanKindRemoved: "host module gone",
+			dshReportScanKindDeps: "dependencies out of range",
+			dshReportScanKindDevDeps: "devDependencies out of range",
+			dshReportScanKindPeer: "peer declaration only",
+			dshReportScanKindHigh: "high",
+			dshReportScanKindMedium: "medium",
+			dshReportScanKindInfo: "info",
+			dshReportInstallHint: "Upgrade",
+			copy: "Copy",
+			copied: "Copied",
 		};
 
 		// ── helpers ──────────────────────────────────────────────────────────
@@ -392,6 +420,44 @@ window.__ModuleLoader__.load({
 		function moduleShortName(moduleName) {
 			return (moduleName.startsWith("@") ? moduleName.slice(moduleName.indexOf("/") + 1) : moduleName)
 				.replace(/^cordis:/, "").replace(/^cordis-plugin-/, "").replace(/^dsh-(?:host-|client-)?/, "");
+		}
+		// 目标版本的全局安装命令：预发布走 npm dist-tag（rc/beta → @next），alpha 线没有 dist-tag
+		// 指向它，按精确版本装（`@0.1.5-alpha.2`）；正式版 → @latest。
+		function dshInstallCommand(version) {
+			const v = String(version ?? "").trim();
+			if (v === "") return "npm install -g @deepseek-ai/dsh@latest";
+			if (/-alpha\./u.test(v)) return "npm install -g @deepseek-ai/dsh@" + v;
+			if (/-rc\.|-(?:beta|next)\./u.test(v)) return "npm install -g @deepseek-ai/dsh@next";
+			return "npm install -g @deepseek-ai/dsh@latest";
+		}
+		// finding 展示文案：裁掉旧缓存（≤0.14.3）range-break message 末尾那句逐条重复的括号解释；
+		// removed-module 的括号在句中（是信息量所在），按句型只处理「声明的 …」这类。
+		function findingMessage(f) {
+			const text = String((f && f.message) ?? "");
+			return text.startsWith("声明的 ") ? text.replace(/（[^（）]*）\s*$/u, "") : text;
+		}
+		// 复制到剪贴板：优先异步 Clipboard API（非安全上下文不可用），失败回退 execCommand。
+		function copyText(text, done) {
+			const fallback = () => {
+				try {
+					const area = document.createElement("textarea");
+					area.value = text;
+					area.style.position = "fixed";
+					area.style.opacity = "0";
+					document.body.appendChild(area);
+					area.select();
+					document.execCommand("copy");
+					document.body.removeChild(area);
+					done();
+				} catch {}
+			};
+			try {
+				if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+					navigator.clipboard.writeText(text).then(done, fallback);
+					return;
+				}
+			} catch {}
+			fallback();
 		}
 		async function call(path, body) {
 			const response = await fetch(path, body === undefined
@@ -1037,6 +1103,8 @@ window.__ModuleLoader__.load({
 				const TOGGLE_SEL = 'button[aria-label="收起侧边栏"], button[aria-label="打开侧边栏"], button[aria-label="Collapse sidebar"], button[aria-label="Open sidebar"]';
 				const NORMAL_POLL_MS = 60000;
 				const FAST_POLL_MS = 1000;
+				// 「正在分析」守卫上限：见 analyzeUntil 注释
+				const ANALYZE_GUARD_MS = 120000;
 
 				let statusEl = null;
 				let observer = null;
@@ -1045,8 +1113,15 @@ window.__ModuleLoader__.load({
 				let scanTimer = null;
 				let fast = false;
 				let analyzeBusy = false;
+				let lastState = null;
+				// 点击分析后，服务端要等「拉版本材料 + L1 契约扫描」跑完才会把 status 翻成 analyzing
+				// （这几步是网络 + registry 闭包核对，可能几秒到几十秒）。守卫期内忽略仍是 idle 的陈旧响应：
+				// 既不让「正在分析…」被陈旧状态打回去，也不让它把 1s 快轮询退回 60s——否则整个 analyzing
+				// 窗口会被跳过，只能等下一次轮询才看到结果。带上限，避免请求卡死时把灯钉在「正在分析」。
+				let analyzeUntil = 0;
 
 				const paint = (d) => {
+					lastState = d;
 					if (!statusEl) return;
 					let state;
 					let text = "";
@@ -1097,6 +1172,30 @@ window.__ModuleLoader__.load({
 						sum.className = "pm-modalText";
 						sum.textContent = d.summary ?? "";
 						body.appendChild(sum);
+						// 标题 + 概览之下紧跟一行升级命令：整条可选中，右侧按钮一键复制
+						{
+							const cmdText = dshInstallCommand(d.latest);
+							const row = document.createElement("div");
+							row.className = "pm-cmdRow";
+							const label = document.createElement("span");
+							label.className = "pm-modalText";
+							label.style.fontWeight = "600";
+							label.textContent = t("dshReportInstallHint") + "：";
+							const code = document.createElement("code");
+							code.className = "pm-cmdText";
+							code.textContent = cmdText;
+							const btn = document.createElement("button");
+							btn.className = "pm-btn";
+							btn.textContent = t("copy");
+							btn.addEventListener("click", () => copyText(cmdText, () => {
+								btn.textContent = t("copied");
+								setTimeout(() => { btn.textContent = t("copy"); }, 1500);
+							}));
+							row.appendChild(label);
+							row.appendChild(code);
+							row.appendChild(btn);
+							body.appendChild(row);
+						}
 						if (Array.isArray(d.versions) && d.versions.length > 0) {
 							const h = document.createElement("p");
 							h.className = "pm-modalText";
@@ -1189,82 +1288,65 @@ window.__ModuleLoader__.load({
 								note.textContent = scan.errors.join("；");
 								body.appendChild(note);
 							}
-							// 分层渲染：high/medium（removed-module、dependency/devDependency 越界）平铺展开；
-							// info（peer 声明越界 = 声明失真、无运行期影响）收进可折叠的 <details>，默认收起，
-							// 避免十几条同源噪声把真正的破坏点淹掉。
+							// 按插件折叠：每个有机器结论的插件一个 <details>（默认收起；含 high 的默认展开，
+							// 免得真正可能污染 profile 根的破坏点被折起来）。条目首列用短标签标出档位
+							// （dependencies/devDependencies 越界、宿主模块消失、peer 声明失真），
+							// 不再在每条 finding 里重复同一句括号解释。
 							const scanPlugins = Array.isArray(scan.plugins) ? scan.plugins : [];
-							const isInfoFinding = (f) => f !== null && typeof f === "object" && (f.severity === "info" || f.kind === "range-break-peer");
 							const findingsOf = (p) => (p && Array.isArray(p.findings) ? p.findings : []);
-							const blockingOf = (p) => findingsOf(p).filter((f) => !isInfoFinding(f));
-							const hits = scanPlugins.filter((p) => p && blockingOf(p).length > 0);
-							const infoGroups = scanPlugins
-								.map((p) => ({ plugin: p, items: findingsOf(p).filter((f) => isInfoFinding(f)) }))
+							const groups = scanPlugins
+								.map((p) => ({ plugin: p, items: findingsOf(p) }))
 								.filter((g) => g.plugin && g.items.length > 0);
-							const infoCount = infoGroups.reduce((n, g) => n + g.items.length, 0);
-							const cleanCount = scanPlugins.filter((p) => p && blockingOf(p).length === 0).length;
-							if (hits.length === 0 && infoCount === 0) {
+							const cleanCount = scanPlugins.length - groups.length;
+							const sevOf = (f) => (f && (f.severity === "high" || f.severity === "medium") ? f.severity : "info");
+							const tagKeyOf = (f) => {
+								if (f === null || typeof f !== "object") return "dshReportScanKindInfo";
+								if (f.kind === "removed-module") return "dshReportScanKindRemoved";
+								if (f.kind === "range-break") return "dshReportScanKindDeps";
+								if (f.kind === "range-break-dev") return "dshReportScanKindDevDeps";
+								if (f.kind === "range-break-peer") return "dshReportScanKindPeer";
+								return sevOf(f) === "high" ? "dshReportScanKindHigh" : sevOf(f) === "medium" ? "dshReportScanKindMedium" : "dshReportScanKindInfo";
+							};
+							if (groups.length === 0) {
 								const p = document.createElement("p");
 								p.className = "pm-modalText";
 								p.style.opacity = "0.8";
 								p.textContent = cleanCount > 0 ? tpl(t("dshReportScanClean"), { count: String(cleanCount) }) + " · " + t("dshReportScanCleanNone") : t("dshReportScanCleanNone");
 								body.appendChild(p);
 							} else {
-								if (hits.length > 0) {
-									const ul = document.createElement("ul");
-									ul.className = "pm-reviewRisks";
-									hits.forEach((p) => {
-										const li = document.createElement("li");
-										const head = document.createElement("span");
-										head.style.fontWeight = "600";
-										head.textContent = p.moduleName + (p.version ? "@" + p.version : "") + "：";
-										li.appendChild(head);
-										const sub = document.createElement("ul");
-										sub.className = "pm-reviewRisks";
-										blockingOf(p).forEach((f) => {
-											const subLi = document.createElement("li");
-											subLi.textContent = f.message ?? "";
-											if (f.severity === "high") subLi.style.color = "var(--dsw-alias-state-error-primary)";
-											else if (f.severity === "medium") subLi.style.color = "var(--dsw-alias-state-warn-primary)";
-											sub.appendChild(subLi);
-										});
-										li.appendChild(sub);
-										ul.appendChild(li);
-									});
-									body.appendChild(ul);
-								}
-								if (infoCount > 0) {
+								groups.forEach((g) => {
+									const highest = g.items.some((f) => sevOf(f) === "high") ? "high" : (g.items.some((f) => sevOf(f) === "medium") ? "medium" : "info");
 									const details = document.createElement("details");
 									details.className = "pm-scanInfo";
+									if (highest === "high") details.open = true;
 									const summary = document.createElement("summary");
-									summary.textContent = tpl(t("dshReportScanPeerGroup"), { count: String(infoCount) });
+									const dot = document.createElement("span");
+									dot.className = "pm-scanDot";
+									dot.dataset.severity = highest;
+									const nameEl = document.createElement("span");
+									nameEl.className = "pm-scanPluginName";
+									nameEl.textContent = g.plugin.moduleName + (g.plugin.version ? "@" + g.plugin.version : "");
+									const countEl = document.createElement("span");
+									countEl.textContent = " · " + tpl(t("dshReportScanPluginCount"), { count: String(g.items.length) });
+									summary.appendChild(dot);
+									summary.appendChild(nameEl);
+									summary.appendChild(countEl);
 									details.appendChild(summary);
-									const note = document.createElement("p");
-									note.className = "pm-modalText";
-									note.style.opacity = "0.7";
-									note.style.fontSize = "12px";
-									note.textContent = t("dshReportScanPeerNote");
-									details.appendChild(note);
-									const infoUl = document.createElement("ul");
-									infoUl.className = "pm-reviewRisks";
-									infoGroups.forEach((g) => {
+									const ul = document.createElement("ul");
+									ul.className = "pm-reviewRisks";
+									g.items.forEach((f) => {
 										const li = document.createElement("li");
-										const head = document.createElement("span");
-										head.style.fontWeight = "600";
-										head.textContent = g.plugin.moduleName + (g.plugin.version ? "@" + g.plugin.version : "") + "：";
-										li.appendChild(head);
-										const sub = document.createElement("ul");
-										sub.className = "pm-reviewRisks";
-										g.items.forEach((f) => {
-											const subLi = document.createElement("li");
-											subLi.textContent = f.message ?? "";
-											sub.appendChild(subLi);
-										});
-										li.appendChild(sub);
-										infoUl.appendChild(li);
+										const tag = document.createElement("span");
+										tag.className = "pm-scanTag";
+										tag.dataset.severity = sevOf(f);
+										tag.textContent = t(tagKeyOf(f));
+										li.appendChild(tag);
+										li.appendChild(document.createTextNode(findingMessage(f)));
+										ul.appendChild(li);
 									});
-									details.appendChild(infoUl);
+									details.appendChild(ul);
 									body.appendChild(details);
-								}
+								});
 								if (cleanCount > 0) {
 									const p = document.createElement("p");
 									p.className = "pm-modalText";
@@ -1317,6 +1399,8 @@ window.__ModuleLoader__.load({
 				const fetchState = () => {
 					call("/plugin-market/dsh-version")
 						.then((d) => {
+							// 分析守卫期内（材料拉取 + L1 扫描阶段，服务端 status 仍是 idle）：不画、不降速
+							if (Date.now() < analyzeUntil && (!d || d.status !== "analyzing")) return;
 							paint(d);
 							const analyzing = !!(d && d.status === "analyzing");
 							if (analyzing !== fast) startPoll(analyzing);
@@ -1337,11 +1421,14 @@ window.__ModuleLoader__.load({
 									return;
 								}
 								analyzeBusy = true;
-								statusEl.dataset.state = "analyzing";
+								// 立刻切「正在分析…」文案（不再是只把圆点置橙）：服务端在材料拉取 + L1 扫描
+								// 完成前仍是 idle，不主动画的话文案会一直停在「有新版本」。
+								analyzeUntil = Date.now() + ANALYZE_GUARD_MS;
+								paint({ ...(lastState ?? {}), ok: true, status: "analyzing" });
 								startPoll(true);
 								call("/plugin-market/dsh-version/analyze", {})
-									.then((d2) => { if (!d2 || d2.ok !== true) fetchState(); })
-									.catch(() => fetchState())
+									.then((d2) => { analyzeUntil = 0; if (!d2 || d2.ok !== true) fetchState(); })
+									.catch(() => { analyzeUntil = 0; fetchState(); })
 									.finally(() => { analyzeBusy = false; });
 							})
 							.catch(() => fetchState());
