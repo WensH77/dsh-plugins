@@ -2,6 +2,15 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.14.5
+
+- **fix：破坏性更新判据收口到「运行期证据」，`devDependencies` 越界不再把版本判成 breaking**——线上实例：`0.1.5-rc.1 → 0.1.5-rc.2` 是补丁级体验/排版抬版（`removedModules` 为空、无服务/接口/inject/slot/schema 改动），却因为 `@yuxianglin/dsh-bridge-browser` 的 `devDependencies` 没同步 bump 而把状态灯点红。根因是 `runDshCompatScan` 把 `severity >= medium` 直接等同于 `machine=affected`，再由 prompt 要求「机器判定受影响即列入 `affectedPlugins`」，最终 `verdict=breaking`——**「查到什么」与「是否破坏性」被同一个严重度门槛合并了**。
+- **fix：机器档位三值化（`pluginMachineLevel`，纯函数、扫描与 smoke 共用）**——只有 **high** 计入 `affected`（`removed-module`、`dependencies` 越界——后者会被 pnpm hoist 进 profile 根、可能污染同 profile 其它插件）；`devDependencies` 越界（medium）记为 **`notice`（开发期提示：不随发布安装，只在本地装了 devDeps 时可能抢先命中旧副本）**；其余（含仅 `peer` 声明失真）为 `clean`。severity 仍表达证据/风险档，报告弹窗的橙点与「devDependencies 越界」短标签照旧显示，**信息不丢，只是不再染红状态灯**（client.js 按 `findings` 渲染，故本次零改动）。
+- **fix：prompt 两个 breaking 口径拆开**——`versions[].breaking` 明确为「**该版本上游**是否存在破坏性变更」，`breakingChanges` 明确为「是否影响已装插件**运行期**」，互不污染；`buildScanPromptSection` 把声明层提示单独成段并标注「**勿**据此把插件列入 affectedPlugins，也**勿**据此判定 breakingChanges」；判断指引新增「机器未发现任何运行期破坏点时 `breakingChanges` 必须为 false」。
+- **feat：兜底护栏（`dshBreakingGuard`，纯函数、收尾与 smoke 共用）**——`registry-closure` 扫描确认「零运行期破坏点」（无 `removedModules`、无 high finding）而模型仍判 `breakingChanges=true` 时，结论降级为兼容、清空 `affectedPlugins`、详情追加说明；有 high 证据或扫描不可用（`local-only` / 未跑扫描，返回 `null`）时不介入、保持模型结论。`versions[].breaking` 属上游口径，不受护栏影响。
+- **fix：判定口径版本 `verdictSchema`（=2）**——persist 进 `~/.dsh/plugin-market-dsh.json`；`checkDshUpdate` 的复用判断与 `analyzeDshUpdate` 的幂等复用都要求口径一致，**口径升级后旧缓存作废、点击即按当前口径重新分析**（否则 0.14.4 写下的错误 `breaking` 会一直复用到远端再发新版，修复对用户不可见）。
+- **test：smoke 扩展**——新增 `pluginMachineLevel` / `dshBreakingGuard` 契约断言（仅 peer→clean、仅 devDeps→notice、含 high→affected；零运行期证据降级、有模块消失/ high 保持、`local-only`/未跑扫描返回 `null` 不判定），并按线上真实缓存形状复刻 0.1.5-rc.2 误报（20 条 devDeps 越界不得抬成 breaking）；另加 prompt 口径与 `verdictSchema` 的源码断言。渲染块 fixture 的 `machine` 同步改为 `notice`（渲染不依赖该字段，断言不变）。
+
 ## 0.14.4
 
 - **fix：升级报告「本地插件契约扫描」改为按插件折叠**——上一版只是把 `info`（peer）档收进一个「全网汇总」的 `<details>`，high/medium 仍逐条平铺，同一个插件的十几条同源结论照样糊满弹窗。现在**每个有机器结论的插件一个 `<details>`**：行首状态圆点按最高档位着色（红 high / 橙 medium / 灰 info），标题为 `包名@版本 · N 条机器结论`；**含 `high` 的默认展开**（避免真正可能污染 profile 根的破坏点被折住），其余默认收起；clean 插件仍只计数。旧的 `dshReportScanPeerGroup`/`dshReportScanPeerNote` 两个键随之删除。

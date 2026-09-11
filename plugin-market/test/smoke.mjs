@@ -17,11 +17,12 @@ import { githubRepoInfo, gitSpec, compareVersions, makeQueue, readJsonFile, writ
 import { disableBlock, stripEmptyArrayMarker, readPatchState, localDependencyInfo } from '../lib/patch.js'
 import { reviewKey } from '../lib/review.js'
 import { routeOverrideOf, ROUTES } from '../lib/routes.js'
-import { rangeBreakFinding, scanFindingTag } from '../lib/dsh.js'
+import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
 const LIB_CLIENT = join(__dirname, '..', 'lib', 'client.js')
+const LIB_DSH = join(__dirname, '..', 'lib', 'dsh.js')
 
 let failures = 0
 function assert(cond, msg) {
@@ -223,6 +224,44 @@ console.log('\n[rangeBreakFinding ← dsh.js]')
   assert(clientText.includes('findingMessage'), 'client.js 渲染时裁掉旧缓存 finding 里重复的括号解释（无需重跑扫描即可看新版文案）')
 }
 
+// ── 机器档位 + 破坏性护栏：devDeps / peer 属声明层，不得把版本抬成 breaking ──
+console.log('\n[pluginMachineLevel / dshBreakingGuard ← dsh.js]')
+{
+  const high = { severity: 'high', kind: 'range-break' }
+  const dev = { severity: 'medium', kind: 'range-break-dev' }
+  const peer = { severity: 'info', kind: 'range-break-peer' }
+
+  assertEq(pluginMachineLevel([]), 'clean', '无 finding → clean')
+  assertEq(pluginMachineLevel([peer]), 'clean', '仅 peer 声明失真 → clean（不进运行期判据）')
+  assertEq(pluginMachineLevel([dev, dev]), 'notice', '仅 devDependencies 越界 → notice（开发期提示）')
+  assertEq(pluginMachineLevel([dev, high]), 'affected', '有 high 覆盖 medium → affected')
+  assertEq(pluginMachineLevel([{ severity: 'high', kind: 'removed-module' }]), 'affected', '宿主模块消失 → affected')
+
+  const zeroRuntime = { method: 'registry-closure', removedModules: [], plugins: [{ moduleName: 'p', machine: 'notice', findings: [dev] }] }
+  assertEq(dshBreakingGuard(zeroRuntime, true), true, '零运行期破坏点 + 模型判 breaking → 降级为兼容')
+  assertEq(dshBreakingGuard(zeroRuntime, false), false, '模型本就没判 breaking → 不降级')
+  assertEq(dshBreakingGuard({ ...zeroRuntime, removedModules: ['@deepseek-ai/dsh-x'] }, true), false, '有宿主模块消失 → 保持模型结论')
+  assertEq(dshBreakingGuard({ method: 'registry-closure', removedModules: [], plugins: [{ findings: [high] }] }, true), false, '有 high finding（dependencies 越界）→ 保持模型结论')
+  assertEq(dshBreakingGuard({ method: 'local-only', removedModules: [], plugins: [] }, true), null, '扫描不可用（local-only）→ 不判定，保持模型结论')
+  assertEq(dshBreakingGuard(null, true), null, '未跑扫描 → 不判定')
+
+  // 线上真实误报复刻：0.1.5-rc.1 → 0.1.5-rc.2 补丁级抬版 + 某插件 devDeps 未同步
+  const persisted = {
+    method: 'registry-closure',
+    removedModules: [],
+    plugins: [{ moduleName: '@yuxianglin/dsh-bridge-browser', machine: 'notice', findings: Array.from({ length: 20 }, () => dev) }],
+  }
+  assertEq(dshBreakingGuard(persisted, true), true, '复刻 0.1.5-rc.2 误报：仅 devDeps 越界不再把结论抬成 breaking')
+
+  // prompt 口径：两个 breaking 维度必须分开表述，且声明层提示被显式排除
+  const dshText = readFileSync(LIB_DSH, 'utf8')
+  assert(dshText.includes('**与是否影响本机已装插件无关**'), 'versions[].breaking = 上游口径，明确与本机影响解耦')
+  assert(dshText.includes('devDependencies 越界属开发期提示、peer 声明失真属声明层问题'), '判断指引显式排除 devDeps / peer 作为 breaking 依据')
+  assert(dshText.includes('**勿**据此判定 breakingChanges'), '扫描提示区显式要求模型不得据 devDeps 判 breakingChanges')
+  assert(dshText.includes('const DSH_VERDICT_SCHEMA = 2') && dshText.includes('prev.verdictSchema === DSH_VERDICT_SCHEMA'),
+    '判定口径版本：口径升级后旧缓存作废（回到待分析），修复不必等远端再发新版')
+}
+
 // ── 渲染行为契约：把 client.js 里真实的「按插件折叠」渲染块抽出来，用假 DOM 跑一遍 ──
 // 浏览器脚本不经 node 加载（只能 --check 语法），这里用源码锚点抽出该块 + 假 DOM 执行，
 // 覆盖真实执行路径：折叠分组、档位圆点/标签、默认展开、括号裁剪、clean 计数。
@@ -278,7 +317,7 @@ console.log('\n[扫描报告按插件折叠 ← client.js 渲染块 @ 假 DOM]')
       method: 'registry-closure',
       errors: [],
       plugins: [
-        { moduleName: '@yuxianglin/dsh-bridge-browser', version: '0.0.3', machine: 'affected', findings: devFindings, evidence: {} },
+        { moduleName: '@yuxianglin/dsh-bridge-browser', version: '0.0.3', machine: 'notice', findings: devFindings, evidence: {} },
         { moduleName: 'dsh-plugin-market', version: '0.14.4', machine: 'clean', findings: [], evidence: {} },
       ],
     })
