@@ -29,7 +29,7 @@ dsh web 命令设置插件：
 
 | 文件 | 角色 |
 |---|---|
-| `lib/index.js` | **Node 端** Cordis 插件：shadow `commands.list` 过滤 host 命令；`GET /command-setting/catalog`（未过滤目录）、`POST /command-setting/set`（写 hidden）、`GET /command-setting/ask-state`（会话 ask 开关）；settings 命名空间持久化 + `commands/change` 通知；`/ask` 命令 + 会话级 ask 拦截安装/恢复（`tools.guard` + `systemPrompt` 段） |
+| `lib/index.js` | **Node 端** Cordis 插件：shadow `commands.list` 过滤 host 命令；`GET /command-setting/catalog`（未过滤目录）、`POST /command-setting/set`（写 hidden）、`GET /command-setting/ask-state`（会话 ask 开关）；settings 命名空间持久化 + `commands/change` 通知；`/ask` 命令 + 会话级 ask 拦截安装/恢复（`tools.guard` + `systemPrompt` 段 + 切换通知注入） |
 | `lib/client.js` | **浏览器端** bundle：设置页 section（`settings.section` 插槽）+ 命令目录过滤（shadow `commandUi.candidates/matchEnter/matchSpace`）+ Plan 按钮 + Ask 按钮（`conversation.input.left` 插槽，Ask 在 Plan 左侧）+ `#` 会话引用源（包装 input-trigger 的会话 controller，把 `#token` 路由到独立会话源） |
 
 ### # 会话引用（跨工作区 / 未归档 / 主代理）
@@ -53,8 +53,9 @@ dsh web 命令设置插件：
 
 1. **开关**：composer 工具行 Ask 按钮（Plan 左侧，order -1）点击执行 `/ask`（进入）或 `/ask off`（退出）；直接输入 `/ask` 亦可。状态写入 `~/.dsh/command-setting-ask.json`（`{ 会话id: true }`），dsh web 重启后 `agent/created` 时自动恢复（`GET /command-setting/ask-state?session=<id>` 供按钮回显）。
 2. **提示约束**：开启时给该会话注入 `ask:policy` 系统提示段——专注问答、可读文件与 run_code/内联命令验证；**禁止改动或创建文件**；用户强行要求“直接改”时拒绝并提示先 `/ask off`；**禁止诱导性追加提问**（“需要我帮你改 xxx 吗”“需要我现在改 xxx 吗”“要不要顺手把 xxx 也改了”等）。
-3. **执行级硬拦（tools.guard）**：注册在该会话 agent.ctx 的工具守卫在每次工具 dispatch 前判定——`edit` / `write` / `str_replace_editor` 一律拒绝；`bash` 检测到写命令/重定向（`cp`/`mv`/`rm`/`tee`/`sed -i`/`>`/`>>` 等）也拒绝；`read` / `grep` / `glob` / `run_code` 与只读 bash（`node -e` / `python3 -c` / 运行已有脚本 / `ping` / `curl`）放行。守卫返回拒绝文案而非静默放行，模型层面无法绕过（与 arena-v2 的 guard 同机制）；关闭 ask（`/ask off`）或会话销毁时随 disposer 卸载。
-4. **范围**：ask 为**会话级**——只影响开启它的会话主代理，其它会话、子代理不受影响；只读约束只作用于本会话的工具面，不改变全局 sandbox/approval 策略。
+3. **切换通知（会话上下文注入）**：`/ask`、`/ask off` 成功切换后向该会话注入一条 `plugin` 来源的 user notice（`agent.inject`，`form: 'notice'`，如「用户已把本会话切回普通模式（ask 已关闭）」）。slash 命令是 log-only 生命周期、**命令文本不下发模型**，系统提示段又只是「有 / 无」的静态渲染——没有这条通知时模型感知不到模式已变，会按旧模式继续作答（`/ask off` 后仍拒绝改文件）。通知排在下一步、不唤醒空闲会话，随下一次请求进入上下文并留在会话历史里；判定为 `noop` 的重复开关不注入。与宿主 `dsh-plan-mode` 的 narration 同机制。
+4. **执行级硬拦（tools.guard）**：注册在该会话 agent.ctx 的工具守卫在每次工具 dispatch 前判定——`edit` / `write` / `str_replace_editor` 一律拒绝；`bash` 检测到写命令/重定向（`cp`/`mv`/`rm`/`tee`/`sed -i`/`>`/`>>` 等）也拒绝；`read` / `grep` / `glob` / `run_code` 与只读 bash（`node -e` / `python3 -c` / 运行已有脚本 / `ping` / `curl`）放行。守卫返回拒绝文案而非静默放行，模型层面无法绕过（与 arena-v2 的 guard 同机制）；关闭 ask（`/ask off`）或会话销毁时随 disposer 卸载。
+5. **范围**：ask 为**会话级**——只影响开启它的会话主代理，其它会话、子代理不受影响；只读约束只作用于本会话的工具面，不改变全局 sandbox/approval 策略。
 
 ### 隐藏一条命令会发生什么
 
@@ -153,6 +154,8 @@ command-setting:
   改动也不会发生；需要改动请先 `/ask off`；
 - 只读验证手段不受限：`read` / `grep` / `glob` / `run_code`、`node -e` / `python3 -c`、运行已有脚本、
   `ping` / `curl` 等均可用于验证问题；
+- 每次成功切换都会往会话里注入一条切换通知（如「用户已把本会话切回普通模式（ask 已关闭）：只读限制已解除」），
+  所以 `/ask off` 之后 agent 立刻知道限制解除，不会再拿“当前是 ask 模式”当理由拒绝改动；
 - 状态与会话绑定并持久化（`~/.dsh/command-setting-ask.json`），重启 dsh web 后开启 ask 的会话自动恢复。
 
 ### # 引用历史会话

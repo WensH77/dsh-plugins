@@ -2,7 +2,7 @@
 //
 // 按域拆分（重构后布局）：
 //   lib/commands.js    命令隐藏域：规约/保护集 + 菜单过滤 + 全集 + 归档清理
-//   lib/ask.js         ask（只问答）模式域：判定/提示段/状态文件 + 会话级控制器
+//   lib/ask.js         ask（只问答）模式域：判定/提示段/切换通知 + 状态文件 + 会话级控制器
 //   lib/routes.js      端点路由（catalog / set / ask-state）+ HTTP 样板
 //   lib/index.js       入口：注入声明 + Config + apply 装配（本文件）
 //
@@ -10,7 +10,7 @@
 // 支持隐藏/显示；hidden 清单持久化在 settings 命名空间（~/.dsh/settings.yaml，
 // 热重载），config.hidden 为组合基底；/ask 提供会话级只问答模式。
 import z from '@deepseek-ai/schemastery';
-import { createAskController, askToolDenyReason, buildAskSection } from './ask.js';
+import { createAskController, askToolDenyReason, buildAskSection, buildAskNotice } from './ask.js';
 import { cleanHidden, COMMAND_NAME, DEFAULT_HIDDEN, shadowCommandList } from './commands.js';
 import { registerRoutes } from './routes.js';
 
@@ -92,5 +92,5 @@ function apply(ctx, config = {}) {
   };
 }
 
-export { Config, apply, inject, name, askToolDenyReason, buildAskSection };
-export default { Config, apply, inject, name, askToolDenyReason, buildAskSection };
+export { Config, apply, inject, name, askToolDenyReason, buildAskSection, buildAskNotice };
+export default { Config, apply, inject, name, askToolDenyReason, buildAskSection, buildAskNotice };

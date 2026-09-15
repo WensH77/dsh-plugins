@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-command-setting",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "dsh web 命令设置：从 “+” / “/” 命令菜单中隐藏/显示指定 slash 命令（默认 export/feedback/permission），在设置页新增「命令设置」区，支持隐藏/显示/新增；并外置 plan/ask 模式切换按钮（点击调用 /plan、/ask——ask 为会话级只问答模式：禁改/禁建文件，机械拦截 + 提示约束）；composer 内以 # 引用历史会话（跨工作区、未归档、主代理）；消息文本划词浮出「引用」按钮，一键把选中内容作为引用块追加进 composer。",
   "type": "module",
   "main": "lib/index.js",
@@ -26,6 +26,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "^0.1.5-alpha.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-ui-session": "*",
@@ -35,6 +36,9 @@
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
       "optional": true
     },
     "@deepseek-ai/schemastery": {

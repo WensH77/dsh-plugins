@@ -2,6 +2,15 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.8.3
+
+- **修复 `/ask off` 感知不到（ask 模式切换现在注入会话上下文）**：症状是关闭 ask 后 agent 仍按 ask 模式作答（继续以“当前是 ask 模式”为由拒绝改动文件）。根因有两条：
+  - slash 命令走 `commands` 的 **log-only 生命周期**（`command/run` / `command/done` 只进会话日志），命令文本**不下发模型**——`/ask off` 这件事模型完全看不到；
+  - `ask:policy` 系统提示段只是「有 / 无」的静态渲染：关闭时本会话的段被 disposer 摘掉，但模型拿到的是“少了点什么”，而不是“模式变了”，加上它自己历史里写过“当前处于 ask 模式”，就继续沿用旧结论。
+  现与宿主 `dsh-plan-mode` 的 narration 同机制：`/ask`、`/ask off` 成功切换后调用 `agent.inject`，注入一条 `source: { kind: 'plugin', plugin: 'command-setting', form: 'notice' }` 的 user 消息（「用户已把本会话切换为 ask（只问答）模式…」/「用户已把本会话切回普通模式（ask 已关闭）：只读限制已解除…」），排在 next-step、不唤醒空闲会话，随下一次请求进入模型上下文并留在会话历史里供后续步骤/轮次读到；判定 `noop` 的重复开关不注入，注入失败只记 warn、不影响开关本身生效。
+- `buildAskNotice(active)` 由 `lib/ask.js` 导出、`lib/index.js` 转发；新增 peer 声明 `@deepseek-ai/dsh-llm`（`^0.1.5-alpha.1`，`createUserMessage` 来自它，与 arena-v2 同口径）。
+- 测试：node smoke 新增 `ask notice` 一组（切换注入一条 user notice + `form: 'notice'`/plugin 字段、进入装段、退出卸段卸 guard、重复 off 不注入、侧文件写在临时 HOME 且真实 `~/.dsh/command-setting-ask.json` 逐字节不变）。
+
 ## 0.8.2
 
 - **补齐 client 侧短 id inject 的 peer 声明**：`client.js` 用 `["slots","locale","commandUi","sessions","remote","remote.commands"]` 注入，但 `peerDependencies` 里只有 `cordis` + `schemastery`——短 id 不进机器依赖判定，宿主改名或移除时扫描不会报错。现按 plugin-market 的口径补上提供这些服务的宿主客户端包：`@deepseek-ai/dsh-client-locale`（`locale`）、`@deepseek-ai/dsh-client-ui-session`（`sessions`）、`@deepseek-ai/dsh-client-ui-renderer`（`slots`）、`@deepseek-ai/dsh-client-ui-commands`（`commandUi`）、`@deepseek-ai/dsh-client-ui-workspace`（`remote`，`remote.commands` 是它挂载的命名空间服务）。范围 `*`，`peerDependenciesMeta` 里全部标 `optional`（与 plugin-market 一致）。

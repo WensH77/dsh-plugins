@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 // ── ask mode（只问答模式） ───────────────────────────────────────────────────
 
@@ -114,6 +115,29 @@ function buildAskSection() {
     '退出方式：用户输入 /ask off 后恢复正常模式。'
   ].join('\n');
 }
+
+/** ask 模式切换通知（注入会话的一条 user notice，模型下一次请求可见）。
+ *
+ *  为什么需要它：/ask 走 commands 的 log-only 生命周期（`command/run|done` 只进
+ *  会话日志、**不下发模型**），系统提示段又只是「有 / 无」的静态渲染——模型因此
+ *  看不到「用户刚把 ask 关掉」这件事，只能靠自己历史里的旧结论判断，表现就是
+ *  `/ask off` 后仍按 ask 模式作答。与 dsh-plan-mode 的 narration 同机制：注入一条
+ *  `form: 'notice'` 的 plugin 消息（`agent.inject` = 排入 next-step、不唤醒），
+ *  模型下一次请求可见，并留在会话历史里供后续步骤 / 轮次继续读到。 */
+function buildAskNotice(active) {
+  const text = active
+    ? '用户已把本会话切换为 ask（只问答）模式：只回答问题、只做只读验证，不要改动或创建文件。'
+    : '用户已把本会话切回普通模式（ask 已关闭）：只读限制已解除，可以正常改动文件、执行写操作。';
+  return createUserMessage({
+    content: [{ type: 'text', text }],
+    source: {
+      kind: 'plugin',
+      plugin: 'command-setting',
+      form: 'notice',
+      summary: active ? 'ask 模式已开启（只问答）' : 'ask 模式已关闭'
+    }
+  });
+}
 /** 会话 ask 状态与 per-agent 拦截的控制器。状态以内存 Set 为准，随 /ask 开关即时
  * 增删；镜像到侧文件（~/.dsh/command-setting-ask.json）供 dsh web 重启后恢复。
  * install/dispose 幂等；子代理（subagent origin / subagentDepth）不装拦截。 */
@@ -214,6 +238,14 @@ function createAskController(ctx) {
         askSessions.delete(id);
       }
       persistAskState();
+      // 模式切换通知：命令文本不下发模型、系统提示段只是静态渲染，不注入这条通知
+      // 模型会继续按旧模式作答（尤其同一轮内的后续步骤）。best-effort——注入失败
+      // 不影响开关本身已生效。
+      try {
+        agent.inject(buildAskNotice(active));
+      } catch (error) {
+        ctx.logger?.warn?.('command-setting: ask notice inject failed: ' + String(error?.message ?? error));
+      }
       ctx.logger?.info?.('command-setting: session ' + id + ' ask mode -> ' + active);
       return active ? 'on' : 'off';
     } catch {
@@ -299,4 +331,4 @@ function createAskController(ctx) {
   };
 }
 
-export { askToolDenyReason, buildAskSection, createAskController };
+export { askToolDenyReason, buildAskSection, buildAskNotice, createAskController };

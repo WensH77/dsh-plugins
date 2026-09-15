@@ -385,5 +385,75 @@ function makeRestartCtx(routes) {
   check("ask: state endpoint rejects malformed session", r8c.status === 200 && body8c.ok === true && body8c.active === false);
 }
 
+// 8d. ask 模式切换把「模式变了」注入会话（agent.inject），并装卸拦截
+//     （HOME 先指向临时目录：ask.js 的侧文件路径由 homedir() 在模块加载时决定，
+//     用查询串换一个模块实例，避免污染真实的 ~/.dsh/command-setting-ask.json）
+{
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pm = await import("node:path");
+  const realAskFile = pm.join(osm.homedir(), ".dsh", "command-setting-ask.json");
+  const realBefore = fsm.existsSync(realAskFile) ? fsm.readFileSync(realAskFile, "utf8") : null;
+  const fakeHome = fsm.mkdtempSync(pm.join(osm.tmpdir(), "command-setting-ask-"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  const { createAskController } = await import("../lib/ask.js?fake-home=" + encodeURIComponent(fakeHome));
+  process.env.HOME = prevHome;
+
+  let sectionCalls = 0;
+  let sectionDisposed = 0;
+  let guardDisposed = 0;
+  let definition = null;
+  const ctx8d = {
+    logger: { info: () => {}, warn: () => {} },
+    on: () => () => {},
+    commands: { register: (def) => { definition = def; return () => {}; } }
+  };
+  const controller8d = createAskController(ctx8d);
+  controller8d.registerAskCommand();
+  const injected = [];
+  const agent8d = {
+    id: "session-ask-test",
+    options: {},
+    session: { header: { origin: "main" } },
+    inject: (message) => injected.push(message),
+    ctx: {
+      systemPrompt: { section: () => { sectionCalls += 1; return () => { sectionDisposed += 1; }; } },
+      tools: { guard: () => () => { guardDisposed += 1; } }
+    }
+  };
+
+  const onResult8d = definition.handler({ agent: agent8d, rawInput: "" });
+  check("ask notice: /ask succeeds", onResult8d.kind === "success");
+  check("ask notice: entry injects one user message", injected.length === 1 && injected[0].role === "user");
+  check("ask notice: entry message is a plugin notice",
+    injected[0]?.source?.kind === "plugin" && injected[0]?.source?.form === "notice"
+      && injected[0]?.source?.plugin === "command-setting" && typeof injected[0]?.source?.summary === "string");
+  check("ask notice: entry text names ask mode", String(injected[0]?.content?.[0]?.text ?? "").includes("只问答"));
+  check("ask notice: entry installs prompt section",
+    sectionCalls === 1 && controller8d.active("session-ask-test") === true);
+
+  const offResult8d = definition.handler({ agent: agent8d, rawInput: "off" });
+  check("ask notice: /ask off succeeds", offResult8d.kind === "success");
+  check("ask notice: exit injects a second notice", injected.length === 2);
+  check("ask notice: exit text says default mode",
+    String(injected[1]?.content?.[0]?.text ?? "").includes("普通模式"));
+  check("ask notice: exit summary differs from entry",
+    injected[1]?.source?.summary !== injected[0]?.source?.summary);
+  check("ask notice: exit removes section and guard",
+    sectionDisposed === 1 && guardDisposed === 1 && controller8d.active("session-ask-test") === false);
+
+  const noopResult8d = definition.handler({ agent: agent8d, rawInput: "off" });
+  check("ask notice: repeated off injects nothing",
+    noopResult8d.kind === "success" && injected.length === 2);
+
+  // 隔离自证：状态写进临时 HOME，真实侧文件逐字节不变
+  check("ask notice: side file written under fake HOME",
+    fsm.existsSync(pm.join(fakeHome, ".dsh", "command-setting-ask.json")));
+  const realAfter = fsm.existsSync(realAskFile) ? fsm.readFileSync(realAskFile, "utf8") : null;
+  check("ask notice: real side file untouched", realAfter === realBefore);
+  fsm.rmSync(fakeHome, { recursive: true, force: true });
+}
+
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
 process.exit(failed === 0 ? 0 : 1);
