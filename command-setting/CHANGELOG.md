@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.8.2
+
+- **补齐 client 侧短 id inject 的 peer 声明**：`client.js` 用 `["slots","locale","commandUi","sessions","remote","remote.commands"]` 注入，但 `peerDependencies` 里只有 `cordis` + `schemastery`——短 id 不进机器依赖判定，宿主改名或移除时扫描不会报错。现按 plugin-market 的口径补上提供这些服务的宿主客户端包：`@deepseek-ai/dsh-client-locale`（`locale`）、`@deepseek-ai/dsh-client-ui-session`（`sessions`）、`@deepseek-ai/dsh-client-ui-renderer`（`slots`）、`@deepseek-ai/dsh-client-ui-commands`（`commandUi`）、`@deepseek-ai/dsh-client-ui-workspace`（`remote`，`remote.commands` 是它挂载的命名空间服务）。范围 `*`，`peerDependenciesMeta` 里全部标 `optional`（与 plugin-market 一致）。
+- 运行时行为、注入列表与设置页语义均未改动。
+
 ## 0.8.1
 
 - **修复划词引用浮标 hover 发透**：hover 底色原用 `--dsw-alias-interactive-bg-hover`（半透明叠加色，在消息背景上看起来像变透明），改为不透明变量 `--dsw-alias-interactive-bg-hover-solid`（该变量缺失时回退到与常态一致的不透明菜单底色），并加深边框 `--dsw-alias-border-l3`；hover 反馈保留、不再发透。
