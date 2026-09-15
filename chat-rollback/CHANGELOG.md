@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.3.1
+
+- **补齐 client 侧短 id inject 的 peer 声明**：`client.js` 用 `['locale','sessions']` 注入，但 `peerDependencies` 里只有 `cordis` + `schemastery`——短 id 不进机器依赖判定，宿主改名或移除时扫描不会报错，只能靠人发现。现按 plugin-market 的口径补上 `@deepseek-ai/dsh-client-locale`（提供 `locale`）与 `@deepseek-ai/dsh-client-ui-session`（提供 `sessions`），范围 `*`，并在 `peerDependenciesMeta` 里全部标 `optional`（与 plugin-market 一致，避免已发布包强制拉取宿主客户端包）。同时把原有的 `cordis` / `schemastery` 也补进 `peerDependenciesMeta`，此前漏了。
+- 运行时行为、注入列表、端点与快照语义均未改动。
+
 ## 0.3.0
 
 - **代码重构与瘦身（纯重构，外部行为与契约不变：HTTP 端点 / 响应字段 / 快照目录与命名 / Config 字段 / client 注入契约与按钮交互流程全部不变）**：
