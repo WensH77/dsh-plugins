@@ -2,6 +2,13 @@
 
 本文件记录 `dsh-plugin-tool-both` 的历次改动（由 git 提交历史整理）。安装、使用、仓库结构见 [README.md](./README.md)。
 
+## 0.2.7
+
+- **移除 persona 跨版本 shim，不再兼容 0.1.2 线**：`preset/both/agent.cordis.yml` 的 persona 行删掉 `text:` 键（及那段 `TODO(兼容 shim)` 注释），只保留 `prefix` + `suffix`——该契约自 dsh 0.1.3-alpha.2 起生效，行为不变。
+- 同步：README「已知限制」那条 shim 说明改为「要求 dsh ≥ 0.1.3-alpha.2」；smoke 的 persona 断言由「三键齐备」改为「只有 prefix + suffix、且不含 text」。
+- 注意：已装副本 `~/.dsh/.agent-presets/both/agent.cordis.yml` 本就不含 `text:`（当初安装时未带），无需手动同步；安装幂等仍会跳过已存在文件。
+- 测试：`node tool-both/test/smoke.mjs` 全绿。
+
 ## 0.2.6
 
 - **恢复 0.1.2 线兼容：persona 配置改为跨版本三键 shim**——0.2.5 把 persona 行改成 `prefix:`/`suffix:` 后，只覆盖 dsh **0.1.3-alpha.2+**；而 `dsh-persona` 的配置契约正是**在 0.1.3-alpha.2 从 `text` 改为 `prefix`+`suffix`**（不是 0.1.5），于是 0.1.2-alpha.4 / alpha.5 / 0.1.2-rc.1 上预设挂载失败（`$.text missing required value`）。现同时写 `text`（旧版合并人格）+ `prefix`/`suffix`（新版拆分人格）：两版 schema 只校验各自必填键、schemastery 保留未知键，故两版都能挂载且注入一致的系统提示。
