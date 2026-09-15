@@ -1,4 +1,8 @@
-# dsh-plugin-tool-both
+# dsh-plugin-tool-both（已弃用）
+
+> **⚠️ 已弃用（归档）**：tool-both 已停止维护，移入 `deprecated/` 仅作存档，不再提供安装/更新指引；本机副本已于 2026-09-15 卸载。以下内容保留原状，仅作历史参考。
+
+**弃用原因（2026-09-15）**：`both` 把原生工具 schema 与生成的 SDK 段同时发进同一个请求，其中 `interface ToolArgsMap`（实测 35,940 字符，占 `tools:sdk` 段的 76%）与 tools 数组里的原生 `parameters` 同源同信息，系统提示词被撑到 55k+ 字符的固定前缀。收益兑现率低：24 个会话里 22 个跑在 both，其中 **17 个一次 `run_code` 都没调过**（合计 942 个 step）；148 份 transcript 里 23 个会话的 **73 次 Jira MCP 调用全部是原生直调**（MCP 工具与 mode 无关，`standard` 下发的还是服务器原始 JSON Schema，比 both 的 SDK 副本更完整）。结论：按会话需要时再切呈现模式，比默认常驻 `both` 划算。
 
 一键开启 dsh **「both」工具呈现模式**：模型同时看到全部原生工具 schema 与 `run_code`（生成式 SDK），**没有 code-only 限制**——直接调 `read`/`edit`/`bash` 正常执行，模型也可以写 `run_code` 程序把多步操作一次往返批量编排。
 

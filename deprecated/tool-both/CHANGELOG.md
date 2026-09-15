@@ -2,6 +2,13 @@
 
 本文件记录 `dsh-plugin-tool-both` 的历次改动（由 git 提交历史整理）。安装、使用、仓库结构见 [README.md](./README.md)。
 
+## 已弃用（2026-09-15，无版本 bump）
+
+- **归档**：目录由 `tool-both/` 移入 `deprecated/tool-both/`，README 顶部加弃用横幅；根 README 的清单 / 安装指引 / 补丁示例 / 仓库结构同步标注。
+- **本机卸载**：`~/.dsh/profiles/web/cordis.patch.yml` 的 `tool-both` insert 段移除，profile 依赖经 `pnpm install` 清理，`~/.dsh/.agent-presets/both` 删除（备份在 `~/.dsh/backups/tool-both-removal-20260915-160203/`）。
+- **未改行为、无版本 bump**：本次只有归档与文档改动，按 MEMORY「纯文档改动不 bump 版本」保留 `0.2.7`。
+- 代价（已确认接受）：本机 552 个存着 `agentPreset: "both"` 的会话不能再 resume（`agent-preset/not-found`），只能冷读；恢复见上方备份路径。
+
 ## 0.2.7
 
 - **移除 persona 跨版本 shim，不再兼容 0.1.2 线**：`preset/both/agent.cordis.yml` 的 persona 行删掉 `text:` 键（及那段 `TODO(兼容 shim)` 注释），只保留 `prefix` + `suffix`——该契约自 dsh 0.1.3-alpha.2 起生效，行为不变。

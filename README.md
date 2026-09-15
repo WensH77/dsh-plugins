@@ -13,7 +13,7 @@
 | ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**曾由 arena-v2 取代（arena-v2 亦已弃用）**，移入 `deprecated/` 仅作存档 |
 | **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab——两阶段安装（隔离拉取 + 分层安全审查 + 确认安装，任务可视化、可中断）、检查更新/更新（git 通道，更新附带与本地已装代码的差异审查）、卸载、开关、仓库地址管理（保存用户填写的仓库）、待重启提示、清理缓存；侧边栏 dsh 版本状态灯（启动+每小时检测 deepseek-harness 新版本，点击开新会话分析破坏性更新） |
 | ~~**session-export**~~（已弃用） | [`deprecated/session-export/`](deprecated/session-export/README.md) | 会话导出长图：会话标题栏「导出长图」按钮，把当前会话从第一条到最新一条导出为长图 PNG——只展示用户输入与模型输出，自动剔除思考（Think/reasoning）与工具调用等过程内容（GFM 子集 Markdown 排版、主题取色、长会话自动拆多张）。**已停止维护**，移入 `deprecated/` 仅作存档 |
-| **tool-both** | [`tool-both/`](tool-both/README.md) | 工具呈现模式（both）：激活时自动安装「BOTH模式」预设——原生工具直调与 run_code 并存、无 code-only 限制（消除 PTC 模式下大量 `unknown tool "read"` 报错），另提供可挂进任意 agent preset 的呈现行组件 |
+| ~~**tool-both**~~（已弃用） | [`deprecated/tool-both/`](deprecated/tool-both/README.md) | 工具呈现模式（both）：激活时自动安装「BOTH模式」预设——原生工具直调与 run_code 并存、无 code-only 限制。**已停止维护**，移入 `deprecated/` 仅作存档：`both` 在同一请求里重复渲染工具入参类型声明（`interface ToolArgsMap` 35,940 字符，占 SDK 段的 76%），而实测 77% 的 both 会话一次 `run_code` 都没调过、全部 Jira MCP 调用也都走原生直调——默认 `standard`、需要时按会话切呈现模式更划算 |
 
 各插件目录内有完整的独立 README（功能、原理、安装、配置、已知限制）。
 
@@ -40,11 +40,7 @@ git clone https://github.com/WensH77/dsh-plugins.git
 dsh plugin --profile web add ./plugin-market
 ```
 
-**tool-both**（一键开启 both 工具呈现模式，普通插件，git 通道安装）：
-
-```bash
-dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:tool-both'
-```
+~~**tool-both**（一键开启 both 工具呈现模式）：已弃用，移入 `deprecated/tool-both/`——不再提供安装指引。~~
 
 ~~**session-export**（会话导出长图）：已停止维护，移入 `deprecated/session-export/`——不再提供安装指引。~~
 
@@ -52,7 +48,7 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 
 ~~**model-arena**（模型竞技场 v1）：已弃用，移入 `deprecated/model-arena/`，曾由 arena-v2 取代（arena-v2 亦已弃用）——不再提供安装指引。~~
 
-安装后在补丁层启用（chat-rollback / command-setting / tool-both 示例；plugin-market 为 bundle 包，无需此步，重启即加载）：
+安装后在补丁层启用（chat-rollback / command-setting 示例；plugin-market 为 bundle 包，无需此步，重启即加载）：
 
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
@@ -63,11 +59,7 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
       name: dsh-plugin-command-setting
       config:
         hidden: ['export', 'feedback', 'permission']
-    - id: tool-both
-      name: dsh-plugin-tool-both
 ```
-
-> tool-both 启用后自动安装「BOTH模式」预设，预设选择器即可选用（详见 [tool-both/README.md](tool-both/README.md)）。
 
 ```bash
 # 重启 dsh web
@@ -106,7 +98,7 @@ node deprecated/model-arena/test/smoke.mjs           # model-arena（已弃用�
 node deprecated/model-arena/test/client-smoke.mjs    # model-arena（已弃用）浏览器端测试
 node deprecated/session-export/test/smoke.mjs        # session-export（已弃用）node 端测试（转录抽取/标题/接口/路由）
 node deprecated/session-export/test/client-smoke.mjs # session-export（已弃用）浏览器端测试（Markdown/分段/词典）
-node tool-both/test/smoke.mjs                        # tool-both 测试（导出/预设安装/幂等/loader 方言）
+node deprecated/tool-both/test/smoke.mjs             # tool-both（已弃用）测试（导出/预设安装/幂等/loader 方言）
 node --check plugin-market/lib/index.js plugin-market/lib/client.js   # plugin-market 语法检查
 ```
 
@@ -126,7 +118,7 @@ dsh-plugins/
 │   ├── lib/client.js       #   浏览器端：设置页 + Plan 按钮
 │   ├── test/               #   smoke 测试
 │   └── package.json
-├── deprecated/             # 已弃用插件存档（arena-v2、model-arena 竞技场 v1、session-export）
+├── deprecated/             # 已弃用插件存档（arena-v2、model-arena 竞技场 v1、session-export、tool-both）
 │   ├── arena-v2/           #   arena v2（已弃用，后续方案 Theseus Crew）
 │   │   ├── lib/index.js    #     Node 端：竞技场状态/子代理编排 + system-prompt persona 注入
 │   │   ├── lib/client.js   #     浏览器端：chip/hero 开关 + 竞技场运行时
@@ -137,17 +129,17 @@ dsh-plugins/
 │   │   ├── lib/client.js   #     浏览器端：hero toggle + 竞技场运行时 + 挑战编排
 │   │   ├── test/           #     smoke 测试
 │   │   └── package.json
-│   └── session-export/     #   会话导出长图（只含用户输入 + 模型输出，剔除思考/工具调用）
-│       ├── lib/index.js    #     Node 端：转录抽取 + /session-export/data 端点
-│       ├── lib/client.js   #     浏览器端：标题栏导出按钮 + Markdown 渲染 + 长图栅格化
+│   ├── session-export/     #   会话导出长图（只含用户输入 + 模型输出，剔除思考/工具调用）
+│   │   ├── lib/index.js    #     Node 端：转录抽取 + /session-export/data 端点
+│   │   ├── lib/client.js   #     浏览器端：标题栏导出按钮 + Markdown 渲染 + 长图栅格化
+│   │   ├── test/           #     smoke 测试
+│   │   └── package.json
+│   └── tool-both/          #   工具呈现模式（both）：原生直调与 run_code 并存（已弃用）
+│       ├── lib/index.js    #     Node 端：激活时安装 both 预设
+│       ├── lib/presentation.js # agent 层呈现行组件（./presentation，默认 both）
+│       ├── preset/both/    #     分发的 both 预设（标准组成 + presentation both）
 │       ├── test/           #     smoke 测试
 │       └── package.json
-├── tool-both/              # 工具呈现模式（both）：原生直调与 run_code 并存
-│   ├── lib/index.js        #   Node 端：激活时安装 both 预设
-│   ├── lib/presentation.js #   agent 层呈现行组件（./presentation，默认 both）
-│   ├── preset/both/        #   分发的 both 预设（标准组成 + presentation both）
-│   ├── test/               #   smoke 测试
-│   └── package.json
 ├── plugin-market/          # 插件市场（基础版）
 │   ├── lib/index.js        #   Node 端：清单/开关/安装/更新/卸载/审查/清理 路由
 │   ├── lib/client.js       #   浏览器端：插件市场 tab（任务可视化 + 审查报告弹窗）

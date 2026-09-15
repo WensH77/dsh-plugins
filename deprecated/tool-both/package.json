@@ -15,7 +15,7 @@
     "README.md",
     "CHANGELOG.md"
   ],
-  "repository": "WensH77/dsh-plugins#path:tool-both",
+  "repository": "WensH77/dsh-plugins#path:deprecated/tool-both",
   "scripts": {
     "test": "node test/smoke.mjs"
   },
