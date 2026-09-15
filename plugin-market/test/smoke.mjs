@@ -394,7 +394,19 @@ console.log('\n[状态灯「正在分析」← client.js 抽取]')
   if (pStart > 0 && pEnd > pStart) {
     const ver = { textContent: '' }
     const statusEl = { dataset: {}, title: '', querySelector: () => ver }
-    const dict = { dshAnalyzing: '正在分析新版本…', dshHasUpdateShort: '有新版本', dshBreakingShort: '破坏性更新', dshUnknown: '无法检查更新' }
+    // 文案取自 client.js 的真实 zh 字典：此前这里是手抄的 fixture，抄本与产品文案漂移时测试照样通过
+    const zhStart = src.indexOf('const zh = {')
+    const zhEnd = src.indexOf('\n\t\t};', src.indexOf('{', zhStart)) + 4
+    assert(zhStart > 0 && zhEnd > 4, '能定位 zh 字典（锚点：const zh = {）')
+    const dict = new Function('return ' + src.slice(src.indexOf('{', zhStart), zhEnd))()
+    assertEq(dict.dshBreakingShort, '兼容性问题',
+      'zh 字典：红灯短文案 = 兼容性问题（判据是本机运行期兼容性，避免与官方「破坏性变更」撞词）')
+    assert(/可能影响已装插件的兼容性/.test(dict.dshBreaking),
+      'zh 字典：红灯标题标明「可能」+「已装插件」的兼容性（判据来自模型分类，且要说清是谁的兼容性）')
+    assert(!/破坏性/.test(dict.dshBreaking + dict.dshBreakingShort),
+      'zh 字典：红灯文案不得出现「破坏性」——该词留给上游口径（官方 release notes 的「破坏性变更」）')
+    assertEq(dict.dshReportVersionBreaking, '破坏性变更',
+      'zh 字典：逐版本标签保持上游口径「破坏性变更」，与红灯的本机口径形成对照')
     const h = new Function('t', `
       let statusEl = null; let lastState = null;
       ${src.slice(pStart, pEnd)}
@@ -404,7 +416,7 @@ console.log('\n[状态灯「正在分析」← client.js 抽取]')
     const shot = (d) => { h.paint(d); return statusEl.dataset.state + ' | ' + ver.textContent }
     assertEq(shot({ ok: true, status: 'analyzing', installed: '0.1.5-rc.1' }), 'analyzing | v0.1.5-rc.1 · 正在分析新版本…',
       'analyzing 状态确实会渲染出「正在分析新版本…」（圆点档位 = analyzing）')
-    assertEq(shot({ ok: true, hasUpdate: true, verdict: 'breaking', installed: '0.1.5-rc.1' }), 'breaking | v0.1.5-rc.1 · 破坏性更新', 'breaking 文案/档位')
+    assertEq(shot({ ok: true, hasUpdate: true, verdict: 'breaking', installed: '0.1.5-rc.1' }), 'breaking | v0.1.5-rc.1 · 兼容性问题', 'breaking 文案/档位')
     assertEq(shot({ ok: true, hasUpdate: true, installed: '0.1.5-rc.1' }), 'update | v0.1.5-rc.1 · 有新版本', 'update 文案/档位')
     assertEq(shot({ ok: true, checked: true, hasUpdate: false, installed: '0.1.5-rc.1' }), 'ok | v0.1.5-rc.1', '已是最新文案/档位')
   }

@@ -2,6 +2,13 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.14.6
+
+- **fix：红灯文案改用「兼容性问题」，与官方的「破坏性变更」不再撞词**——红灯的判据是 `verdict`（本机已装插件的**运行期兼容性**：`removed-module` 或 `dependencies` 越界），而「破坏性变更」是**上游口径**：官方 release notes 用它描述 API／包结构变更（如 `dsh-v0.1.3-alpha.1` 的「**破坏性变更：**Session persistence API 改为由生命周期持有的 `SessionHandle`；`agentLoop.create()` 改为异步」），市场自己也用它标 `versions[].breaking`。两个词差一个字、指两个判据，红灯一亮容易被读成「官方发了破坏性版本」。现在拆开：`dshBreakingShort` = `兼容性问题`、`dshBreaking` = `有新版本 v{version}，可能影响已装插件的兼容性`（en：`compatibility issue` / `New version v{version} — may affect installed plugin compatibility`）。加「可能」与「已装插件」两个限定，是因为判据来自模型分类（会误判），且要说清是**谁**的兼容性。逐版本标签 `dshReportVersionBreaking`（破坏性变更）保持不动——它就是上游口径，正好作对照。
+- **fix：prompt 输出约束补措辞口径**——`buildDshUpdatePrompt` 两个分支（有版本清单／未拉到清单）追加：上游破坏写「破坏性变更」、本机兼容性影响写「兼容性问题」，不得用「破坏性」描述本机影响。否则市场自己的控件改了名，模型写的 `summary`／`changes` 仍会混用——线上 `0.1.6-alpha.1` 那次的 summary 原文就是「上游存在包结构与配置迁移类破坏性变更」。
+- **不改动**：`verdict` 的持久化取值仍为 `'breaking'`（改值名得抬 `verdictSchema` 让旧缓存作废，纯显示改名不值这个代价），`~/.dsh/plugin-market-dsh.json` 格式不变，旧缓存无需重跑。
+- **test**：状态灯文案断言同步为 `breaking | v0.1.5-rc.1 · 兼容性问题`（smoke）；README 红档说明与状态灯示例同步。
+
 ## 0.14.5
 
 - **fix：破坏性更新判据收口到「运行期证据」，`devDependencies` 越界不再把版本判成 breaking**——线上实例：`0.1.5-rc.1 → 0.1.5-rc.2` 是补丁级体验/排版抬版（`removedModules` 为空、无服务/接口/inject/slot/schema 改动），却因为 `@yuxianglin/dsh-bridge-browser` 的 `devDependencies` 没同步 bump 而把状态灯点红。根因是 `runDshCompatScan` 把 `severity >= medium` 直接等同于 `machine=affected`，再由 prompt 要求「机器判定受影响即列入 `affectedPlugins`」，最终 `verdict=breaking`——**「查到什么」与「是否破坏性」被同一个严重度门槛合并了**。
