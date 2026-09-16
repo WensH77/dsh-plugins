@@ -5,7 +5,8 @@
 // 覆盖：
 //  1) 定位域纯函数（workspaceNameOf / todoPathOf / readTodo）；
 //  2) 端点行为（http 状态与 code：bad-session / no-session / no-workspace / 读到 / 缺失）；
-//  3) 只读约定与路径不可注入（只注册一条路由；调用方只能给会话 id，给不了路径）。
+//  3) 只读约定与路径不可注入（只注册一条路由；调用方只能给会话 id，给不了路径）；
+//  4) 待办约定的常驻注入与技能注册（agent scope 挂载 / 释放 / 幂等）。
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +16,8 @@ const home = mkdtempSync(join(tmpdir(), 'todo-tab-home-'));
 process.env.DSH_HOME = home;
 
 const { workspaceNameOf, todoPathOf, readTodo } = await import('../lib/memory.js');
-const { createHandler, apply } = await import('../lib/index.js');
+const { createHandler, apply, applyConvention } = await import('../lib/index.js');
+const { CONTEXT_NAME, CONTEXT_ORDER, conventionText, loadSkill, parseSkillFile, templateFilePath } = await import('../lib/convention.js');
 
 let failures = 0;
 function assert(cond, label, detail) {
@@ -84,6 +86,8 @@ const ctx = {
   logger: { info() {}, warn() {} },
   sessions: { get: (id) => sessions.get(id) },
   webServer: { register: (route) => { ctx.routes.push(route); } },
+  // apply 里还会接约定注入；这里给一个不做事的 inject，只为让 apply 跑通。
+  inject: () => () => {},
   routes: []
 };
 apply(ctx);
@@ -110,6 +114,69 @@ assert(ok.body.exists === true && ok.body.content.includes('一件小事'), '返
 // 调用方给路径参数无效：只认会话 cwd 推出的路径（无任意文件读取面）。
 const injected = await call(handler, '/todo-tab/data?session=sess-good&path=' + encodeURIComponent('/etc/passwd'));
 assertEq(injected.body.path, join(dir, 'TODO.md'), 'path 参数被忽略，仍读工作区 TODO.md');
+
+// ── 4. 常驻注入 + 技能 ──────────────────────────────────────────────────────
+const text = conventionText();
+for (const needle of ['<DSH_HOME>/memory/<工作区>/TODO.md', '只记**未完成**待办', '永不复用', '插入式 `edit` 追加', 'todo-memory` 技能']) {
+  assert(text.includes(needle), '常驻文本含「' + needle + '」');
+}
+assert(!text.includes('## 骨架'), '常驻文本不塞长规范（骨架留给技能）');
+
+const parsed = parseSkillFile('---\nname: demo\ndescription: "带引号的描述"\nwhenToUse: x\n---\n\n# 正文\n');
+assertEq(parsed.frontmatter.name, 'demo', 'frontmatter 解析 name');
+assertEq(parsed.frontmatter.description, '带引号的描述', 'frontmatter 去引号');
+assertEq(parsed.body.trim(), '# 正文', 'frontmatter 与正文分离');
+assertEq(parseSkillFile('# 没有 frontmatter').frontmatter, {}, '无 frontmatter 时返回空对象');
+
+const skill = await loadSkill();
+assertEq(skill.name, 'todo-memory', '技能名来自 SKILL.md');
+assert(skill.description.length > 20, '技能带路由描述');
+assert(typeof skill.whenToUse === 'string' && skill.whenToUse !== '', '技能带 whenToUse');
+assert(skill.content.includes('## 骨架'), '技能正文含骨架');
+assert(skill.content.includes(templateFilePath()), '技能正文附上骨架文件路径');
+assert(skill.path.endsWith('skill/todo-memory/SKILL.md'), '技能来自插件目录');
+
+// agent scope 挂载：context + 技能各注册一次，disposed 时释放，重复 created 幂等。
+const captured = { deps: null, contexts: [], skills: [], released: [] };
+const listeners = {};
+const existing = { id: 'agent-existing', ctx: fakeAgentCtx('agent-existing') };
+function fakeAgentCtx(id) {
+  return {
+    systemPrompt: { context: (def) => { captured.contexts.push({ id, def }); return () => captured.released.push('context:' + id); } },
+    skills: { register: (entry) => { captured.skills.push({ id, entry }); return () => captured.released.push('skill:' + id); } }
+  };
+}
+const promptCtx = {
+  logger: { info() {}, warn() {} },
+  agents: { list: () => [existing] },
+  on: (event, listener) => {
+    listeners[event] = listener;
+    return () => { delete listeners[event]; };
+  }
+};
+const disposeAll = applyConvention({ inject: (deps, callback) => { captured.deps = deps; return callback(promptCtx); } });
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+assertEq(captured.deps, ['agents', 'systemPrompt', 'skills'], '注入 agents / systemPrompt / skills');
+assertEq(captured.contexts.length, 1, '已有活 agent 补挂一次');
+assertEq(captured.contexts[0].def.name, CONTEXT_NAME, '常驻 context 名字固定');
+assertEq(captured.contexts[0].def.order, CONTEXT_ORDER, '常驻 context order 固定');
+assertEq(captured.contexts[0].def.text, text, '常驻 context 正文 = conventionText()');
+assertEq(captured.skills.length, 1, '已有活 agent 也注册技能');
+assertEq(captured.skills[0].entry.name, 'todo-memory', '注册的技能名');
+assertEq(captured.skills[0].entry.provider, 'todo-tab', '技能 provider 标注来源');
+
+const fresh = { id: 'agent-new', ctx: fakeAgentCtx('agent-new') };
+listeners['agent/created']({ agent: fresh });
+listeners['agent/created']({ agent: fresh });
+await new Promise((resolve) => setTimeout(resolve, 0));
+assertEq(captured.contexts.filter((entry) => entry.id === 'agent-new').length, 1, '同一 agent 重复 created 只挂一次');
+
+listeners['agent/disposed']({ agent: fresh });
+assert(captured.released.includes('context:agent-new') && captured.released.includes('skill:agent-new'), 'agent 释放时注销 context 与技能');
+
+disposeAll();
+assert(captured.released.includes('context:agent-existing') && captured.released.includes('skill:agent-existing'), '插件卸载时释放全部挂载');
 
 console.log(failures === 0 ? '\nsmoke: all passed' : '\nsmoke: ' + failures + ' failure(s)');
 process.exit(failures === 0 ? 0 : 1);

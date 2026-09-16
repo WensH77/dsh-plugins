@@ -1,5 +1,19 @@
 # 变更日志
 
+## 0.2.0
+
+- 待办约定改由插件携带，不再依赖 `~/.dsh/AGENTS.md` 与 `~/.dsh/memory/TEMPLATE.md`：
+  - 常驻注入（`lib/convention.js`）：每个 agent 的 **prompt scope** 上注一段
+    `systemPrompt.context({ name: 'todo-tab:todo-memory', order: 700, … })`，内容是
+    「触发器 + 铁律」；在 `agent/created` 挂、`agent/disposed` 释放。
+    必须挂 agent scope——`assemble` 只合并 global 层与 agent 的 scope 链，挂插件 scope 会静默不进 prompt。
+  - 技能：`skill/todo-memory/SKILL.md`（完整规范：分组、字段、骨架、示例）在同一个 agent ctx 上
+    `skills.register({ provider: 'todo-tab' })`，由 `lib/convention.js` 的 `loadSkill()` 读盘并附上
+    骨架文件路径。
+  - 骨架：`template/TODO.md`，随插件分发。
+  - 缺 `systemPrompt` / `skills` 服务时只损失约定注入（走 `ctx.inject`），端点与页签照常。
+- 测试：宿主端 smoke 增加常驻文本、frontmatter 解析、技能加载、agent scope 挂载/释放/幂等断言。
+
 ## 0.1.0
 
 - 首个版本：右侧栏新增只读「Todo」页签，展示当前工作区的

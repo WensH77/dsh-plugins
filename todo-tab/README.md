@@ -1,13 +1,17 @@
 # dsh-plugin-todo-tab
 
-在 dsh web 的**右侧栏**新增一个「Todo」页签，只读展示**当前工作区**的待办文件：
+两件事，一体两面：
+
+1. **看板**：在 dsh web 的右侧栏新增「Todo」页签，只读展示**当前工作区**的待办文件。
+2. **约定**：把待办约定（原先写在 `~/.dsh/AGENTS.md` + `~/.dsh/memory/TEMPLATE.md`）改成插件携带，
+   随安装分发——每个 agent 的 prompt 上常驻一段「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载。
 
 ```
 <DSH_HOME>/memory/<工作区>/TODO.md
 ```
 
 `<工作区>` 取当前会话 cwd 的最后一段（如 cwd 是 `/Users/me/Documents/dsh-plugins`，就读
-`~/.dsh/memory/dsh-plugins/TODO.md`），与 `~/.dsh/AGENTS.md` 的待办约定一致。
+`~/.dsh/memory/dsh-plugins/TODO.md`）。
 
 ## 功能
 
@@ -16,6 +20,10 @@
   自己的 Todo 页签，把「还没有 TODO.md」和应放路径说清楚。
 - 右侧栏引导页也有一个「Todo」胶囊（页签类型的常规入口），打开的是插件自己的页签。
 - 插件自己的页签里显示工作区名、文件绝对路径、字节数与修改时间，带「刷新」与「渲染 / 原文」切换。
+- **待办约定常驻注入**：每个 agent（含子代理）的 prompt scope 上挂一段短文，写清文件位置、
+  「只记未完成」「编号永不复用」「只用插入式 edit 追加」等必须无条件生效的部分。
+- **`todo-memory` 技能**：完整规范（分组、字段、骨架、示例）放在 `skill/todo-memory/SKILL.md`，
+  注册成运行时技能，模型在动手写待办前按需加载。
 - **只读**：没有编辑入口、没有写端点，插件不修改任何文件。
 
 ## 工作原理
@@ -43,6 +51,16 @@
   （含缩进子项）、引用、分隔线、围栏代码，行内 `code` / **粗体** / *斜体* / 链接；不支持表格、
   图片与 CommonMark 的边角语法。
 - 页签内容不缓存：打开或点「刷新」时现取，改完 TODO.md 点一下刷新就能看到新内容。
+- **约定怎么进的 prompt**（`lib/convention.js` + `lib/index.js` 的 `applyConvention`）：
+  - `ctx.inject(['agents', 'systemPrompt', 'skills'], …)` 拿服务——缺这些服务时只损失约定注入，
+    端点与页签照常工作。
+  - 在 `agent/created` 时对 **agent 自己的 ctx** 注 `systemPrompt.context({ name, order: 700, text })`，
+    `agent/disposed` 时释放。作用域是硬要求：`SystemPrompt.assemble` 只合并 global 层与该 agent 的
+    scope 链，**插件自己的 scope 不在链上**，注册在插件 ctx 上会静默不进任何 prompt
+    （Theseus Crew 在 0.36.34 之前踩过同一个坑）。子代理也是 agent，因此同样拿到这段约定。
+  - 技能用同一个 agent ctx 的 `skills.register(...)` 注册（`provider: 'todo-tab'`），正文来自
+    `skill/todo-memory/SKILL.md`，注册前会用 `loadSkill()` 读一次磁盘并附上骨架文件路径。
+  - 常驻只放「触发器 + 铁律」（十几行）；分组、字段、骨架、示例这些长文留给技能，避免每轮都付 token。
 
 ## 安装
 
@@ -81,7 +99,7 @@ dsh plugin --profile web remove dsh-plugin-todo-tab
 
 ```bash
 npm test                                        # = 两个 smoke
-node test/smoke.mjs                             # 宿主端：定位域 + 端点行为 + 只读/不可注入
+node test/smoke.mjs                             # 宿主端：定位域 + 端点 + 只读/不可注入 + 约定注入与技能注册
 node test/client-smoke.mjs                      # 浏览器端：注册面 + 只读约定 + 渲染不抛错
 ```
 
@@ -91,7 +109,7 @@ node test/client-smoke.mjs                      # 浏览器端：注册面 + 只
 ## 已知限制
 
 - **按 cwd 末段命名工作区**：两个不同目录同名（如 `a/src`、`b/src`）会共用同一份 TODO.md。
-  这是 `~/.dsh/AGENTS.md` 的既有约定，本插件如实照做，不做去重。
+  这是既有约定，本插件如实照做，不做去重。
 - **入口只在引导页**：页签类型不会常驻在标签条上，必须从引导页胶囊打开；打开后与其它页签
   一样可停靠、浮动、分屏（由右侧栏本身提供）。
 - **无变更监听**：不看文件 mtime，也不会自动刷新，需要手动点「刷新」。
@@ -99,4 +117,9 @@ node test/client-smoke.mjs                      # 浏览器端：注册面 + 只
   插件同一套做法），进程里没有这个活会话时回 404。GUI 里选中的会话是活的，正常使用无感；
   但若在服务重启后用一个尚未恢复的会话打开页签，会先看到 `no session with id …`，选中该会话
   后点「刷新」即可。
-- 没有写能力是刻意的：TODO.md 的增删改仍由代理按 `~/.dsh/memory/TEMPLATE.md` 的约定维护。
+- **约定只在本插件加载的 profile 生效**：约定改为插件携带后，`~/.dsh/AGENTS.md` 不再是载体；
+  没装本插件（或没把它加进 `dsh.profile.bundles`）的 profile / 机器上，这条约定不存在。
+  跨 profile 复用请把插件加进对应 profile 的 bundles。
+- **技能按 agent 注册**：每个 agent 的层里各注册一份（同名同层首次生效）；已注册的 agent 卸载时
+  统一释放。若某 profile 没有 `skills` 服务，只损失技能，端点与页签照常。
+- 没有写能力是刻意的：TODO.md 的增删改仍由代理按 `todo-memory` 技能的约定维护。
