@@ -9,6 +9,7 @@
 |---|---|---|
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
+| **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签：右侧栏新增只读「Todo」页签，展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点） |
 | ~~**arena-v2**~~（已弃用） | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | arena v2：类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者（业务探索/知识沉淀/测试用例场景、双 persona、固定挑战者模型）。**已停止维护**，移入 `deprecated/` 仅作存档；后续方案为 Theseus Crew（由 arena-v2 迁移而来） |
 | ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**曾由 arena-v2 取代（arena-v2 亦已弃用）**，移入 `deprecated/` 仅作存档 |
 | **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab——两阶段安装（隔离拉取 + 分层安全审查 + 确认安装，任务可视化、可中断）、检查更新/更新（git 通道，更新附带与本地已装代码的差异审查）、卸载、开关、仓库地址管理（保存用户填写的仓库）、待重启提示、清理缓存；侧边栏 dsh 版本状态灯（启动+每小时检测 deepseek-harness 新版本，点击开新会话分析破坏性更新） |
@@ -93,6 +94,8 @@ node --test chat-rollback/test/fork-rollback.mjs     # chat-rollback 测试（8 
 node chat-rollback/test/client-emit.mjs              # chat-rollback 浏览器端：回滚预填 emit 定向性（防 composer 广播）
 node command-setting/test/smoke.mjs                  # command-setting node 端测试
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
+node todo-tab/test/smoke.mjs                        # todo-tab 宿主端测试（定位域/端点/只读）
+node todo-tab/test/client-smoke.mjs                 # todo-tab 浏览器端测试（注册面/渲染）
 node deprecated/arena-v2/test/smoke.mjs               # arena-v2（已弃用）node 端测试
 node deprecated/model-arena/test/smoke.mjs           # model-arena（已弃用）node 端测试
 node deprecated/model-arena/test/client-smoke.mjs    # model-arena（已弃用）浏览器端测试
@@ -143,6 +146,12 @@ dsh-plugins/
 ├── plugin-market/          # 插件市场（基础版）
 │   ├── lib/index.js        #   Node 端：清单/开关/安装/更新/卸载/审查/清理 路由
 │   ├── lib/client.js       #   浏览器端：插件市场 tab（任务可视化 + 审查报告弹窗）
+│   └── package.json
+├── todo-tab/               # Todo 页签（右侧栏只读查看工作区 TODO.md）
+│   ├── lib/index.js        #   Node 端：GET /todo-tab/data 只读端点
+│   ├── lib/memory.js       #   定位域：cwd → 工作区名 → TODO.md 路径 + 读盘
+│   ├── lib/client.js       #   浏览器端：右侧栏页签类型 + 引导胶囊 + 只读渲染
+│   ├── cordis.patch.yml    #   bundle 补丁层（自插入 profile 组合树）
 │   └── package.json
 ├── node_modules            # 测试依赖解析（软链，已 gitignore）
 └── .gitignore
