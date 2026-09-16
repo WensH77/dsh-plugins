@@ -58,8 +58,13 @@
     `agent/disposed` 时释放。作用域是硬要求：`SystemPrompt.assemble` 只合并 global 层与该 agent 的
     scope 链，**插件自己的 scope 不在链上**，注册在插件 ctx 上会静默不进任何 prompt
     （Theseus Crew 在 0.36.34 之前踩过同一个坑）。子代理也是 agent，因此同样拿到这段约定。
-  - 技能用同一个 agent ctx 的 `skills.register(...)` 注册（`provider: 'todo-tab'`），正文来自
-    `skill/todo-memory/SKILL.md`，注册前会用 `loadSkill()` 读一次磁盘并附上骨架文件路径。
+  - 技能**不能直接写 `agent.ctx.skills`**：skills 服务由 host 组合的另一行提供，不在 agent ctx 的
+    fiber 链上，而 agent ctx 没有声明 inject，cordis 会直接拒
+    （`cannot get property "skills" without inject`）——0.2.0 的技能就是这样静默丢的。改为经
+    `agent.ctx.inject(['skills'], …)` 注册，拿到的 scoped ctx 作用域仍是该 agent，技能照旧落在
+    agent 层；注册条目还要带 `source`（`SkillRegistration` 的必填项，缺了技能进得了目录却 `get`
+    不出来）。正文来自 `skill/todo-memory/SKILL.md`，注册前用 `loadSkill()` 读一次磁盘并附上
+    骨架文件路径。
   - 常驻只放「触发器 + 铁律」（十几行）；分组、字段、骨架、示例这些长文留给技能，避免每轮都付 token。
 
 ## 安装
@@ -120,6 +125,8 @@ node test/client-smoke.mjs                      # 浏览器端：注册面 + 只
 - **约定只在本插件加载的 profile 生效**：约定改为插件携带后，`~/.dsh/AGENTS.md` 不再是载体；
   没装本插件（或没把它加进 `dsh.profile.bundles`）的 profile / 机器上，这条约定不存在。
   跨 profile 复用请把插件加进对应 profile 的 bundles。
-- **技能按 agent 注册**：每个 agent 的层里各注册一份（同名同层首次生效）；已注册的 agent 卸载时
-  统一释放。若某 profile 没有 `skills` 服务，只损失技能，端点与页签照常。
+- **技能按 agent 注册**：每个 agent 的层里各注册一份（同名同层首次生效），经该 agent ctx 的
+  `inject(['skills'], …)` 挂载，agent 卸载或插件卸载时释放。若某 profile 没有 `skills` 服务，
+  只损失技能，端点与页签照常；挂载失败会留一条 `todo-tab: skill …` 的 warn（不看日志的话，
+  表现就是模型目录里没有 `todo-memory`）。
 - 没有写能力是刻意的：TODO.md 的增删改仍由代理按 `todo-memory` 技能的约定维护。

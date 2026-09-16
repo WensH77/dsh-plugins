@@ -1,5 +1,19 @@
 # 变更日志
 
+## 0.2.1
+
+- 修：`todo-memory` 技能自 0.2.0 起**从未注册成功**。`agent.ctx.skills` 会被 cordis 直接拒
+  （`cannot get property "skills" without inject`：skills 由 host 组合的另一行提供，不在 agent ctx
+  的 fiber 链上，而 agent ctx 没有声明 inject），异常又被降级成一条 warn，技能静默消失。
+  改为经 `agent.ctx.inject(['skills'], …)` 注册——拿到的 scoped ctx 作用域仍是该 agent，
+  注册照旧落在 agent 层。
+- 修：注册条目缺 `source`。技能能进目录，但 `skills.get()` 会在 `validateDefinition` 里抛
+  `loaded skill "todo-memory" source must be a string`；补 `source: 'custom'`。
+- 补：技能挂载链加 `.catch`——少了它，这里的异常只是一条没人看见的 unhandled rejection；
+  注册成功/失败各留一条日志（含 agent id）。
+- 测试：假 agent ctx 按真实宿主形状挡回直接访问 `skills`（回归防护），并断言 inject 依赖、
+  `source`、inject 的释放；挂载等待改为按条件轮询，不再赌一个 tick。
+
 ## 0.2.0
 
 - 待办约定改由插件携带，不再依赖 `~/.dsh/AGENTS.md` 与 `~/.dsh/memory/TEMPLATE.md`：

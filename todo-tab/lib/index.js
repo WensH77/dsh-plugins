@@ -60,10 +60,15 @@ function createHandler(ctx) {
 /**
  * 待办约定的常驻注入 + 技能注册。
  *
- * 关键点：**注册在 agent 自己的 scope 上**。`SystemPrompt.assemble` 只合并 global 层与
- * 该 agent 的 scope 链，插件自己的 scope 不在链上——把这些贡献注册在插件 ctx 上会静默不进
- * 任何 prompt（Theseus Crew 在 0.36.34 之前踩过同一个坑）。所以这里按 `agent/created`
- * 逐个 agent 挂，`agent/disposed` 时释放。
+ * 两个坑，都踩过：
+ *   1) **约定挂在 agent 自己的 scope 上**。`SystemPrompt.assemble` 只合并 global 层与该 agent 的
+ *      scope 链，插件自己的 scope 不在链上——挂插件 ctx 会静默不进任何 prompt（Theseus Crew 在
+ *      0.36.34 之前踩过同一个坑）。所以按 `agent/created` 逐个挂，`agent/disposed` 时释放。
+ *   2) **技能要经 `agent.ctx.inject(['skills'], …)` 注册，不能直接写 `agent.ctx.skills`**。skills
+ *      服务由 host 组合的另一行提供，不在 agent ctx 的 fiber 链上，而 agent ctx 没有声明 inject，
+ *      cordis 会直接拒：`cannot get property "skills" without inject`。0.2.0 的技能就是这样丢的
+ *      （异常被下面的 catch 降级成 warn，warn 又落在被缓冲的日志里，内外都看不见）。`inject` 给出的
+ *      scoped ctx 作用域仍是该 agent，所以技能照旧落在 agent 层。
  *
  * `ctx.inject` 而非顶层 inject：缺这些服务时只损失约定注入，端点与页签照常工作。
  *
@@ -112,19 +117,41 @@ function applyConvention(ctx) {
       void skillReady.then((skill) => {
         // 技能读失败，或 agent 已经走了，就什么都不做。
         if (skill === null || !docked.has(id)) return;
-        try {
-          const dispose = agent.ctx?.skills?.register({
-            name: skill.name,
-            description: skill.description,
-            whenToUse: skill.whenToUse,
-            content: skill.content,
-            provider: name
-          });
-          if (typeof dispose === 'function') out.push(dispose);
-          else promptCtx.logger.warn('todo-tab: 技能未注册（agent scope 上没有 skills.register）agent=' + id);
-        } catch (error) {
-          promptCtx.logger.warn('todo-tab: skill register failed: ' + String(error?.message ?? error));
+        // 必须经 inject 拿 skills（见文件头第 2 点）：直接 `agent.ctx.skills` 会被 cordis 拒，
+        // 异常只会变成一条没人看的 warn，技能静默消失。
+        const offInject = agent.ctx?.inject?.(['skills'], (scoped) => {
+          try {
+            const dispose = scoped.skills?.register?.({
+              name: skill.name,
+              description: skill.description,
+              whenToUse: skill.whenToUse,
+              content: skill.content,
+              // source 是 SkillRegistration 的必填项：少了它技能能进目录，但 `skills.get()`
+              // 会在 validateDefinition 里抛「loaded skill "…" source must be a string」。
+              source: 'custom',
+              provider: name
+            });
+            if (typeof dispose !== 'function') {
+              promptCtx.logger.warn('todo-tab: 技能未注册（scoped ctx 上没有 skills.register）agent=' + id);
+              return;
+            }
+            // inject 回调可能晚于 agent/disposed；那时 out 已经 release 过，就地释放。
+            if (docked.has(id)) out.push(dispose);
+            else dispose();
+            promptCtx.logger.info('todo-tab: 技能已注册 ' + skill.name + ' agent=' + id);
+          } catch (error) {
+            promptCtx.logger.warn('todo-tab: skill register failed: ' + String(error?.message ?? error));
+          }
+        });
+        if (typeof offInject !== 'function') {
+          promptCtx.logger.warn('todo-tab: 技能未注册（agent ctx 上没有 inject）agent=' + id);
+          return;
         }
+        if (docked.has(id)) out.push(offInject);
+        else offInject();
+      }).catch((error) => {
+        // 少了这条 catch，技能挂载里抛出的任何东西都只会是一条没人看见的 unhandled rejection。
+        promptCtx.logger.warn('todo-tab: skill dock failed: ' + String(error?.message ?? error));
       });
     };
 

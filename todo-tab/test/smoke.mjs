@@ -137,14 +137,24 @@ assert(skill.content.includes(templateFilePath()), '技能正文附上骨架文�
 assert(skill.path.endsWith('skill/todo-memory/SKILL.md'), '技能来自插件目录');
 
 // agent scope 挂载：context + 技能各注册一次，disposed 时释放，重复 created 幂等。
-const captured = { deps: null, contexts: [], skills: [], released: [] };
+const captured = { deps: null, contexts: [], skills: [], injects: [], released: [] };
 const listeners = {};
 const existing = { id: 'agent-existing', ctx: fakeAgentCtx('agent-existing') };
 function fakeAgentCtx(id) {
-  return {
+  const ctx = {
     systemPrompt: { context: (def) => { captured.contexts.push({ id, def }); return () => captured.released.push('context:' + id); } },
-    skills: { register: (entry) => { captured.skills.push({ id, entry }); return () => captured.released.push('skill:' + id); } }
+    inject: (deps, callback) => {
+      captured.injects.push({ id, deps });
+      callback({ skills: { register: (entry) => { captured.skills.push({ id, entry }); return () => captured.released.push('skill:' + id); } } });
+      return () => captured.released.push('inject:' + id);
+    }
   };
+  // 真实宿主的 agent ctx 上**没有** skills 服务，cordis 直接拒「cannot get property "skills"
+  // without inject」——0.2.0 的技能就是死在这句上，所以这里按同样的形状挡回去。
+  Object.defineProperty(ctx, 'skills', {
+    get() { throw new Error('cannot get property "skills" without inject'); }
+  });
+  return ctx;
 }
 const promptCtx = {
   logger: { info() {}, warn() {} },
@@ -154,8 +164,17 @@ const promptCtx = {
     return () => { delete listeners[event]; };
   }
 };
+// 挂载链是异步的（loadSkill 读盘 → then → inject 回调），按条件轮询，别赌一个 tick。
+async function waitFor(predicate, label) {
+  for (let i = 0; i < 100; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  console.error('等待超时：' + label);
+}
+
 const disposeAll = applyConvention({ inject: (deps, callback) => { captured.deps = deps; return callback(promptCtx); } });
-await new Promise((resolve) => setTimeout(resolve, 0));
+await waitFor(() => captured.contexts.length === 1 && captured.skills.length === 1, 'agent-existing 的 context / 技能挂载');
 
 assertEq(captured.deps, ['agents', 'systemPrompt', 'skills'], '注入 agents / systemPrompt / skills');
 assertEq(captured.contexts.length, 1, '已有活 agent 补挂一次');
@@ -165,18 +184,31 @@ assertEq(captured.contexts[0].def.text, text, '常驻 context 正文 = conventio
 assertEq(captured.skills.length, 1, '已有活 agent 也注册技能');
 assertEq(captured.skills[0].entry.name, 'todo-memory', '注册的技能名');
 assertEq(captured.skills[0].entry.provider, 'todo-tab', '技能 provider 标注来源');
+assert(
+  typeof captured.skills[0].entry.source === 'string' && captured.skills[0].entry.source !== '',
+  '技能带 source（缺了它 skills.get() 会拒收整份定义）'
+);
+assertEq(captured.injects.length, 1, '技能经 agent ctx 的 inject 拿 skills（不走会被拒的直接访问）');
+assertEq(captured.injects[0].deps, ['skills'], 'inject 只声明 skills');
 
 const fresh = { id: 'agent-new', ctx: fakeAgentCtx('agent-new') };
 listeners['agent/created']({ agent: fresh });
 listeners['agent/created']({ agent: fresh });
-await new Promise((resolve) => setTimeout(resolve, 0));
+await waitFor(() => captured.injects.filter((entry) => entry.id === 'agent-new').length === 1, 'agent-new 的技能挂载');
 assertEq(captured.contexts.filter((entry) => entry.id === 'agent-new').length, 1, '同一 agent 重复 created 只挂一次');
+assertEq(captured.injects.filter((entry) => entry.id === 'agent-new').length, 1, '同一 agent 的 inject 也只挂一次');
 
 listeners['agent/disposed']({ agent: fresh });
-assert(captured.released.includes('context:agent-new') && captured.released.includes('skill:agent-new'), 'agent 释放时注销 context 与技能');
+assert(
+  ['context:agent-new', 'skill:agent-new', 'inject:agent-new'].every((key) => captured.released.includes(key)),
+  'agent 释放时注销 context / 技能 / inject'
+);
 
 disposeAll();
-assert(captured.released.includes('context:agent-existing') && captured.released.includes('skill:agent-existing'), '插件卸载时释放全部挂载');
+assert(
+  ['context:agent-existing', 'skill:agent-existing', 'inject:agent-existing'].every((key) => captured.released.includes(key)),
+  '插件卸载时释放全部挂载'
+);
 
 console.log(failures === 0 ? '\nsmoke: all passed' : '\nsmoke: ' + failures + ' failure(s)');
 process.exit(failures === 0 ? 0 : 1);
