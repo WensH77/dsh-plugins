@@ -1,0 +1,48 @@
+{
+  "name": "dsh-plugin-temperature-inject",
+  "version": "0.2.0",
+  "description": "dsh web 温度注入：在会话页面打开「温度调节」后，经 agent/request waterfall 把主代理委派的子代理的 LlmCallConfig 改写为「指定模型 + reasoningEffort:off（关闭 thinking）+ 指定温度(0~1, step 0.2)」。不改派发、不影响主代理；提供 /temperature-inject/session 读写会话级开关与温度。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "test",
+    "README.md"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": false
+    }
+  },
+  "repository": "WensH77/dsh-plugins#path:temperature-inject",
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client-smoke.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-ui-renderer": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-renderer": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}

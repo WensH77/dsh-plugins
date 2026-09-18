@@ -12,6 +12,7 @@
 | **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发 |
 | ~~**arena-v2**~~（已弃用） | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | arena v2：类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者（业务探索/知识沉淀/测试用例场景、双 persona、固定挑战者模型）。**已停止维护**，移入 `deprecated/` 仅作存档；后续方案为 Theseus Crew（由 arena-v2 迁移而来） |
 | ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**曾由 arena-v2 取代（arena-v2 亦已弃用）**，移入 `deprecated/` 仅作存档 |
+| ~~**temperature-inject**~~（已弃用） | [`deprecated/temperature-inject/`](deprecated/temperature-inject/README.md) | 温度注入：会话页开关 + 0~1/step 0.2 滑杆，经 `agent/request` waterfall 把主代理委派子代理的 `LlmCallConfig` 改写为「指定模型 + 关 thinking + 指定温度」。宿主端与客户端均已实现、测试通过（宿主 36 项 + 浏览器端）。**已弃用**：温度对"快速出 HTML 方案"这类多步 agentic 任务不是有效杠杆——同 prompt 下 T0/T1 的组内相似度 0.470 vs 0.359，视觉方向仍然雷同，真正拉开差异的是 prompt 里的设计约束；而温度生效必须先关 thinking（降低方案质量），且 1.5 起输出退化成 token soup。移入 `deprecated/` 仅作存档 |
 | **plugin-market** | [`plugin-market/`](plugin-market/README.md) | 插件市场（基础版，仿 [dsh-plugin-hub](https://github.com/Noob-stupid/dsh-plugin-hub)）：设置 → 插件页新增「插件市场」tab——两阶段安装（隔离拉取 + 分层安全审查 + 确认安装，任务可视化、可中断）、检查更新/更新（git 通道，更新附带与本地已装代码的差异审查）、卸载、开关、仓库地址管理（保存用户填写的仓库）、待重启提示、清理缓存；侧边栏 dsh 版本状态灯（启动+每小时检测 deepseek-harness 新版本，点击开新会话分析破坏性更新） |
 | ~~**session-export**~~（已弃用） | [`deprecated/session-export/`](deprecated/session-export/README.md) | 会话导出长图：会话标题栏「导出长图」按钮，把当前会话从第一条到最新一条导出为长图 PNG——只展示用户输入与模型输出，自动剔除思考（Think/reasoning）与工具调用等过程内容（GFM 子集 Markdown 排版、主题取色、长会话自动拆多张）。**已停止维护**，移入 `deprecated/` 仅作存档 |
 | ~~**tool-both**~~（已弃用） | [`deprecated/tool-both/`](deprecated/tool-both/README.md) | 工具呈现模式（both）：激活时自动安装「BOTH模式」预设——原生工具直调与 run_code 并存、无 code-only 限制。**已停止维护**，移入 `deprecated/` 仅作存档：`both` 在同一请求里重复渲染工具入参类型声明（`interface ToolArgsMap` 35,940 字符，占 SDK 段的 76%），而实测 77% 的 both 会话一次 `run_code` 都没调过、全部 Jira MCP 调用也都走原生直调——默认 `standard`、需要时按会话切呈现模式更划算 |
@@ -96,6 +97,8 @@ node command-setting/test/smoke.mjs                  # command-setting node 端�
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
 node todo-tab/test/smoke.mjs                        # todo-tab 宿主端测试（定位域/端点/只读）
 node todo-tab/test/client-smoke.mjs                 # todo-tab 浏览器端测试（注册面/渲染）
+node deprecated/temperature-inject/test/smoke.mjs     # temperature-inject（已弃用）宿主端测试（配置/判定/waterfall/端点）
+node deprecated/temperature-inject/test/client-smoke.mjs # temperature-inject（已弃用）浏览器端测试（注册面/规格/端点契约）
 node deprecated/arena-v2/test/smoke.mjs               # arena-v2（已弃用）node 端测试
 node deprecated/model-arena/test/smoke.mjs           # model-arena（已弃用）node 端测试
 node deprecated/model-arena/test/client-smoke.mjs    # model-arena（已弃用）浏览器端测试

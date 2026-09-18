@@ -1,0 +1,1094 @@
+{
+  "config": {
+    "MODEL": "deepseek-flash",
+    "TEMPS": [
+      0.5,
+      1.5
+    ],
+    "N": 50,
+    "MAX_TOKENS": 64,
+    "CONCURRENCY": 6,
+    "PROMPT": "请完成下面的句子。\n\n“今天下班以后，我决定去____。”\n\n只填写空白部分。\n不要解释。",
+    "thinking": "disabled",
+    "effort": null,
+    "BASE_URL": "https://api.deepseek.com"
+  },
+  "summary": [
+    {
+      "temperature": 0.5,
+      "n": 50,
+      "unique": 1,
+      "uniqueRate": 0.02,
+      "mode": "健身房",
+      "modeShare": 1,
+      "entropy": 0,
+      "maxEntropy": 5.643856189774724,
+      "ttr": 0.02,
+      "pairMean": 1,
+      "dupRate": 1,
+      "pairs": 1225,
+      "counts": [
+        [
+          "健身房",
+          50
+        ]
+      ],
+      "errs": 0,
+      "empty": 0,
+      "truncated": 0,
+      "leaked": 0,
+      "latency": 677.22
+    },
+    {
+      "temperature": 1.5,
+      "n": 50,
+      "unique": 7,
+      "uniqueRate": 0.14,
+      "mode": "健身房",
+      "modeShare": 0.78,
+      "entropy": 1.2661447090189015,
+      "maxEntropy": 5.643856189774724,
+      "ttr": 0.12195121951219512,
+      "pairMean": 0.6300369290573371,
+      "dupRate": 0.6122448979591837,
+      "pairs": 1225,
+      "counts": [
+        [
+          "健身房",
+          39
+        ],
+        [
+          "吃火锅",
+          4
+        ],
+        [
+          "超市买点菜",
+          3
+        ],
+        [
+          "超市买菜回家做饭",
+          1
+        ],
+        [
+          "健身房锻炼",
+          1
+        ],
+        [
+          "看电影",
+          1
+        ],
+        [
+          "超市买菜",
+          1
+        ]
+      ],
+      "errs": 0,
+      "empty": 0,
+      "truncated": 0,
+      "leaked": 0,
+      "latency": 686.34
+    }
+  ],
+  "raw": [
+    {
+      "temp": 0.5,
+      "round": 0,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 1265
+    },
+    {
+      "temp": 1.5,
+      "round": 0,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 1053
+    },
+    {
+      "temp": 1.5,
+      "round": 1,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 842
+    },
+    {
+      "temp": 0.5,
+      "round": 1,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 709
+    },
+    {
+      "temp": 0.5,
+      "round": 2,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 1402
+    },
+    {
+      "temp": 1.5,
+      "round": 2,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 734
+    },
+    {
+      "temp": 1.5,
+      "round": 3,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 1615
+    },
+    {
+      "temp": 0.5,
+      "round": 3,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 695
+    },
+    {
+      "temp": 0.5,
+      "round": 4,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 1083
+    },
+    {
+      "temp": 1.5,
+      "round": 4,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 978
+    },
+    {
+      "temp": 1.5,
+      "round": 5,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 646
+    },
+    {
+      "temp": 0.5,
+      "round": 5,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 737
+    },
+    {
+      "temp": 0.5,
+      "round": 6,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 481
+    },
+    {
+      "temp": 1.5,
+      "round": 6,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 807
+    },
+    {
+      "temp": 1.5,
+      "round": 7,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 541
+    },
+    {
+      "temp": 0.5,
+      "round": 7,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 507
+    },
+    {
+      "temp": 0.5,
+      "round": 8,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 689
+    },
+    {
+      "temp": 1.5,
+      "round": 8,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 579
+    },
+    {
+      "temp": 1.5,
+      "round": 9,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 765
+    },
+    {
+      "temp": 0.5,
+      "round": 9,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 788
+    },
+    {
+      "temp": 0.5,
+      "round": 10,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 537
+    },
+    {
+      "temp": 1.5,
+      "round": 10,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 816
+    },
+    {
+      "temp": 1.5,
+      "round": 11,
+      "ok": true,
+      "text": "超市买菜回家做饭。",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 5,
+      "latency": 503
+    },
+    {
+      "temp": 0.5,
+      "round": 11,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 792
+    },
+    {
+      "temp": 0.5,
+      "round": 12,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 639
+    },
+    {
+      "temp": 1.5,
+      "round": 12,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 734
+    },
+    {
+      "temp": 1.5,
+      "round": 13,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 701
+    },
+    {
+      "temp": 0.5,
+      "round": 13,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 1118
+    },
+    {
+      "temp": 0.5,
+      "round": 14,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 543
+    },
+    {
+      "temp": 1.5,
+      "round": 14,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 851
+    },
+    {
+      "temp": 1.5,
+      "round": 15,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 543
+    },
+    {
+      "temp": 0.5,
+      "round": 15,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 530
+    },
+    {
+      "temp": 0.5,
+      "round": 16,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 679
+    },
+    {
+      "temp": 1.5,
+      "round": 16,
+      "ok": true,
+      "text": "吃火锅",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 2,
+      "latency": 497
+    },
+    {
+      "temp": 1.5,
+      "round": 17,
+      "ok": true,
+      "text": "健身房锻炼",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 2,
+      "latency": 705
+    },
+    {
+      "temp": 0.5,
+      "round": 17,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 517
+    },
+    {
+      "temp": 0.5,
+      "round": 18,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 441
+    },
+    {
+      "temp": 1.5,
+      "round": 18,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 837
+    },
+    {
+      "temp": 1.5,
+      "round": 19,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 795
+    },
+    {
+      "temp": 0.5,
+      "round": 19,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 433
+    },
+    {
+      "temp": 0.5,
+      "round": 20,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 416
+    },
+    {
+      "temp": 1.5,
+      "round": 20,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 594
+    },
+    {
+      "temp": 1.5,
+      "round": 21,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 415
+    },
+    {
+      "temp": 0.5,
+      "round": 21,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 535
+    },
+    {
+      "temp": 0.5,
+      "round": 22,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 469
+    },
+    {
+      "temp": 1.5,
+      "round": 22,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 611
+    },
+    {
+      "temp": 1.5,
+      "round": 23,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 802
+    },
+    {
+      "temp": 0.5,
+      "round": 23,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 542
+    },
+    {
+      "temp": 0.5,
+      "round": 24,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 853
+    },
+    {
+      "temp": 1.5,
+      "round": 24,
+      "ok": true,
+      "text": "看电影",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 455
+    },
+    {
+      "temp": 1.5,
+      "round": 25,
+      "ok": true,
+      "text": "吃火锅",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 2,
+      "latency": 745
+    },
+    {
+      "temp": 0.5,
+      "round": 25,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 754
+    },
+    {
+      "temp": 0.5,
+      "round": 26,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 770
+    },
+    {
+      "temp": 1.5,
+      "round": 26,
+      "ok": true,
+      "text": "超市买点菜。",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 5,
+      "latency": 798
+    },
+    {
+      "temp": 1.5,
+      "round": 27,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 669
+    },
+    {
+      "temp": 0.5,
+      "round": 27,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 852
+    },
+    {
+      "temp": 0.5,
+      "round": 28,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 505
+    },
+    {
+      "temp": 1.5,
+      "round": 28,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 558
+    },
+    {
+      "temp": 1.5,
+      "round": 29,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 496
+    },
+    {
+      "temp": 0.5,
+      "round": 29,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 862
+    },
+    {
+      "temp": 0.5,
+      "round": 30,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 953
+    },
+    {
+      "temp": 1.5,
+      "round": 30,
+      "ok": true,
+      "text": "超市买点菜",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 4,
+      "latency": 615
+    },
+    {
+      "temp": 1.5,
+      "round": 31,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 491
+    },
+    {
+      "temp": 0.5,
+      "round": 31,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 748
+    },
+    {
+      "temp": 0.5,
+      "round": 32,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 801
+    },
+    {
+      "temp": 1.5,
+      "round": 32,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 445
+    },
+    {
+      "temp": 1.5,
+      "round": 33,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 544
+    },
+    {
+      "temp": 0.5,
+      "round": 33,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 383
+    },
+    {
+      "temp": 0.5,
+      "round": 34,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 633
+    },
+    {
+      "temp": 1.5,
+      "round": 34,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 535
+    },
+    {
+      "temp": 1.5,
+      "round": 35,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 706
+    },
+    {
+      "temp": 0.5,
+      "round": 35,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 429
+    },
+    {
+      "temp": 0.5,
+      "round": 36,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 776
+    },
+    {
+      "temp": 1.5,
+      "round": 36,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 965
+    },
+    {
+      "temp": 1.5,
+      "round": 37,
+      "ok": true,
+      "text": "超市买点菜。",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 5,
+      "latency": 808
+    },
+    {
+      "temp": 0.5,
+      "round": 37,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 947
+    },
+    {
+      "temp": 0.5,
+      "round": 38,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 456
+    },
+    {
+      "temp": 1.5,
+      "round": 38,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 519
+    },
+    {
+      "temp": 1.5,
+      "round": 39,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 896
+    },
+    {
+      "temp": 0.5,
+      "round": 39,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 540
+    },
+    {
+      "temp": 0.5,
+      "round": 40,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 716
+    },
+    {
+      "temp": 1.5,
+      "round": 40,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 519
+    },
+    {
+      "temp": 1.5,
+      "round": 41,
+      "ok": true,
+      "text": "超市买菜",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 2,
+      "latency": 406
+    },
+    {
+      "temp": 0.5,
+      "round": 41,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 695
+    },
+    {
+      "temp": 0.5,
+      "round": 42,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 679
+    },
+    {
+      "temp": 1.5,
+      "round": 42,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 589
+    },
+    {
+      "temp": 1.5,
+      "round": 43,
+      "ok": true,
+      "text": "吃火锅",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 2,
+      "latency": 588
+    },
+    {
+      "temp": 0.5,
+      "round": 43,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 533
+    },
+    {
+      "temp": 0.5,
+      "round": 44,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 421
+    },
+    {
+      "temp": 1.5,
+      "round": 44,
+      "ok": true,
+      "text": "健身房。",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 2,
+      "latency": 968
+    },
+    {
+      "temp": 1.5,
+      "round": 45,
+      "ok": true,
+      "text": "吃火锅。",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 3,
+      "latency": 630
+    },
+    {
+      "temp": 0.5,
+      "round": 45,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 680
+    },
+    {
+      "temp": 0.5,
+      "round": 46,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 502
+    },
+    {
+      "temp": 1.5,
+      "round": 46,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 622
+    },
+    {
+      "temp": 1.5,
+      "round": 47,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 570
+    },
+    {
+      "temp": 0.5,
+      "round": 47,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 633
+    },
+    {
+      "temp": 0.5,
+      "round": 48,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 644
+    },
+    {
+      "temp": 1.5,
+      "round": 48,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 457
+    },
+    {
+      "temp": 1.5,
+      "round": 49,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 759
+    },
+    {
+      "temp": 0.5,
+      "round": 49,
+      "ok": true,
+      "text": "健身房",
+      "think": "",
+      "finish": "stop",
+      "completionTokens": 1,
+      "latency": 549
+    }
+  ]
+}

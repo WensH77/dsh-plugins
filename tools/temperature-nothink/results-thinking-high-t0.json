@@ -1,0 +1,568 @@
+{
+  "config": {
+    "MODEL": "deepseek-flash",
+    "TEMPS": [
+      0
+    ],
+    "N": 50,
+    "MAX_TOKENS": 2048,
+    "CONCURRENCY": 6,
+    "PROMPT": "请完成下面的句子。\n\n“今天下班以后，我决定去____。”\n\n只填写空白部分。\n不要解释。",
+    "thinking": "enabled",
+    "effort": "high",
+    "BASE_URL": "https://api.deepseek.com"
+  },
+  "summary": [
+    {
+      "temperature": 0,
+      "n": 50,
+      "unique": 7,
+      "uniqueRate": 0.14,
+      "mode": "健身房",
+      "modeShare": 0.42,
+      "entropy": 2.276303562459293,
+      "maxEntropy": 5.643856189774724,
+      "ttr": 0.09876543209876543,
+      "pairMean": 0.277469387755102,
+      "dupRate": 0.24816326530612245,
+      "pairs": 1225,
+      "counts": [
+        [
+          "健身房",
+          21
+        ],
+        [
+          "看电影",
+          12
+        ],
+        [
+          "超市",
+          6
+        ],
+        [
+          "超市买东西",
+          5
+        ],
+        [
+          "超市买点东西",
+          2
+        ],
+        [
+          "散步",
+          2
+        ],
+        [
+          "健身房锻炼",
+          2
+        ]
+      ],
+      "errs": 0,
+      "empty": 0,
+      "truncated": 0,
+      "leaked": 0,
+      "latency": 1487.12
+    }
+  ],
+  "raw": [
+    {
+      "temp": 0,
+      "round": 0,
+      "ok": true,
+      "text": "看电影",
+      "think": "我们需要回答用户中文问题。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要只填空白部分。需要选择合适内容。可以填“看电影”等。必须只输出空白部分。确保没有标点？ 可以：“超市买东西” 或 “健身房锻炼”。简单填“散步”。只填写空白部分。不要解释。所以最终只输出 “看电影” 或 “超市”。需要完整句子？ 用户要求只填写空白部分。因此输出空白部分内容。可以任意合理。比如“看电影”。最终只输出看电影。 No explanation. ",
+      "finish": "stop",
+      "completionTokens": 131,
+      "latency": 1310
+    },
+    {
+      "temp": 0,
+      "round": 1,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要填空白。可以任意合理。必须只填写空白部分。应该直接回答比如“健身房”。需要不解释。选择简单。确保只填空白部分。最终只输出填空内容，无标点？可以“超市买东西”？句子是“去____。” 所以空白部分通常是动词短语/地点。只需填写。比如“健身房”。不用加句号？ 用户说只填写空白部分。那么输出“健身房”即可。但“去健身房”完整。空白是“健身房”。若填“看电影”，句子是“去 看电影。” 也可以。需要只填空白部分。最好“健身房”简单。 ",
+      "finish": "stop",
+      "completionTokens": 161,
+      "latency": 1658
+    },
+    {
+      "temp": 0,
+      "round": 2,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答用户中文。请求：完成句子 “今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要只填空白部分。需要给一个合适完成。可以任意？要只填写空白部分，不要句号？ 应该只输出填补内容。比如“健身房”。但句子是“今天下班以后，我决定去____。” 空白部分可以“超市买东西” etc. Need only fill blank. We can choose \"超市买点东西\" but then full sentence \"我决定去超市买点东西\" okay. Need no explanation. Could just \"健身房\". Hmm. The instruction: 请完成下面的句子。 “今天下班以后，我决定去____。” 只填写空白部分。不要解释。 So final should be just the blank content, no punctuation maybe. I'll output \"健身房\". Is that enough? Full sentence: 今天下班以后，我决定去健身房。 Yes. Only blank part. Final only. ",
+      "finish": "stop",
+      "completionTokens": 204,
+      "latency": 1832
+    },
+    {
+      "temp": 0,
+      "round": 3,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答中文。用户要求完成句子，只填写空白部分，不要解释。需要给一个合适的短语。 \"今天下班以后，我决定去____。\" 可以填“健身房”。只填空白部分。需要不解释。可以直接 \"健身房\"。 Perhaps \"超市买东西\" 也可以。 Since only blank, answer maybe \"健身房\" concise. Need final only blank.",
+      "finish": "stop",
+      "completionTokens": 78,
+      "latency": 1491
+    },
+    {
+      "temp": 0,
+      "round": 4,
+      "ok": true,
+      "text": "超市",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide something. Need maybe any reasonable. We must only fill blank part. Could be \"超市买东西\" etc. Need no explanation. Since they ask only fill blank. We should output just the blank content. Maybe \"看电影\" or \"健身房\". Need complete sentence grammatically: 去 + place/activity. \"今天下班以后，我决定去超市。\" That's fine. But they said \"只填写空白部分。\" So output \"超市\" or \"看电影\". Which is best? Need no period maybe. Let's answer \"超市\" only. But sentence \"去超市\" complete. Maybe \"看电影\" also. They didn't specify context. I'll choose \"超市\". Ensure only blank. Final no explanation. ",
+      "finish": "stop",
+      "completionTokens": 178,
+      "latency": 1563
+    },
+    {
+      "temp": 0,
+      "round": 5,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer Chinese. Need complete sentence. \"今天下班以后，我决定去____。\" Only fill blank. No explanation. Need provide something plausible. Just fill blank. We can say 超市买东西? Need only blank part. The instruction: 请完成下面的句子。 “今天下班以后，我决定去____。” 只填写空白部分。 不要解释。 So answer should be the phrase that goes in blank. Any acceptable. Need maybe \"健身房锻炼\" or \"看电影\". Minimal. Ensure no punctuation? \"看电影\" maybe. Since only fill blank. Final just \"看电影\". ",
+      "finish": "stop",
+      "completionTokens": 124,
+      "latency": 1496
+    },
+    {
+      "temp": 0,
+      "round": 6,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese fill blank. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank, no explanation. Need provide just blank part. Any appropriate phrase. Need not explain. We can choose \"健身房锻炼\" or \"超市买东西\". Need only fill. Ensure sentence grammatical: 今天下班以后，我决定去____。 \"健身房\" alone okay? \"去健身房\" if blank after 去, so blank should be noun phrase/place/action? \"今天下班以后，我决定去健身房。\" If fill \"健身房\" yes. They said only fill blank part. So answer: 健身房。 No extra punctuation? Just \"健身房\" perhaps. But \"去健身房\" okay. Could also \"看一场电影\" but after 去, \"去电影院\" more natural. Let's output only blank part. \"健身房\" is safe. ",
+      "finish": "stop",
+      "completionTokens": 182,
+      "latency": 1775
+    },
+    {
+      "temp": 0,
+      "round": 7,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. Don't explain. Need choose something. Could be any plausible. Need only fill blank. Maybe \"看电影\" etc. Need ensure sentence grammatical. \"今天下班以后，我决定去____。\" Fill blank only. We can answer \"超市买点东西\" maybe. But only blank. Need not include punctuation? They ask \"只填写空白部分。不要解释。\" So final just the blank content. We can choose \"看电影\" or \"健身房\". Need complete sentence: 今天下班以后，我决定去____。 If fill \"看电影\": 今天下班以后，我决定去看电影。 Good. Only \"看电影\". Final no explanation. ",
+      "finish": "stop",
+      "completionTokens": 157,
+      "latency": 1514
+    },
+    {
+      "temp": 0,
+      "round": 8,
+      "ok": true,
+      "text": "超市",
+      "think": "We need answer in Chinese. User asks complete sentence: \"今天下班以后，我决定去____。\" Only fill blank. Don't explain. Need provide just blank content. We can choose any natural. Need only fill. Maybe \"健身房\" or \"超市\". They ask complete following sentence. \"只填写空白部分。不要解释。\" So final just phrase. Need maybe no punctuation? We should answer just \"超市。\"? They said only fill blank. Could be \"看电影\" but grammar \"去____\" can be place or verb? \"去超市\" okay. \"去健身房\" okay. Let's provide concise. Since no explanation. Final only blank part. Maybe \"超市\" no punctuation. Ensure no extra.",
+      "finish": "stop",
+      "completionTokens": 148,
+      "latency": 1357
+    },
+    {
+      "temp": 0,
+      "round": 9,
+      "ok": true,
+      "text": "看电影",
+      "think": "我们需要回答用户中文请求。需要完成句子 “今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要给出一个合适的填空。任意合理即可。需要只填空白部分。例如“看电影”。要确保只输出填空内容，不要引号？用户说只填写空白部分。不要解释。所以最终应只写比如：超市买东西。但句子是“去____”，所以填动词短语，如“健身房锻炼”。常见。需只输出空白部分。我们选“看电影”。最终只输出“看电影”。 But maybe if fill \"看电影\" then full sentence \"我决定去看电影\" okay. Must no punctuation? okay. ",
+      "finish": "stop",
+      "completionTokens": 142,
+      "latency": 1432
+    },
+    {
+      "temp": 0,
+      "round": 10,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要提供一个自然的填空。需要只填空白部分，不要解释。可以随便填，比如“健身房锻炼”。需要注意句子完整：今天下班以后，我决定去健身房。或“超市买点东西”。只填空白部分。必须不要标点？可以填“健身房”。用户要求只填写空白部分。可以。需要遵守。最终只输出填空内容。比如“健身房”。最好一个短语。无解释。 ",
+      "finish": "stop",
+      "completionTokens": 117,
+      "latency": 1009
+    },
+    {
+      "temp": 0,
+      "round": 11,
+      "ok": true,
+      "text": "超市买点东西",
+      "think": "We need answer in Chinese, fill blank. Need complete sentence. \"今天下班以后，我决定去____。\" Only blank. No explanation. Need choose something natural. Could be anything. Need just fill. Maybe \"超市买点东西\" etc. We must comply no explanation. Need likely expected simple. Let's output only blank content. Ensure complete sentence: 今天下班以后，我决定去____。 We fill \"健身房锻炼\" maybe. But no context. Need just fill blank. Any acceptable. Need maybe \"看电影\" or \"散步\". We need answer only blank part. Let's provide \"超市买点东西\". ",
+      "finish": "stop",
+      "completionTokens": 134,
+      "latency": 1269
+    },
+    {
+      "temp": 0,
+      "round": 12,
+      "ok": true,
+      "text": "散步。",
+      "think": "我们需要回答中文。用户要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要提供填充内容。可以任意合理。应只输出填空部分。例如“健身房”。需要注意只填写空白部分，不要标点？可以。需要符合语境。最简单：“超市买东西” 但只填空白。要不要保持句子通顺：“今天下班以后，我决定去____。” 填“健身房锻炼” 可以。只输出空白部分。不要解释。 final only. We need answer. ",
+      "finish": "stop",
+      "completionTokens": 116,
+      "latency": 1131
+    },
+    {
+      "temp": 0,
+      "round": 13,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. Need complete sentence. Only fill blank. No explanation. We need choose something. \"今天下班以后，我决定去____。\" Fill blank. Any reasonable. Need only blank part. We need output just phrase. Maybe \"健身房\" or \"超市\". We can answer e.g. \"超市买东西\". Need only blank. Since no context, any acceptable. Need not explain. Let's provide simple.",
+      "finish": "stop",
+      "completionTokens": 88,
+      "latency": 978
+    },
+    {
+      "temp": 0,
+      "round": 14,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要只填空白部分。我们需要给出一个合适的补语。必须只输出空白内容，不能解释。可以填“超市买菜”等。需要注意只填写空白部分。最简单：“超市买东西”。但句子是“去____。” 空白部分可以是“健身房锻炼”或者“看电影”。只填空白。需要不解释。直接回答。确保是空白部分，不加句号？ 可以“健身房”。句子完整：今天下班以后，我决定去健身房。这没问题。只填“健身房”即可。但“去健身房”搭配。答案只需空白内容。 final only.",
+      "finish": "stop",
+      "completionTokens": 151,
+      "latency": 1347
+    },
+    {
+      "temp": 0,
+      "round": 15,
+      "ok": true,
+      "text": "看电影",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要给一个合适填充。需要只填空白部分。简单。可以填“健身房”等。注意只填写空白部分，不要解释。应直接输出填充内容。可能应该包括完整？ 用户说只填写空白部分。所以只输出“健身房”。没有标点？ 可以。最终只输出填空短语。选择“超市买点东西”也可以。但只填空白部分，句子宾语？ 去____。 可以填“看电影”。更自然。直接“看电影”。只填空白，不加句号？ 最好不加标点。 final.",
+      "finish": "stop",
+      "completionTokens": 148,
+      "latency": 1553
+    },
+    {
+      "temp": 0,
+      "round": 16,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide blank part. We can choose any reasonable. Need just fill. But maybe they want complete sentence? \"只填写空白部分。不要解释。\" So output only blank content. Need decide. Could be \"超市买点东西\" etc. Need no punctuation? We need answer just blank. Let's craft concise. Maybe \"健身房锻炼\" or \"看一场电影\". Since only blank part, output \"看电影\" maybe. Need ensure fits: 今天下班以后，我决定去____。 If fill \"看电影\" sentence: 我决定去看电影. Good. Only blank. Output no explanation. ",
+      "finish": "stop",
+      "completionTokens": 154,
+      "latency": 1591
+    },
+    {
+      "temp": 0,
+      "round": 17,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer in Chinese. User asks complete sentence. “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide blank part only. Any reasonable? We need maybe just a phrase that completes. Since no context. We can choose something. Need only fill blank, not whole sentence. E.g. \"超市买东西\" or \"看电影\". Need ensure sentence grammatical: 今天下班以后，我决定去____。 Fill with verb phrase. If fill \"看电影\" => 我决定去看电影. Good. They requested only blank part. So answer: 看电影. No punctuation? Probably just \"看电影\". Need no explanation. ",
+      "finish": "stop",
+      "completionTokens": 136,
+      "latency": 1434
+    },
+    {
+      "temp": 0,
+      "round": 18,
+      "ok": true,
+      "text": "超市买东西",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide something. Need just fill blank. We can choose any suitable phrase. Need only blank part. Must not explain. Could be \"超市买东西\" or \"健身房锻炼\". Need sentence grammatical: 今天下班以后，我决定去____。 If fill \"超市买东西\" => 去超市买东西. Good. Only blank. We should output only phrase. Ensure no punctuation? Maybe \"超市买东西\". That's fine. Need final only. ",
+      "finish": "stop",
+      "completionTokens": 122,
+      "latency": 1268
+    },
+    {
+      "temp": 0,
+      "round": 19,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer in Chinese. Need complete sentence. User asks: \"请完成下面的句子。 “今天下班以后，我决定去____。” 只填写空白部分。 不要解释。\"\n\nNeed provide just fill blank. Any phrase. Need ensure sentence grammatical. Could be \"超市买东西\" etc. Only blank part. No explanation. Need maybe not include quotes. We can answer \"超市买东西\" or \"健身房锻炼\". They want complete sentence, fill blank only. Let's provide concise. \nNeed decide. \"今天下班以后，我决定去____。\" Fill with verb phrase? \"看电影\" works: 去 + 看电影 = go watch movie. Actually \"去\" plus object often: 去电影院看电影. If fill \"看电影\", sentence: 我决定去看电影。 Good. \nNeed only blank. final: 看电影. Ensure no punctuation? They said only fill blank part. Could be \"看电影\". No explanation. ",
+      "finish": "stop",
+      "completionTokens": 194,
+      "latency": 1825
+    },
+    {
+      "temp": 0,
+      "round": 20,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer Chinese. Need complete sentence. \"今天下班以后，我决定去____。\" Only fill blank. No explanation. We need provide something. Any valid. Need only blank part. Should not include quotes? Just fill. Could be \"超市买东西\" etc. Need maybe concise. The instruction says only fill blank. So final just \"超市买东西\" or \"健身房\". Need complete sentence. \"今天下班以后，我决定去____。\" Fill with verb phrase. Could be \"看电影\". Just output. Ensure no explanation. Maybe \"超市买点东西\" fine. But \"去\" + place/activity. \"看电影\" is okay? \"去电影院看电影\" more grammatically if after 去 can be verb? In Chinese \"去吃饭\", \"去看电影\", yes okay. \"今天下班以后，我决定去看电影。\" fine. Only blank \"看电影\". Need no punctuation? Could include period? The sentence already has period. Only fill blank. Final: 看电影. ",
+      "finish": "stop",
+      "completionTokens": 204,
+      "latency": 1978
+    },
+    {
+      "temp": 0,
+      "round": 21,
+      "ok": true,
+      "text": "超市买点东西",
+      "think": "We need answer in Chinese. Need complete sentence: “今天下班以后，我决定去____。” Only fill blank. Don't explain. Need choose any plausible. We just need provide blank part only. Could be \"超市买点东西\" etc. Need satisfy. Since no explanation. We can output just fill. Need maybe sentence completion. We should not include quotes? \"只填写空白部分。\" So final should be just words. Need maybe \"健身房锻炼\" or \"看电影\". Any. Need concise. Let's answer. ",
+      "finish": "stop",
+      "completionTokens": 113,
+      "latency": 1536
+    },
+    {
+      "temp": 0,
+      "round": 22,
+      "ok": true,
+      "text": "看电影",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要只填空白部分，不能解释。需要合适内容。可以填“看电影”等。需要只输出空白内容。必须只填写空白部分。应该没有标点？ 可以“健身房锻炼。” 但注意原句已有句号？ \"我决定去____。\" 空白部分可能包括动词短语。最自然“超市买东西” or “看电影”。只填空白部分，不要解释。可以用“看一场电影” etc. Need exactly answer. Since no context, any valid. I'll provide concise \"看电影\" only. Ensure no extra. ",
+      "finish": "stop",
+      "completionTokens": 146,
+      "latency": 1770
+    },
+    {
+      "temp": 0,
+      "round": 23,
+      "ok": true,
+      "text": "超市买东西",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide just blank content. We can pick anything grammatically. Need maybe \"超市买东西\" etc. Must only fill blank part. So final should be e.g. \"健身房锻炼\" maybe. Need no punctuation? They ask only fill blank. We can output just phrase. Need ensure sentence complete: 今天下班以后，我决定去健身房锻炼。 That's fine. Only blank = \"健身房锻炼\". Or \"看电影\". Simpler. Need no explanation. Final only. ",
+      "finish": "stop",
+      "completionTokens": 129,
+      "latency": 1762
+    },
+    {
+      "temp": 0,
+      "round": 24,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese fill blank. User asks complete sentence: \"今天下班以后，我决定去____。\" Only fill blank. No explanation. Need provide something. We can choose any plausible completion. Need only blank part. Need no explanation. Simple. Maybe \"超市买点东西\" or \"看电影\". Since only fill blank. Need not explain. Ensure sentence grammatically: 今天下班以后，我决定去____。 If fill \"健身房\" works: 去健身房. If \"看电影\" works? 去 + 看电影? \"去电影院看电影\" better. We can just output blank content. Need no punctuation? \"超市买东西\" maybe. The instruction: 只填写空白部分。不要解释。 So final should be just the filler. E.g., 超市买点东西. Is that too long? It completes. But \"去超市买点东西\" includes 去? Wait blank after 去: “今天下班以后，我决定去____。” If fill \"超市买点东西\", entire is \"去超市买点东西\" correct. Only blank part. No explanation. Could answer \"看电影\" -> \"去 看电影\" is colloquially okay? Actually \"决定去看电影\" more standard. But the sentence has 去 then blank. \"去健身房\" works. Let's choose \"健身房\"。 Final only \"健身房\". That completes. Need no explanation. Ensure only blank part. Done. ",
+      "finish": "stop",
+      "completionTokens": 292,
+      "latency": 2764
+    },
+    {
+      "temp": 0,
+      "round": 25,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要填空白。我们可以任意填合理内容。必须只填写空白部分，不要解释。最好简洁。例如“健身房”。但句子是“去____”。填“健身房” => 今天下班以后，我决定去健身房。可以。只输出“健身房”。确保没有标点？空白部分可包含。只填写空白部分。所以回答：健身房。 ",
+      "finish": "stop",
+      "completionTokens": 105,
+      "latency": 1278
+    },
+    {
+      "temp": 0,
+      "round": 26,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide just blank content. Need maybe any appropriate phrase. We can choose \"健身房\" or \"超市\" etc. Must only fill blank. Need no punctuation? We should output only the fill content. The instruction: 只填写空白部分。不要解释。 So final should be e.g. 健身房. We need ensure sentence grammatical: 今天下班以后，我决定去健身房。 Good. Just \"健身房\".",
+      "finish": "stop",
+      "completionTokens": 115,
+      "latency": 1278
+    },
+    {
+      "temp": 0,
+      "round": 27,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. Need complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need likely any suitable phrase. Since instruction only fill blank. Need provide just blank content. We can choose e.g. 健身房。 Need ensure grammatical: 去健身房. Answer only \"健身房\". But sentence \"我决定去健身房\" okay. Need no punctuation? Just blank. Final.",
+      "finish": "stop",
+      "completionTokens": 87,
+      "latency": 1053
+    },
+    {
+      "temp": 0,
+      "round": 28,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. Need complete sentence. User asks: 请完成下面的句子。“今天下班以后，我决定去____。” 只填写空白部分。不要解释。 Need fill blank only. We can choose any reasonable. Need no explanation. Maybe \"健身房\" or \"超市\" etc. Need only blank part. Since \"去____\" requires place/activity. Fill \"健身房\" works. Need no punctuation? Just fill. Final only. ",
+      "finish": "stop",
+      "completionTokens": 95,
+      "latency": 1220
+    },
+    {
+      "temp": 0,
+      "round": 29,
+      "ok": true,
+      "text": "散步",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要只填空白部分。应该是一个短语。需要合适。可以填“健身房”或者“超市”等。只需内容，不要句号？应该只填写空白部分，可能是“看电影”或“散步”。但句子结构“决定去____”后面可接动词短语或地点。填什么都行。为了自然，“健身房”可以：决定去健身房。只需输出“健身房”。注意不要解释。必须只填空白。最终只输出空白部分。可以选“超市买菜”但“去超市买菜”可以。简单“看电影”也行：决定去看电影。但“去”后面接“看电影”稍不标准？可以“去电影院”。我选“散步”？决定去散步，自然。只填“散步”。没有标点。 ",
+      "finish": "stop",
+      "completionTokens": 188,
+      "latency": 1983
+    },
+    {
+      "temp": 0,
+      "round": 30,
+      "ok": true,
+      "text": "超市买东西",
+      "think": "We need answer Chinese fill blank. Need only blank. Need complete sentence. \"今天下班以后，我决定去____。\" We just need fill. Any plausible. Must not explain. Need maybe \"超市买东西\" etc. Need only blank part. Ensure no punctuation? The instruction: 只填写空白部分。不要解释。 So answer just the blank content. Could be \"健身房锻炼\" etc. Need likely creative. Let's provide concise. ",
+      "finish": "stop",
+      "completionTokens": 94,
+      "latency": 1081
+    },
+    {
+      "temp": 0,
+      "round": 31,
+      "ok": true,
+      "text": "看电影",
+      "think": "我们需要回答中文填空。用户要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要提供一个合适的短语。可以任意合理。需要只填空白部分。例如“健身房”。注意标点？只填写空白部分。可以填“超市买点东西”？ 要确保完整句子通顺。 \"今天下班以后，我决定去____。\" 空白部分应该可以是“看电影”。只输出内容，无解释。随便。需要满足。可以填“吃顿好的”。但句子已有句号。只填写空白部分，所以输出“健身房”或“超市”。最好不包含句号？ 只填空白部分。我选“看电影”。 That makes \"今天下班以后，我决定去看电影。\" Good. Only output \"看电影\". ",
+      "finish": "stop",
+      "completionTokens": 168,
+      "latency": 1531
+    },
+    {
+      "temp": 0,
+      "round": 32,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. Need complete sentence. \"今天下班以后，我决定去____。\" Only fill blank. No explanation. Need choose any plausible. Need obey. Could be \"健身房\" etc. Just fill blank. Should not include explanation. We need final only blank. Maybe \"看电影\" or \"超市\". Need sentence grammatical: 去 + place/activity? \"去健身房\" okay. \"去跑步\" also okay? \"决定去跑步\" grammatically. Only fill blank. Let's answer concise. \nNeed final. ",
+      "finish": "stop",
+      "completionTokens": 112,
+      "latency": 1211
+    },
+    {
+      "temp": 0,
+      "round": 33,
+      "ok": true,
+      "text": "超市买东西",
+      "think": "We need answer Chinese. Need complete sentence. \"今天下班以后，我决定去____。\" Only fill blank. No explanation. Need provide something. We can choose any plausible. Need only blank part. Maybe \"超市买东西\" etc. Need no explanation. Since asks complete sentence. Only fill blank. We should output just phrase. Must not include period? likely fill \"健身房锻炼\" maybe. Need ensure sentence grammatical: 去健身房锻炼. Only blank. \"看电影\" also. Let's answer concise.",
+      "finish": "stop",
+      "completionTokens": 106,
+      "latency": 1258
+    },
+    {
+      "temp": 0,
+      "round": 34,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. User asks: 请完成下面的句子。 “今天下班以后，我决定去____。” 只填写空白部分。 不要解释。 Need fill blank only. Any completion acceptable? Need only blank part. We should output something. Maybe \"健身房\" or \"超市\"? Need complete sentence. We can choose. Must only fill blank, no explanation. Need likely one phrase. Maybe \"看电影\" fits. \"今天下班以后，我决定去____。\" Fill with verb phrase? \"健身房\" -> 去健身房. Good. Only blank part. So answer: 健身房. Ensure no punctuation? They said only fill blank. Could include \"健身房\" only. Final. ",
+      "finish": "stop",
+      "completionTokens": 145,
+      "latency": 1743
+    },
+    {
+      "temp": 0,
+      "round": 35,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese fill blank. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide just blank content. Need choose arbitrary? We can say 健身房? Need grammatical. \"今天下班以后，我决定去跑步。\" But blank can be any place/activity. The instruction only fill blank. Need not explain. We should output only the blank part. Maybe \"超市买东西\" or \"看电影\". Need complete sentence. Let's provide something natural. \"健身房\" after 去 works (去健身房). So sentence: 今天下班以后，我决定去健身房。 Only fill blank: 健身房. No punctuation maybe. Final only. ",
+      "finish": "stop",
+      "completionTokens": 145,
+      "latency": 1488
+    },
+    {
+      "temp": 0,
+      "round": 36,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer in Chinese. Need complete sentence. \"今天下班以后，我决定去____。\" Only fill blank. No explanation. Need provide just blank text. Need choose something. Could be \"健身房\" etc. Need ensure grammatical: 去 + place/activity. \"今天下班以后，我决定去健身房。\" That's fine. Only blank part? They ask 只填写空白部分。 So final should be \"健身房。\" Maybe no period? Just fill. Need no explanation. We can output \"健身房。\" or \"健身房\". To be safe just \"健身房\". Since only blank portion. final.",
+      "finish": "stop",
+      "completionTokens": 125,
+      "latency": 1217
+    },
+    {
+      "temp": 0,
+      "round": 37,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. Need complete sentence. User asks fill blank only, no explanation. Need provide something plausible. \"今天下班以后，我决定去____。\" We just need blank part. Could be \"健身房\" or \"超市\" etc. Need only fill blank. We can answer \"健身房\" or \"看电影\". Since sentence has 去 + place/action. \"去健身\" okay. Need only blank. No explanation. Any valid. Maybe \"健身房\" simplest. Ensure no punctuation? They said only fill blank. So final: 健身房. ",
+      "finish": "stop",
+      "completionTokens": 116,
+      "latency": 1267
+    },
+    {
+      "temp": 0,
+      "round": 38,
+      "ok": true,
+      "text": "健身房锻炼",
+      "think": "我们需要回答用户中文问题。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要填空白。应该只输出填入内容。可以选择任何合理。需要注意只填写空白部分，不要标点？句子空格前面是“去”，后面句号。填一个动词短语。例如“健身房锻炼”。只填写空白部分。不要解释。应该输出简洁。可以是“超市买菜”、“健身房”、“看电影”等。需要确保仅空白部分。最终只输出内容，无解释。我们可以选“超市买东西”或“健身房锻炼”。中文句子：“今天下班以后，我决定去健身房锻炼。” 空白部分“健身房锻炼”。只填写空白部分即可。没有额外标点？如果填“健身房锻炼”即可。最终。",
+      "finish": "stop",
+      "completionTokens": 165,
+      "latency": 1541
+    },
+    {
+      "temp": 0,
+      "round": 39,
+      "ok": true,
+      "text": "超市",
+      "think": "我们需要回答中文填空。用户要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要给一个合适的补语。可以是“健身房”/“超市”/“看电影”等。必须只填写空白部分。注意句子已有“去”，后面通常接地点或动词短语？ \"去____\" 可以填“健身房”、“超市买菜”、“看电影”。只填空白。不需要引号？最好直接填内容。可能只需要“超市”。但“去超市”完整。让我们输出“超市”。没有解释。 ",
+      "finish": "stop",
+      "completionTokens": 120,
+      "latency": 1424
+    },
+    {
+      "temp": 0,
+      "round": 40,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese fill blank. Need only blank part, no explanation. Sentence: “今天下班以后，我决定去____。” We need complete. Any reasonable. Must only fill blank. Need no explanation. Could be \"健身房\" or \"超市\". Need just blank. \"散步\" maybe? Since verb phrase after 去 can be place or activity. \"去散步\" works. The instruction: complete sentence, fill blank only. So answer e.g. 健身房。 But if they expect natural. We can choose \"看电影\" because \"去____\" blank can be verb phrase? \"去电影院\" better. Only blank. Let's provide \"健身房\". Need no punctuation maybe. Final only. ",
+      "finish": "stop",
+      "completionTokens": 146,
+      "latency": 1483
+    },
+    {
+      "temp": 0,
+      "round": 41,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. Need complete sentence. Only fill blank. No explanation. Need provide something. \"今天下班以后，我决定去____。\" We can choose. Need only blank part. Maybe \"健身房\" or \"超市\". User asks complete sentence. Only fill blank. Need no explanation. We should output just fill. Ensure sentence grammatical: 我决定去健身房。 So blank \"健身房\". Final only.",
+      "finish": "stop",
+      "completionTokens": 86,
+      "latency": 954
+    },
+    {
+      "temp": 0,
+      "round": 42,
+      "ok": true,
+      "text": "看电影",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide a completion. Any reasonable. Need only blank part. We can say 看电影. Ensure only fill blank. Final should be just \"看电影。\"? They say 只填写空白部分. So no quotes maybe. \"看电影\" enough. But sentence would be 今天下班以后，我决定去 看电影. Grammatically \"去 看电影\" okay. Alternatively \"健身房\" requires 去健身房. \"超市\" etc. Need only blank. I'll output \"看电影\". ",
+      "finish": "stop",
+      "completionTokens": 129,
+      "latency": 1093
+    },
+    {
+      "temp": 0,
+      "round": 43,
+      "ok": true,
+      "text": "健身房",
+      "think": "We need answer Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need provide just blank part. Any appropriate? Need infer maybe common? We can choose \"健身房\" etc. Need only fill blank. Since no context, any valid completion. Must not explain. We need answer just the phrase. Maybe \"超市买东西\" or \"看电影\". The instruction: 请完成下面的句子。只填写空白部分。不要解释。 So final should be the blank content only. Need decide. Could be \"散步\" etc. Chinese. Should we include punctuation? If filling blank in sentence: “今天下班以后，我决定去____。” If fill \"健身房\" sentence: 我决定去健身房。 Good. Only blank part, so answer \"健身房\". But maybe desired? There's no specific answer. We can pick natural: \"图书馆看书\" but \"去图书馆看书\" okay. The blank after 去 can be a place or activity. \"健身房\" is natural. Let's final just \"健身房\". Ensure no quotes. ",
+      "finish": "stop",
+      "completionTokens": 224,
+      "latency": 2039
+    },
+    {
+      "temp": 0,
+      "round": 44,
+      "ok": true,
+      "text": "超市",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. Do not explain. Need provide blank part only. Need maybe any suitable phrase. Need ensure sentence grammatical. \"今天下班以后，我决定去____。\" Fill blank. Could be \"超市买东西\" etc. They ask only fill blank. Should output only fill part, no explanation. Need decide content. Any completion. We can say \"健身房锻炼\" or \"看电影\". Since no specific constraints, simplest: \"看电影\". The full sentence: 今天下班以后，我决定去看电影。 Actually if blank after 去, \"看电影\" makes \"去看电影\" correct. If \"超市\" then \"去超市\". Both. Need only fill blank. Maybe \"超市\" is concise. The sentence \"今天下班以后，我决定去超市。\" Complete. But maybe blank intended after 去, so can be any place/action. I'll answer \"超市\". But is that too simple? They want complete sentence. Only fill blank. Final just \"超市\". No punctuation? Could include period? They said fill blank part. If output \"超市\" the resulting sentence lacks period? The original has period after blank? Actually “今天下班以后，我决定去____。” The blank includes before Chinese period. Fill \"超市\" yields \"今天下班以后，我决定去超市。\" Fine. Output only blank: 超市. Need no explanation.\n\nBut let's think: The user Chinese: 请完成下面的句子。 “今天下班以后，我决定去____。” 只填写空白部分。 不要解释。 They likely expect just blank content. So final \"超市\". Done. ",
+      "finish": "stop",
+      "completionTokens": 349,
+      "latency": 2364
+    },
+    {
+      "temp": 0,
+      "round": 45,
+      "ok": true,
+      "text": "健身房锻炼",
+      "think": "我们需要回答用户中文。要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要给一个合适的填充。只需填空白部分。可以任意？应简洁。比如“看电影” or “超市买东西”. Need only fill blank. Final no explanation. Must satisfy. Let's answer maybe \"健身房锻炼\" or \"超市买点东西\". Since no context, any reasonable. Only blank part. We need not include punctuation? \"健身房锻炼\" maybe. The sentence becomes “今天下班以后，我决定去健身房锻炼。” Good. Only blank. Ensure no explanation. ",
+      "finish": "stop",
+      "completionTokens": 130,
+      "latency": 1772
+    },
+    {
+      "temp": 0,
+      "round": 46,
+      "ok": true,
+      "text": "超市",
+      "think": "我们需要回答中文。用户要求完成句子：“今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要直接填空白。可以填任何合理内容。需要只填空白部分，不要标点？ 可以是“健身房” 或 “超市”。需要只填写空白部分。最简洁。注意句子已有句号。所以回答比如“超市”。不要解释。可以。 Ensure no extra.",
+      "finish": "stop",
+      "completionTokens": 90,
+      "latency": 1317
+    },
+    {
+      "temp": 0,
+      "round": 47,
+      "ok": true,
+      "text": "超市",
+      "think": "We need answer in Chinese, fill blank only, no explanation. Need complete sentence. \"今天下班以后，我决定去____。\" Need just blank part. Any reasonable. We need comply. Maybe \"健身房\" or \"超市\" etc. Need no explanation. Final only. Ensure just blank content. ",
+      "finish": "stop",
+      "completionTokens": 64,
+      "latency": 1086
+    },
+    {
+      "temp": 0,
+      "round": 48,
+      "ok": true,
+      "text": "超市买东西",
+      "think": "We need answer in Chinese. User asks complete sentence: “今天下班以后，我决定去____。” Only fill blank. No explanation. Need just fill blank. We can choose any reasonable. Need only blank part. Maybe \"超市买东西\" etc. Must only fill blank, no explanation. So final should be just the phrase. Need maybe \"健身房锻炼\" or \"散步\". Since no context, any. We should output only blank partial. Ensure no punctuation? They say only fill blank. Could be \"看电影\" etc. Final: 超市买东西. But sentence: 今天下班以后，我决定去超市买东西。 Fits. Only blank part: 超市买东西. No period? Probably just phrase. final. ",
+      "finish": "stop",
+      "completionTokens": 151,
+      "latency": 1424
+    },
+    {
+      "temp": 0,
+      "round": 49,
+      "ok": true,
+      "text": "健身房",
+      "think": "我们需要回答用户中文问题。要求完成句子 “今天下班以后，我决定去____。” 只填写空白部分。不要解释。需要给出一个合适的填充。可以直接填“健身房”或“超市”等。只填写空白部分，不要句号？ 应该只输出空白部分内容。确保不解释。可以填“跑步”吗？ 句子“决定去跑步” grammatically okay? 去跑步 yes. 如果只填空白部分，应该填“跑步”。但“去____”后面空白，填“健身房”也 okay。最安全是“超市” or “看电影” maybe. 用户要求只填写空白部分，不要解释。直接输出“健身房”。或者“吃饭”？ 需要完成句子自然。 \"今天下班以后，我决定去健身房。\" If only blank part, output 健身房. No punctuation maybe. Let's answer just 健身房. ",
+      "finish": "stop",
+      "completionTokens": 187,
+      "latency": 1608
+    }
+  ]
+}
