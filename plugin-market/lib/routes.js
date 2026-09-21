@@ -2,7 +2,7 @@ import { rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { collectBody, errMsg, gitSpec, isLoopback, repoToGithub, rmrf, sendError, sendJson } from './util.js'
 import { gitLocalCommit, gitRemoteHead, pnpmRemove } from './pnpm.js'
-import { DEFAULT_BUNDLES, disableEntry, enableEntry, entryPkgMeta, findPatchPath, isLocalDependency, isProtectedModule, isUserInstalled, listEntries, localDependencyInfo, readPatchState, readProfileManifest, removeBundleFromManifest, removeInsertRow, rowIdOf } from './patch.js'
+import { DEFAULT_BUNDLES, disableEntry, disableInsertRow, enableEntry, entryPkgMeta, findPatchPath, isLocalDependency, isProtectedModule, isUserInstalled, listEntries, localDependencyInfo, readPatchState, readProfileManifest, removeBundleFromManifest, removeInsertRow, rowIdOf } from './patch.js'
 import { analyzeDshUpdate, attachSessionToWorkspace, checkDshUpdate, createVisibleAnalysisSession, dshStateCache } from './dsh.js'
 import { markReviewProtected, readReviewFile, reviewKey, reviewPackage, REVIEW_RETRY_MS, REVIEWS_DIR, waitForToggleApplied, writeReviewCache } from './review.js'
 import { buildHelpPrompt, cachedRealReview, cleanupCaches, clearCheckProgress, clearPendingMarker, confirmInstall, createUpdateJob, DSH_BEST_FIT_VERSION, helpRepoUrl, installedPackageDir, installJobs, installPlugin, interruptInstall, listInstallJobs, readPendingMarkers, readRepoOverrides, readSources, repositoryFallback, resolveModuleRepository, reviewInflight, reviewUpdateDiff, setCheckProgress, snapshotCheckProgress, stagePackage, updatePlugin, writePendingMarker, writeRepoOverride, writeSources } from './install.js'
@@ -429,8 +429,11 @@ async function handleUninstall(ctx, body, res) {
       }
       await removeBundleFromManifest(profileDir, moduleName)
       // 写临时禁用行让运行树立即卸载（HMR）——避免"文件已删、旧服务仍引用"导致页面启动报错；
-      // 重启后 bundle 不再加载，该禁用行对不存在的条目无害；重装时会自动清理
-      await disableEntry(patchPath, rowId)
+      // 重启后 bundle 不再加载，该禁用行对不存在的条目无害；重装时会自动清理。
+      // 优先写进 insert 行内（id 口径与行内一致，重装 appendInsert 后不留残）；运行树里没有
+      // 对应 insert 行时（bundle 只声明运行树 id、用户层没有 insert）回落写顶层禁用行。
+      const disabled = await disableInsertRow(patchPath, rowId)
+      if (!disabled.changed && disabled.reason === 'no-insert-row') await disableEntry(patchPath, rowId)
       await writeRepoOverride(moduleName, '')
       await clearPendingMarker(moduleName)
       sendJson(res, 200, { ok: true, removed: 'bundle', packageName: moduleName, restart: true })

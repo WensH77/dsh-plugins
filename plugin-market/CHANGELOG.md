@@ -2,6 +2,13 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.15.0
+
+- **fix：卸载带额外键的 insert 插件后写出非法 YAML、dsh 整树起不来**——`removeInsertRow` 原先只用正则吃掉「`- insert:` + `    - id: X` + 可选 `      name:`」三行，块内第 4 行起（`config:`／`disabled:` 等任意缩进键）会留在顶层变成裸缩进行，`cordis.patch.yml` 随即非法（`YAMLException: end of the stream or a document separator is expected`），重启 dsh 时整棵插件树起不来、市场 UI 也进不去，只能手改文件。改为按行定位条目区间（目标行 + 其后所有更深缩进的续行）并整体删除；块头若因此变空也一并删掉。
+- **fix：bundle 重装后仍被 stale 禁用行静默禁用**——卸载 bundle 时写的临时禁用行 id 是**运行树行 id**（bundle 自己在它自己的 `cordis.patch.yml` 里声明的行 id，如 `better-sidebar`），而重装清理（`removeDisableBlock`）只有**包名**（`dsh-better-sidebar`）与按包名推导的 entryId 两个口径，两边永远对不上 → 禁用行清不掉、重装后插件被静默禁用。现在卸载时把 `disabled: true` 直接写进 insert 条目内（随条目走，卸载/重装都会连带处理），并让清理额外按条目里的 `name:`（包名）兜一次，兼容历史遗留写法。
+- **fix：写出前做顶层数组自检，坏内容不落盘**——`writePatchFile` 统一在写前校验：优先用宿主的 YAML 解析器（dsh 解析 patch 层用的同一个 `yaml`，解析失败或结果不是数组即判非法），拿不到解析器时退化为「顶层序列」结构检查（拦住裸缩进行、`[]` 之后还有条目这类破坏）。校验不通过就不写入并告警：最坏是「这次操作没生效」，不再升级成「启动不了」。
+- **test**：smoke 增加上述三处的回归断言（块内 `config`／`disabled` 续行一并删除、按包名兜底清理、自检的准入与拒入）。
+
 ## 0.14.6
 
 - **fix：红灯文案改用「兼容性问题」，与官方的「破坏性变更」不再撞词**——红灯的判据是 `verdict`（本机已装插件的**运行期兼容性**：`removed-module` 或 `dependencies` 越界），而「破坏性变更」是**上游口径**：官方 release notes 用它描述 API／包结构变更（如 `dsh-v0.1.3-alpha.1` 的「**破坏性变更：**Session persistence API 改为由生命周期持有的 `SessionHandle`；`agentLoop.create()` 改为异步」），市场自己也用它标 `versions[].breaking`。两个词差一个字、指两个判据，红灯一亮容易被读成「官方发了破坏性版本」。现在拆开：`dshBreakingShort` = `兼容性问题`、`dshBreaking` = `有新版本 v{version}，可能影响已装插件的兼容性`（en：`compatibility issue` / `New version v{version} — may affect installed plugin compatibility`）。加「可能」与「已装插件」两个限定，是因为判据来自模型分类（会误判），且要说清是**谁**的兼容性。逐版本标签 `dshReportVersionBreaking`（破坏性变更）保持不动——它就是上游口径，正好作对照。

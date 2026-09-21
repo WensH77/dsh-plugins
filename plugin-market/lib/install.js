@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { errMsg, githubRepoInfo, gitSpec, makeQueue, readJsonFile, rmrf, writeJsonFile } from './util.js'
-import { addBundleToManifest, appendInsert, deriveEntryId, detectBundleOnly, entryPkgMeta, findPatchPath, isPluginInstalled, isProtectedModule, listEntries, pkgMetaCache, readPatchState, removeDisableBlock } from './patch.js'
+import { addBundleToManifest, appendInsert, bundleRowIds, deriveEntryId, detectBundleOnly, entryPkgMeta, findPatchPath, isPluginInstalled, isProtectedModule, listEntries, pkgMetaCache, readPatchState, removeDisableBlock } from './patch.js'
 import { pnpmInstall, progressFromPnpm, runPnpm, STAGING_PNPM_WORKSPACE } from './pnpm.js'
 import { buildHarnessContext, buildL0FallbackReport, buildSignalBlocks, installedReviewKeys, PROMPT_CAP, readReviewFile, reviewKey, reviewPackage, REVIEWS_DIR, REVIEW_TTL_DAYS, runReviewChannel, scanRiskSurface, shouldRetainReview, waitForInsertApplied, writeReviewCache } from './review.js'
 
@@ -394,9 +394,12 @@ async function performInstall({ repoInfo, name, profileDir, patchPath, taken, st
   let restart = false
   if (await detectBundleOnly(profileDir, name)) {
     await addBundleToManifest(profileDir, name)
-    // 清理上次卸载写入的临时禁用行（避免重装后被旧禁用行关掉）
-    await removeDisableBlock(patchPath, name)
-    await removeDisableBlock(patchPath, deriveEntryId(name, taken))
+    // 清理上次卸载写入的临时禁用行（避免重装后被旧禁用行关掉）。
+    // 禁用行的 id 是**运行树行 id**（bundle 自己 patch 里声明的，如 better-sidebar），
+    // 与包名/推导 entryId 都可能不同，所以把声明的 id 也读出来逐个清一遍。
+    for (const rowId of [name, deriveEntryId(name, taken), ...(await bundleRowIds(profileDir, name))]) {
+      await removeDisableBlock(patchPath, rowId, name)
+    }
     bundle = true
     restart = true
   } else {

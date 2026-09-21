@@ -14,7 +14,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { githubRepoInfo, gitSpec, compareVersions, makeQueue, readJsonFile, writeJsonFile } from '../lib/util.js'
-import { disableBlock, stripEmptyArrayMarker, readPatchState, localDependencyInfo } from '../lib/patch.js'
+import { disableBlock, disableInsertRow, isValidPatchText, readPatchState, removeDisableBlock, removeInsertRow, stripEmptyArrayMarker, localDependencyInfo } from '../lib/patch.js'
 import { reviewKey } from '../lib/review.js'
 import { routeOverrideOf, ROUTES } from '../lib/routes.js'
 import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard } from '../lib/dsh.js'
@@ -110,6 +110,63 @@ console.log('\n[readPatchState ← patch.js]')
   assertEq(state.inserts, ['plugin-market'], 'inserts 解析')
   assertEq(state.insertNames, { 'plugin-market': 'dsh-plugin-market' }, 'insertNames 解析')
   rmSync(patchFile, { force: true })
+}
+
+console.log('\n[patch 层写入：insert 条目删除/停用/自检 ← patch.js]')
+{
+  // 回归：removeInsertRow 曾只吃固定 3 行，块内第 4 行起（config/disabled…）留在顶层
+  // → 写出非法 YAML → dsh 整树启动失败。
+  const removeFile = join(mkdtempSync(join(tmpdir(), 'pm-patch-')), 'cordis.patch.yml')
+  writeFileSync(removeFile, [
+    '- insert:',
+    '    - id: chat-rollback',
+    "      name: 'dsh-plugin-chat-rollback'",
+    '      config:',
+    "        excludes: ['.git']",
+    '      disabled: true',
+    '- insert:',
+    '    - id: command-setting',
+    "      name: 'dsh-plugin-command-setting'",
+    '',
+  ].join('\n'), 'utf8')
+  await removeInsertRow(removeFile, 'chat-rollback')
+  const afterRemove = readFileSync(removeFile, 'utf8')
+  assert(!afterRemove.includes('chat-rollback') && !afterRemove.includes('excludes'), 'removeInsertRow 吃掉块内所有续行（config/disabled）')
+  assertEq(afterRemove, "- insert:\n    - id: command-setting\n      name: 'dsh-plugin-command-setting'\n", 'removeInsertRow 只留下另一条 insert（不留空块头）')
+  assert(isValidPatchText(afterRemove), 'removeInsertRow 写出合法顶层数组')
+
+  // 回归：bundle 卸载写的临时禁用行 id 是运行树行 id（better-sidebar），重装清理只有
+  // 包名（dsh-better-sidebar）与按包名推导的 entryId —— 两边对不上就留下 stale 禁用行。
+  const bundleFile = join(mkdtempSync(join(tmpdir(), 'pm-patch-')), 'cordis.patch.yml')
+  const baseInsert = "- insert:\n    - id: better-sidebar\n      name: 'dsh-better-sidebar'\n"
+  writeFileSync(bundleFile, baseInsert.replace('better-sidebar', 'other-row'), 'utf8')
+  assertEq(await disableInsertRow(bundleFile, 'better-sidebar'), { changed: false, reason: 'no-insert-row' }, 'disableInsertRow：无对应条目时明确回落')
+  writeFileSync(bundleFile, baseInsert, 'utf8')
+  await disableInsertRow(bundleFile, 'better-sidebar')
+  await disableInsertRow(bundleFile, 'better-sidebar')
+  const disabledText = readFileSync(bundleFile, 'utf8')
+  assertEq((disabledText.match(/disabled:/gu) ?? []).length, 1, 'disableInsertRow 幂等：只写一条 disabled')
+  assert(disabledText.includes("      name: 'dsh-better-sidebar'\n      disabled: true\n"), 'disableInsertRow 把 disabled 写进 insert 条目内')
+  assert(isValidPatchText(disabledText), 'disableInsertRow 写出合法顶层数组')
+  await removeDisableBlock(bundleFile, 'dsh-better-sidebar')
+  await removeDisableBlock(bundleFile, 'dsh-better-sidebar-2', 'dsh-better-sidebar')
+  const cleanedText = readFileSync(bundleFile, 'utf8')
+  assert(!cleanedText.includes('disabled'), 'removeDisableBlock 按包名兜底清掉条目内禁用行')
+  assertEq(cleanedText, baseInsert, '清理后 insert 条目保持完整')
+
+  // 回落形态：bundle 没有用户层 insert 行时，禁用行写在顶层（id 是运行树行 id），
+  // 重装时靠「读 bundle 自己 patch 声明的行 id」才对得上
+  const topFile = join(mkdtempSync(join(tmpdir(), 'pm-patch-')), 'cordis.patch.yml')
+  writeFileSync(topFile, '- id: better-sidebar\n  disabled: true\n', 'utf8')
+  await removeDisableBlock(topFile, 'dsh-better-sidebar')
+  assertEq(readFileSync(topFile, 'utf8'), '- id: better-sidebar\n  disabled: true\n', '只按包名清不掉顶层禁用行（口径不同）')
+  await removeDisableBlock(topFile, 'better-sidebar')
+  assert(!readFileSync(topFile, 'utf8').includes('disabled'), '按运行树行 id 清掉顶层禁用行')
+
+  // 自检：真实出过的两类破坏判非法；正常写法（含嵌套 config/args）必须放行
+  assert(!isValidPatchText('      disabled: true\n- insert:\n    - id: b\n'), '自检拦住孤儿缩进行')
+  assert(!isValidPatchText('- insert:\n    - id: a\n[]\n'), '自检拦住「[] 之后还有条目」')
+  assert(isValidPatchText("- insert:\n    - id: mcp-jira\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: jira\n        args:\n          - '-y'\n"), '自检放行嵌套 config/args')
 }
 
 console.log('\n[reviewKey ← review.js]')
