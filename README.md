@@ -10,6 +10,7 @@
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
 | **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发 |
+| **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做注意力代理——输出三口径来源占比（提及 / 体积 / 累计）、强度榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
 | ~~**arena-v2**~~（已弃用） | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | arena v2：类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者（业务探索/知识沉淀/测试用例场景、双 persona、固定挑战者模型）。**已停止维护**，移入 `deprecated/` 仅作存档；后续方案为 Theseus Crew（由 arena-v2 迁移而来） |
 | ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**曾由 arena-v2 取代（arena-v2 亦已弃用）**，移入 `deprecated/` 仅作存档 |
 | ~~**temperature-inject**~~（已弃用） | [`deprecated/temperature-inject/`](deprecated/temperature-inject/README.md) | 温度注入：会话页开关 + 0~1/step 0.2 滑杆，经 `agent/request` waterfall 把主代理委派子代理的 `LlmCallConfig` 改写为「指定模型 + 关 thinking + 指定温度」。宿主端与客户端均已实现、测试通过（宿主 36 项 + 浏览器端）。**已弃用**：温度对"快速出 HTML 方案"这类多步 agentic 任务不是有效杠杆——同 prompt 下 T0/T1 的组内相似度 0.470 vs 0.359，视觉方向仍然雷同，真正拉开差异的是 prompt 里的设计约束；而温度生效必须先关 thinking（降低方案质量），且 1.5 起输出退化成 token soup。移入 `deprecated/` 仅作存档 |
@@ -97,6 +98,7 @@ node command-setting/test/smoke.mjs                  # command-setting node 端�
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
 node todo-tab/test/smoke.mjs                        # todo-tab 宿主端测试（定位域/端点/只读）
 node todo-tab/test/client-smoke.mjs                 # todo-tab 浏览器端测试（注册面/渲染）
+node --test context-xray/test/*.mjs                  # context-xray 测试（19 项：拆块/归因折扣/体积校准/两张清单/工具注册）
 node deprecated/temperature-inject/test/smoke.mjs     # temperature-inject（已弃用）宿主端测试（配置/判定/waterfall/端点）
 node deprecated/temperature-inject/test/client-smoke.mjs # temperature-inject（已弃用）浏览器端测试（注册面/规格/端点契约）
 node deprecated/arena-v2/test/smoke.mjs               # arena-v2（已弃用）node 端测试
@@ -157,6 +159,14 @@ dsh-plugins/
 │   ├── lib/client.js       #   浏览器端：右侧栏页签类型 + 引导胶囊 + 只读渲染
 │   ├── skill/todo-memory/  #   完整规范（注册成运行时技能，按需加载）
 │   ├── template/TODO.md    #   骨架文件（拷出来当起点）
+│   ├── cordis.patch.yml    #   bundle 补丁层（自插入 profile 组合树）
+│   └── package.json
+├── context-xray/           # 上下文 X 光（context_xray 工具 + 离线 CLI）
+│   ├── lib/index.js        #   Node 端：注册 context_xray 工具
+│   ├── lib/mention.js      #   归因核心：拆块 + 分词 + df 加权 + 体积校准 + 两张排查清单
+│   ├── lib/render.js       #   markdown 渲染（tool 与 CLI 共用一份）
+│   ├── lib/stopwords.js    #   中英停用词表
+│   ├── tools/xray.mjs      #   离线入口：直读会话 jsonl（zstd）
 │   ├── cordis.patch.yml    #   bundle 补丁层（自插入 profile 组合树）
 │   └── package.json
 ├── node_modules            # 测试依赖解析（软链，已 gitignore）

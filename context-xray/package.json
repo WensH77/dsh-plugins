@@ -1,0 +1,41 @@
+{
+  "name": "dsh-plugin-context-xray",
+  "version": "0.1.0",
+  "description": "上下文 X 光：注册 context_xray 工具，用 reasoning 里关键词的提及次数做注意力代理，给出逐块归因、时间分布与从未被提及的块",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./mention": "./lib/mention.js",
+    "./render": "./lib/render.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "tools",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "^0.1.5-alpha.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
