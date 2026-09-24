@@ -1,23 +1,19 @@
 # dsh-plugin-command-setting
 
-dsh web 命令设置插件：
+dsh web 输入区增强插件。名字保留历史 id（`command-setting`），但**0.9.0 起不再提供「命令隐藏」**——原「从 “+” / “/” 菜单隐藏指定命令」的功能已整体移除，原因见 [CHANGELOG.md](./CHANGELOG.md)。
 
-- **命令菜单管理**：从 “+” / “/” 命令菜单中隐藏/显示指定 slash 命令（默认隐藏 export / feedback / permission），设置页新增「命令设置」区
+现存能力：
+
 - **外置 Plan 按钮**：composer 工具行左侧新增 Plan 切换按钮（点击调用 /plan）
 - **Ask 只问答模式（/ask）**：composer 工具行 Plan 按钮**左侧**新增 Ask 按钮（点击调用 /ask）——开启后该会话进入**只问答模式**：agent 只回答问题、可读文件与 run_code 验证，**禁止改动或创建任何文件**（执行级硬拦，模型层面无法绕过、用户强行要求也拦不住），并禁止诱导性提问（如“需要我帮你改 xxx 吗”）
 - **# 引用历史会话**：在输入框输入 `#` 弹出**会话引用**菜单，选中后插入与 `@` 会话引用**完全等效**的原子引用（`@[标题](dsh-session:…)`，宿主照常捕获该会话快照作为背景上下文）。与 `@` 的差别是 `#` **只列会话、不列文件**，且仅限三类会话：**未归档**、**主代理**（排除 subagent 子会话）、**跨工作区**（候选直接读客户端会话列表，跨工作区会话按「其他工作区 / 当前工作区」分组，永不因同工作区会话过多而被挤掉）
 - **划词引用**：在消息文本上拖动选中文字，选区上方浮出「**引用**」小胶囊；点击把选中文本转成 Markdown 引用块（逐行 `> `）追加到当前会话的 composer 末尾，光标停在引用块下方，直接接着提问即可
-- **全局生效**：命令菜单管理配置保存在全局 settings.yaml（`command-setting` 命名空间），对所有会话一致生效；设置页目录不随当前会话漂移，也不会被某个会话的局部命令面悄悄改写。**ask 模式为会话级开关**（侧文件 `~/.dsh/command-setting-ask.json` 持久化，dsh web 重启后恢复）
+- **不再改动命令菜单**：插件既不隐藏命令，也不过滤菜单；命令面完全由 dsh 自身（命令注册 + agent preset）决定。**ask 模式为会话级开关**（侧文件 `~/.dsh/command-setting-ask.json` 持久化，dsh web 重启后恢复）
 
 ## 功能速览
 
 | 能力 | 说明 |
 |---|---|
-| 隐藏命令 | 从命令菜单移除，直接斜杠输入也不再解析为命令；设置页可随时恢复 |
-| 受保护命令 | `plan` / `goal` / `ask` 为系统命令，**不可隐藏**（读/写两侧强制） |
-| 全局持久化 | `hidden` 列表写入 settings.yaml（`command-setting` 命名空间），热更新即时生效 |
-| 归档清理 | hidden 中已不存在的命令名（命令被卸载/更名后的残留）**主动检测并自动清理**：设置页读取目录时比对「浏览器贡献命令 ∪ 全局命令 ∪ 所有 live 会话的 agent 命令」全集，幽灵条目自动移除并持久化。**仅在命令面可信时清理**（客户端已上报贡献命令面、存在 live 会话、全集收集成功）——有效隐藏（贡献命令 /model、agent 命令、全局命令）永不被误删 |
-| 双端过滤 | 服务端过滤 host 命令；浏览器端过滤客户端贡献命令（如 /model） |
 | Plan 切换 | composer 工具行左侧独立按钮，点击执行 `/plan`（进入）或 `/plan off`（退出），替换内置的 Plan 芯片 |
 | Ask 只问答模式 | composer 工具行最左侧独立按钮（Plan 左侧），点击执行 `/ask`（进入）或 `/ask off`（退出）；开启后会话级只读——禁改/禁建文件（`tools.guard` 执行级硬拦 + 系统提示约束）、禁诱导改动提问 |
 | # 会话引用 | 输入 `#` 打开会话引用菜单（**只列会话**）；候选限定「未归档 + 主代理 + 跨工作区」，按「其他工作区 / 当前工作区」分组各限 25 行，跨工作区行显示**工作区名字**；选中插入与 `@` 会话引用同构的原子 mention，宿主按既有 session-reference 机制捕获快照 |
@@ -29,8 +25,10 @@ dsh web 命令设置插件：
 
 | 文件 | 角色 |
 |---|---|
-| `lib/index.js` | **Node 端** Cordis 插件：shadow `commands.list` 过滤 host 命令；`GET /command-setting/catalog`（未过滤目录）、`POST /command-setting/set`（写 hidden）、`GET /command-setting/ask-state`（会话 ask 开关）；settings 命名空间持久化 + `commands/change` 通知；`/ask` 命令 + 会话级 ask 拦截安装/恢复（`tools.guard` + `systemPrompt` 段 + 切换通知注入） |
-| `lib/client.js` | **浏览器端** bundle：设置页 section（`settings.section` 插槽）+ 命令目录过滤（shadow `commandUi.candidates/matchEnter/matchSpace`）+ Plan 按钮 + Ask 按钮（`conversation.input.left` 插槽，Ask 在 Plan 左侧）+ `#` 会话引用源（包装 input-trigger 的会话 controller，把 `#token` 路由到独立会话源） |
+| `lib/index.js` | **Node 端** Cordis 插件：`GET /command-setting/ask-state`（会话 ask 开关）；`/ask` 命令 + 会话级 ask 拦截安装/恢复（`tools.guard` + `systemPrompt` 段 + 切换通知注入） |
+| `lib/ask.js` | ask 域：只读判定（`askToolDenyReason` / `isBashWrite`）、提示段（`buildAskSection`）、切换通知（`buildAskNotice`）、会话级控制器与状态侧文件 |
+| `lib/routes.js` | webServer 路由（ask-state）+ HTTP 样板 |
+| `lib/client.js` | **浏览器端** bundle：Plan 按钮 + Ask 按钮（`conversation.input.left` 插槽，Ask 在 Plan 左侧）+ `#` 会话引用源（包装 input-trigger 的会话 controller，把 `#token` 路由到独立会话源）+ 划词引用浮标 |
 
 ### # 会话引用（跨工作区 / 未归档 / 主代理）
 
@@ -40,7 +38,7 @@ dsh web 命令设置插件：
    - **未归档**：排除 `ctx.workspaces` 快照里 `archivedSessionIds` 中的会话；
    - **主代理**：排除 `origin === 'subagent'` 的子会话（fork 出来的主会话仍保留）；
    - **跨工作区**：候选直接读客户端会话列表（含全部工作区），按「**其他工作区** / **当前工作区**」两个分组呈现，各自按最近活动排序、各限 25 行——跨工作区会话因此始终可见；其他工作区的会话在描述里显示其**工作区名字**（未注册目录退回缩写的目录路径），再接更新时间。
-4. **为什么不复用宿主的候选接口**：`remote.sessionReferenceResolver.candidates` 默认只取 `candidateLimit`（50）条、且**同 cwd 优先**排序后截断——当前工作区会话一多（实测 300+），跨工作区候选会被整段挤出，表现就是「# 只能 attach 当前工作区会话」。因此候选与规范 mention（`@[label](dsh-session:<base64url(JSON id)>)`，label 转义 `\`/`]`）都由本插件从客户端会话列表（`sessions` 快照，自带 `displayTitle`/`cwd`/`origin`/`updatedAt`）组装，与宿主 `session-reference` 的编解码逐字节同构。空会话（`blank`，没有可引用的历史）与非 ASCII id 会被跳过；`sessions`/`workspaces` 服务缺失时候选为空、静默降级，不影响其余命令设置功能。
+4. **为什么不复用宿主的候选接口**：`remote.sessionReferenceResolver.candidates` 默认只取 `candidateLimit`（50）条、且**同 cwd 优先**排序后截断——当前工作区会话一多（实测 300+），跨工作区候选会被整段挤出，表现就是「# 只能 attach 当前工作区会话」。因此候选与规范 mention（`@[label](dsh-session:<base64url(JSON id)>)`，label 转义 `\`/`]`）都由本插件从客户端会话列表（`sessions` 快照，自带 `displayTitle`/`cwd`/`origin`/`updatedAt`）组装，与宿主 `session-reference` 的编解码逐字节同构。空会话（`blank`，没有可引用的历史）与非 ASCII id 会被跳过；`sessions`/`workspaces` 服务缺失时候选为空、静默降级，不影响其余功能。
 
 ### 划词引用（消息文本 → composer）
 
@@ -57,42 +55,6 @@ dsh web 命令设置插件：
 4. **执行级硬拦（tools.guard）**：注册在该会话 agent.ctx 的工具守卫在每次工具 dispatch 前判定——`edit` / `write` / `str_replace_editor` 一律拒绝；`bash` 检测到写命令/重定向（`cp`/`mv`/`rm`/`tee`/`sed -i`/`>`/`>>` 等）也拒绝；`read` / `grep` / `glob` / `run_code` 与只读 bash（`node -e` / `python3 -c` / 运行已有脚本 / `ping` / `curl`）放行。守卫返回拒绝文案而非静默放行，模型层面无法绕过（与 arena-v2 的 guard 同机制）；关闭 ask（`/ask off`）或会话销毁时随 disposer 卸载。
 5. **范围**：ask 为**会话级**——只影响开启它的会话主代理，其它会话、子代理不受影响；只读约束只作用于本会话的工具面，不改变全局 sandbox/approval 策略。
 
-### 隐藏一条命令会发生什么
-
-1. 设置页点「隐藏」→ `POST /command-setting/set` → 写入 settings.yaml（受保护命令被剔除）
-2. 服务端 `commands.list` 过滤 → 命令从菜单移除、直接输入 `/name` 不再解析
-3. 浏览器端 shadow `commandUi` 三入口 → 客户端贡献命令（如 /model）同样被过滤
-4. `commands/change` / `settings/document-updated` 事件 → 浏览器目录即时刷新，无需重启
-
-### 设置页目录的组成
-
-目录 = 全局命令（host 注册）+ 当前会话的 agent 作用域命令 + 浏览器端贡献命令（如 /model），
-全部可切换显示/隐藏。`catalog` 端点带 `?session=<id>` 时按 Agent 对象解析作用域命令
-（如 /compact），隐藏过的 agent 作用域命令仍会列出以便恢复。**不做按会话的裁剪**：
-hidden 是全局设置，绝不会被某个会话更窄的命令面悄悄改写。
-
-### 归档清理（幽灵条目自动收敛）
-
-hidden 是全局设置且不做按会话裁剪，但**已不存在的命令名会被主动清理**：设置页读取目录时
-（客户端上报浏览器贡献命令面 + `?session=<id>`），用「浏览器贡献命令 ∪ 全局命令 ∪ 所有
-live 会话的 agent 命令」作为已知命令面，不在其中的 hidden 条目（插件卸载、命令更名、预设
-移除后的残留）自动从 settings.yaml 移除并通知刷新——无需手改文件。
-
-**安全侧（有效隐藏永不丢失）**：
-- 贡献命令（如 /model）只存在于浏览器，node 端看不到——清理必须在客户端上报贡献命令面
-  （catalog 请求带 `contributions` 参数）后才执行；参数缺失（外部/旧客户端调用）不清理；
-- 启动时不清理（此刻通常无 live 会话、也无贡献面，命令面不完整）；
-- 无 live 会话、sessions 服务缺失、任一 agent 命令面读取失败时**放弃本次清理**。
-
-**菜单可见 vs 设置页可见**：设置页目录是**未过滤视图**——隐藏的命令会带着"已隐藏"徽标
-列出来（这是为了能恢复显示）；**命令菜单和直接斜杠输入**中的隐藏才真正生效（双端过滤）。
-
-### 会话模式限制（沿用 dsh 自身机制）
-
-命令是否在当前会话可用，由 dsh 的 agent preset（会话模式）决定 —— 命令只在其挂载的
-agent 组合中注册/显示。极简模式（minimal）会话不包含的命令天然不出现，即使设置页选择了显示；
-本插件不做自定义模式过滤。
-
 ## 安装（GitHub 公开仓库，无需发布 npm）
 
 前置：`dsh plugin` 命令会把参数转发给 **PATH 上的 pnpm**（`npm i -g pnpm` 或 corepack）。仓库是**公开**的，直接安装即可，无需任何凭据或配置。
@@ -105,12 +67,10 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 > 装了 GitHub SSH key 的机器也可用简写（等价，走 SSH）：`dsh plugin --profile web add 'github:WensH77/dsh-plugins#path:command-setting'`
 
 ```yaml
-# 2) ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
+# 2) ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加（无需 config）
 - insert:
     - id: command-setting
       name: dsh-plugin-command-setting
-      config:
-        hidden: ['export', 'feedback', 'permission']
 ```
 
 ```bash
@@ -125,19 +85,13 @@ dsh web
 - 纯 JS、无 prepare 构建脚本 → 安装无需 allowBuilds；`dsh plugin add` 打印的 `declares no dsh.bundle` 警告是预期提示（普通插件不是 bundle 层，忽略即可）
 - pnpm v9 **不支持**「分支 + 子目录」组合写法（`#分支#path:` 会解析失败）；需要锁定版本时先 clone 仓库再用本地路径 `dsh plugin --profile web add ./command-setting`
 
-## 配置（settings.yaml）
+## 配置与存储
 
-```yaml
-command-setting:
-  # 全局隐藏的命令（默认 export / feedback / permission）
-  hidden:
-    - export
-    - feedback
-    - permission
-```
+插件不需要任何 `config`。**patch.yml 里若还留着 0.9.0 之前的 `config.hidden`，会被原样保留但不再生效**（命令隐藏已移除）。
 
-`config.hidden`（patch.yml 中的配置）是**初始默认值**，一旦在设置页编辑过，settings.yaml
-中的值即成为事实来源（两者合并，settings.yaml 优先）。`plan` / `goal` / `ask` 无论配置如何都不可隐藏。
+唯一的持久化状态是 ask 开关：`~/.dsh/command-setting-ask.json`（纯文本 JSON，`{ 会话id: true }`，可手改、可随 `~/.dsh` 一起备份；删掉即所有会话回到普通模式）。
+
+> 老版本写下的 `~/.dsh/command-setting-hidden.json` 已不再被读写，可以删除。
 
 ## 使用
 
@@ -190,15 +144,13 @@ command-setting:
 
 ## 设置页
 
-- 入口：设置页（General）中的「命令设置」区，位于 agent-presets 之后
-- 每条命令显示名称、说明、当前状态徽章（已隐藏 / 显示中 / 系统），一键切换
-- 修改立即写入 settings.yaml 并全局生效（commands/change 通知刷新）
+本插件不再注册设置页区块（原先的「命令设置」区随命令隐藏功能一起移除）。
 
 ## 测试
 
 ```bash
-node command-setting/test/smoke.mjs          # node 端：catalog/隐藏过滤/作用域/ask 判定
-node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐/交互 + # 检测/候选过滤/controller 包装与还原 + 划词引用（纯函数/伪 DOM 浮标）
+node command-setting/test/smoke.mjs          # node 端：ask 判定/提示段/ask-state 端点/切换通知与拦截装卸 + 隐藏域已删护栏
+node command-setting/test/client-smoke.mjs   # 浏览器端：模块加载/文案对齐 + # 检测/候选过滤/controller 包装与还原 + 划词引用（纯函数/伪 DOM 浮标）
 ```
 
 ## 变更日志

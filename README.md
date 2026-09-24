@@ -8,7 +8,7 @@
 | 插件 | 目录 | 功能 |
 |---|---|---|
 | **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
-| **command-setting** | [`command-setting/`](command-setting/README.md) | 命令设置：从 “+” / “/” 命令菜单隐藏/显示 slash 命令（默认 export/feedback/permission），设置页管理 + 外置 Plan 切换按钮 |
+| **command-setting** | [`command-setting/`](command-setting/README.md) | 输入区增强：外置 Plan / Ask 切换按钮（`/plan`、`/ask`——ask 为会话级只问答模式，禁改/禁建文件）、`#` 引用历史会话（跨工作区/未归档/主代理）、划词引用。**0.9.0 起移除原「命令隐藏」功能**，不再过滤命令菜单 |
 | **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发 |
 | **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做注意力代理——输出三口径来源占比（提及 / 体积 / 累计）、强度榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
 | ~~**arena-v2**~~（已弃用） | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | arena v2：类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者（业务探索/知识沉淀/测试用例场景、双 persona、固定挑战者模型）。**已停止维护**，移入 `deprecated/` 仅作存档；后续方案为 Theseus Crew（由 arena-v2 迁移而来） |
@@ -60,8 +60,6 @@ dsh plugin --profile web add ./plugin-market
       name: dsh-plugin-chat-rollback
     - id: command-setting
       name: dsh-plugin-command-setting
-      config:
-        hidden: ['export', 'feedback', 'permission']
 ```
 
 ```bash
@@ -121,9 +119,10 @@ dsh-plugins/
 │   ├── lib/client.js       #   浏览器端：用户气泡回滚按钮（DOM 注入）
 │   ├── test/               #   fork/rollback 测试
 │   └── package.json        #   dsh.client 声明 + peer 依赖
-├── command-setting/        # 命令设置插件
-│   ├── lib/index.js        #   Node 端：目录过滤 + catalog/set 端点
-│   ├── lib/client.js       #   浏览器端：设置页 + Plan 按钮
+├── command-setting/        # 输入区增强插件（Plan/Ask 按钮、# 会话引用、划词引用）
+│   ├── lib/index.js        #   Node 端：ask 装配 + ask-state 端点
+│   ├── lib/ask.js          #   ask（只问答）域：判定/提示段/切换通知/会话控制器
+│   ├── lib/client.js       #   浏览器端：Plan/Ask 按钮 + # 会话引用 + 划词引用
 │   ├── test/               #   smoke 测试
 │   └── package.json
 ├── deprecated/             # 已弃用插件存档（arena-v2、model-arena 竞技场 v1、session-export、tool-both）

@@ -2,6 +2,15 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.9.0
+
+- **移除「命令隐藏」功能**：不再从 “+” / “/” 命令菜单隐藏或过滤任何 slash 命令，设置页的「命令设置」区一并删除。原因：用户报告该功能已不可靠（隐藏不生效），决定不再维护这条通路，整体删掉而不是继续修。根因未深究（未做菜单侧复现实验）；0.8.6 那条针对该功能的修复记录随之从本文件移出（见下方「随之作废」）。
+- 删掉的代码：node 端 `lib/commands.js`（`shadowCommandList` 菜单过滤 / 命令面全集收集 / 归档清理）、`lib/hidden.js`（hidden 侧文件读写）、`GET /command-setting/catalog` 与 `POST /command-setting/set` 两个端点；浏览器端设置页 section（`settings.section` 注册）与菜单面 shadow（`commandUi.candidates` / `matchEnter` / `matchSpace`，含命令目录控制器与清单同步）。服务依赖相应收窄：node 端 `inject` 从 `['commands', 'webServer', 'agents', 'sessions']` 改为 `['commands', 'webServer']`，客户端从 6 项改为 `['slots', 'locale', 'sessions', 'remote', 'remote.commands']`。
+- 行为变化：命令菜单不再被插件过滤（`export` / `feedback` / `permission` 等恢复按 dsh 自身命令面显示）；直接输入 `/name` 一律由宿主解析，不再被插件拦下。
+- 兼容：patch.yml 里遗留的 `config.hidden` 会被原样保留但不再生效；0.9.0 之前写过的 `~/.dsh/command-setting-hidden.json` 成了孤儿文件，可以删（插件不再读写它）。`/ask`、Plan 按钮、`#` 会话引用、划词引用全部保留，行为不变。
+- 随之作废：**0.8.6 的「hidden 清单改存插件侧文件 + 修复设置页点隐藏恒失败」**——它修的是这次被删掉的通路，那批代码不再存在（该版本只在工作树里，未提交、未发布）。0.8.3–0.8.5 的 ask 相关改动保持有效。
+- 测试：`test/smoke.mjs` 删掉目录聚合 / 隐藏过滤 / 侧文件持久化 / 归档清理等用例，保留 ask 判定、提示段、ask-state 端点、切换通知与拦截装卸用例，并新增护栏（node 三个源文件不得再出现 `shadowCommandList` / `sweepArchived` / `hiddenSet` / `settings.register(` / `settings.watch(`，`lib/commands.js` 与 `lib/hidden.js` 不得复活）；`test/client-smoke.mjs` 删掉控制器与菜单 shadow 用例，保留字典对齐、`#` 会话引用与划词引用用例。
+
 ## 0.8.5
 
 - **修复划词引用点击后静默无反应（内容进不了输入框）**：`insertQuote` 用 `ctx.get("sessions")?.list.getSnapshot().current` 取目标会话，但客户端 `sessions.list` 快照只发 `ids` / `byId` / `phase` / `projectionsBySession`（`dsh-api-session-controller/lib/client.js` 的初始化与两处 `list.set`），**从来不包含 `current`**——取到的 id 恒为 `undefined`，函数在第二行 `return false`，表现就是「浮标能浮出来、点了没任何反应」。宿主自己取当前会话用的是 `Object.values(list.byId).find((s) => (s.retainedBy.mainView ?? 0) > 0)?.id`（`dsh-client-ui-workspace` 的 `mainSessionId`），现按同一口径新增 `quoteSessionId(list)`：优先 `retainedBy.mainView > 0` 的会话（id 取 `byId` 的键，不赌行对象上是否有 `id` 字段），其次兼容遗留的 `list.current`，最后退回 `ids[0]`。

@@ -1,18 +1,11 @@
-// Smoke test for command-setting node half: mock ctx (commands + webServer +
-// settings inject) and verify catalog aggregation and the hidden filter.
+// Smoke test for command-setting node half: mock ctx (commands + webServer) and
+// verify the /ask (Q&A-only) domain — tool deny rules, prompt section, ask-state
+// route, mode-switch notice and guard install/uninstall — plus a source guard on
+// the removed command-hiding feature.
 // Run: node test/smoke.mjs
-import { EventEmitter } from "node:events";
-import { apply } from "../lib/index.js";
+import { existsSync, readFileSync } from "node:fs";
 
-const DESCRIPTORS = [
-  { name: "export", description: "Export" },
-  { name: "feedback", description: "Feedback" },
-  { name: "permission", description: "Permission" },
-  { name: "plan", description: "Plan mode" },
-  { name: "goal", description: "Goal" },
-  { name: "theseus", description: "Theseus CLI" },
-  { name: "rollback", description: "Rollback" }
-];
+const { apply } = await import("../lib/index.js");
 
 let failed = 0;
 function check(label, cond, detail) {
@@ -24,35 +17,7 @@ function check(label, cond, detail) {
   }
 }
 
-const AGENT_DESCRIPTORS = [
-  { name: "compact", description: "Compact context" },
-  { name: "rollback", description: "Rollback" }
-];
-
-function makeCtx(routes, extraConfig, options = {}) {
-  // 可变 settings 存储：sweep 的 scope.update 写入这里，updateCalls 记录每次
-  // 持久化结果供断言。
-  const value = { hidden: options.initialHidden ?? ["export", "feedback", "permission", "compact"] };
-  const updateCalls = [];
-  const watchers = [];
-  const settingsCtx = {
-    settings: {
-      register: (ns, schema, opts) => ({
-        get: () => ({ hidden: [...value.hidden] }),
-        watch: (cb) => { watchers.push(cb); return () => {}; },
-        update: async (patch) => {
-          value.hidden = [...(patch?.hidden ?? [])];
-          updateCalls.push([...value.hidden]);
-          for (const cb of watchers) cb();
-        }
-      }),
-      get: (ns) => ({ hidden: [...value.hidden] }),
-      update: async (ns, patch) => {
-        value.hidden = [...(patch?.hidden ?? [])];
-      }
-    },
-    effect: (fn) => fn()
-  };
+function makeCtx(routes) {
   const ctx = {
     logger: { info: () => {}, warn: () => {} },
     // cordis ctx.effect: runs the callback now, returns its disposer (lib binds
@@ -62,12 +27,6 @@ function makeCtx(routes, extraConfig, options = {}) {
       return typeof dispose === "function" ? dispose : () => {};
     },
     commands: {
-      list: (agent) => {
-        if (agent === void 0) return DESCRIPTORS.slice();
-        if (typeof agent === "string") return []; // wrong key type: no agent layer
-        return AGENT_DESCRIPTORS.slice();
-      },
-      notifyChange: () => {},
       register: (definition) => {
         const registered = (ctx.__registeredCommands ??= []);
         registered.push(definition.name);
@@ -77,12 +36,6 @@ function makeCtx(routes, extraConfig, options = {}) {
         };
       }
     },
-    agents: {
-      get: (id) => (id === "s1" ? { id: "s1", agent: true } : void 0)
-    },
-    // sessions 供归档清理的全集收集；缺省给一个 live 会话 s1；显式 undefined
-    // 可模拟服务缺失（清理应放弃）。
-    sessions: options.sessions === undefined ? { list: () => [{ id: "s1" }] } : options.sessions,
     on: (event, listener) => {
       const listeners = (ctx.__events ??= {});
       const bucket = (listeners[event] ??= []);
@@ -97,12 +50,9 @@ function makeCtx(routes, extraConfig, options = {}) {
         routes.set(path, handler);
         return () => routes.delete(path);
       }
-    },
-    inject: (names, cb) => cb(settingsCtx)
+    }
   };
-  apply(ctx, extraConfig);
-  ctx.__value = value;
-  ctx.__updateCalls = updateCalls;
+  apply(ctx);
   return ctx;
 }
 
@@ -119,217 +69,8 @@ function request(routes, path, params) {
   });
 }
 
-function postRequest(routes, path, payload) {
-  const handler = routes.get(path);
-  if (handler === undefined) throw new Error("no route: " + path);
-  return new Promise((done) => {
-    const req = new EventEmitter();
-    req.url = "http://x" + path;
-    const res = {
-      writeHead: (status, headers) => { res.status = status; res.headers = headers; },
-      end: (body) => { res._body = String(body); done(res); }
-    };
-    handler(req, res);
-    req.emit("data", Buffer.from(JSON.stringify(payload)));
-    req.emit("end");
-  });
-}
-
-// ── context 1: default config ───────────────────────────────────────────────
-const routes = new Map();
-const ctx = makeCtx(routes, {});
-
-let r = await request(routes, "/command-setting/catalog");
-let body = JSON.parse(r._body);
-check("catalog ok", r.status === 200 && body.ok === true);
-check("catalog lists all global commands", Array.isArray(body.commands) && body.commands.length === DESCRIPTORS.length);
-check("catalog returns protected", Array.isArray(body.protected) && body.protected.includes("plan"));
-check("catalog hidden from settings scope", Array.isArray(body.hidden) && body.hidden.includes("export"));
-
-const filtered = ctx.commands.list(void 0);
-check("list shadow filters hidden", filtered.every((d) => !["export", "feedback", "permission"].includes(d.name)));
-check("list keeps others", filtered.some((d) => d.name === "theseus"));
-check("list keeps protected", filtered.some((d) => d.name === "plan"));
-
-// ── context 2: session-scoped catalog unions agent commands (e.g. /compact) ─
-r = await request(routes, "/command-setting/catalog", { session: "s1" });
-body = JSON.parse(r._body);
-check("session catalog ok", body.ok === true);
-check("session catalog includes global", body.commands.some((c) => c.name === "export"));
-check("session catalog includes agent-scoped compact", body.commands.some((c) => c.name === "compact"));
-check("session catalog includes agent-scoped rollback", body.commands.some((c) => c.name === "rollback"));
-// raw-string session ids must NOT resolve an agent layer (the old bug)
-r = await request(routes, "/command-setting/catalog", { session: "no-such-session" });
-body = JSON.parse(r._body);
-check("unknown session falls back to global only", body.ok && !body.commands.some((c) => c.name === "compact"));
-
-// ── context 3: per-agent menu list still applies the global hidden filter ──
-const agentView = ctx.commands.list({ id: "s1" });
-check("per-agent menu list hides compact", agentView.every((d) => d.name !== "compact"));
-check("per-agent menu list keeps rollback", agentView.some((d) => d.name === "rollback"));
-
-// ── context 3: config.hidden is the composition base ───────────────────────
-const routes2 = new Map();
-makeCtx(routes2, { hidden: ["export"] });
-r = await request(routes2, "/command-setting/catalog");
-body = JSON.parse(r._body);
-check("config hidden merges", body.ok && body.hidden.includes("export"));
-check("settings scope wins over config base", body.ok && body.hidden.includes("feedback"));
-
-// ── context 4: stop → start (settings registration leaks across stop; re-apply must not throw) ──
-function makeLeakySettings() {
-  const registrations = new Map(); // leaks: mimic dsh-settings tying the namespace to the provider's fiber
-  return {
-    register(ns, schema, opts) {
-      if (registrations.has(ns)) throw new Error('settings namespace "' + ns + '" is already registered');
-      const reg = { value: { hidden: ['export', 'feedback', 'permission'] }, watchers: [] };
-      registrations.set(ns, reg);
-      return {
-        get: () => reg.value,
-        watch: (cb) => { reg.watchers.push(cb); return () => {}; },
-        update: async (patch) => { reg.value = { ...reg.value, ...patch }; }
-      };
-    },
-    get: (ns) => registrations.get(ns)?.value,
-    update: (ns, patch) => { const reg = registrations.get(ns); reg.value = { ...reg.value, ...patch }; return Promise.resolve(); }
-  };
-}
-
-function makeRestartCtx(routes) {
-  const settings = makeLeakySettings();
-  const commands = {
-    list: () => DESCRIPTORS.slice(),
-    notifyChange: () => {}
-  };
-  const ctx = {
-    logger: { info: () => {}, warn: () => {} },
-    // cordis ctx.effect shim (see makeCtx): run now, hand back the disposer so
-    // dispose() still unregisters the routes
-    effect: (fn) => {
-      const dispose = fn();
-      return typeof dispose === "function" ? dispose : () => {};
-    },
-    commands,
-    agents: { get: () => void 0 },
-    webServer: {
-      register: ({ path, handler }) => {
-        routes.set(path, handler);
-        return () => routes.delete(path);
-      }
-    },
-    inject: (names, cb) => { cb({ settings }); return { dispose: () => {} }; }
-  };
-  return ctx;
-}
-
-{
-  const routes = new Map();
-  const ctx = makeRestartCtx(routes);
-  const dispose1 = apply(ctx, {});
-  let r = await request(routes, "/command-setting/catalog");
-  check("restart: first apply catalog ok", r.status === 200 && JSON.parse(r._body).ok === true);
-  check("restart: first apply filters list", ctx.commands.list().every((d) => !["export", "feedback", "permission"].includes(d.name)));
-
-  dispose1(); // stop
-
-  // After stop the list shadow must be restored (menu unfiltered again).
-  check("restart: list restored after stop", ctx.commands.list().some((d) => d.name === "export"));
-
-  // start again: must NOT throw "already registered"
-  let threw = false;
-  try {
-    apply(ctx, {});
-  } catch (_reapplyFailure) {
-    threw = true;
-  }
-  check("restart: re-apply does not throw", !threw);
-  r = await request(routes, "/command-setting/catalog");
-  check("restart: second apply catalog ok", r.status === 200 && JSON.parse(r._body).ok === true);
-  check("restart: second apply filters list", ctx.commands.list().every((d) => !["export", "feedback", "permission"].includes(d.name)));
-}
-
-// ── context 5: archived (ghost) hidden entries are swept ───────────────────
-// hidden 里的条目已不在命令面（命令被卸载/更名）时，catalog 读取会主动清理并
-// 持久化；agent-scoped 命令（compact 在 s1 的 agent 层）不被误删。
-{
-  const routes5 = new Map();
-  const ctx5 = makeCtx(routes5, {}, { initialHidden: ["export", "ghostcmd", "compact"] });
-  // 客户端上报贡献面（空即可——此处没有贡献命令），命令面可信才清理
-  const r5 = await request(routes5, "/command-setting/catalog", { contributions: "" });
-  const body5 = JSON.parse(r5._body);
-  check("sweep: ghost entry removed from hidden", !body5.hidden.includes("ghostcmd"), JSON.stringify(body5.hidden));
-  check("sweep: global hidden kept", body5.hidden.includes("export"));
-  check("sweep: agent-scoped hidden kept", body5.hidden.includes("compact"));
-  check("sweep: persisted via scope.update", ctx5.__updateCalls.length >= 1 && !ctx5.__updateCalls[ctx5.__updateCalls.length - 1].includes("ghostcmd"), JSON.stringify(ctx5.__updateCalls));
-}
-
-// ── context 6: sessions 服务缺失时清理放弃（防误删） ─────────────────────────
-{
-  const routes6 = new Map();
-  const ctx6 = makeCtx(routes6, {}, { initialHidden: ["export", "ghostcmd", "compact"], sessions: null });
-  const r6 = await request(routes6, "/command-setting/catalog", { contributions: "" });
-  const body6 = JSON.parse(r6._body);
-  check("no-sessions: sweep skipped, ghost kept", body6.hidden.includes("ghostcmd"), JSON.stringify(body6.hidden));
-  check("no-sessions: update never called", ctx6.__updateCalls.length === 0, JSON.stringify(ctx6.__updateCalls));
-}
-
-// ── context 6b: 贡献命令（/model，浏览器端）的 hidden 受保护 ─────────────────
-// /model 只存在于客户端贡献面，node 端命令面看不到——客户端上报 contributions
-// 后必须保留；全局幽灵仍被清。
-{
-  const routes6b = new Map();
-  const ctx6b = makeCtx(routes6b, {}, { initialHidden: ["export", "model", "ghostcmd"] });
-  const r6b = await request(routes6b, "/command-setting/catalog", { contributions: "model" });
-  const body6b = JSON.parse(r6b._body);
-  check("contrib: contribution hidden kept", body6b.hidden.includes("model"), JSON.stringify(body6b.hidden));
-  check("contrib: global hidden kept", body6b.hidden.includes("export"));
-  check("contrib: ghost still swept", !body6b.hidden.includes("ghostcmd"), JSON.stringify(body6b.hidden));
-}
-
-// ── context 6c: 无 contributions 参数时清理放弃（外部/旧客户端，贡献面未知） ─
-{
-  const routes6c = new Map();
-  const ctx6c = makeCtx(routes6c, {}, { initialHidden: ["export", "ghostcmd"] });
-  const r6c = await request(routes6c, "/command-setting/catalog");
-  const body6c = JSON.parse(r6c._body);
-  check("no-contrib: sweep skipped, ghost kept", body6c.hidden.includes("ghostcmd"), JSON.stringify(body6c.hidden));
-  check("no-contrib: update never called", ctx6c.__updateCalls.length === 0, JSON.stringify(ctx6c.__updateCalls));
-}
-
-// ── context 6d: 有效隐藏全部保留——命令面含所有 hidden 名时不删不写 ──────────
-{
-  const routes6d = new Map();
-  const ctx6d = makeCtx(routes6d, {}, { initialHidden: ["export", "feedback", "permission", "compact", "rollback"] });
-  const r6d = await request(routes6d, "/command-setting/catalog", { contributions: "" });
-  const body6d = JSON.parse(r6d._body);
-  check("all-known: no hidden dropped", ["export", "feedback", "permission", "compact", "rollback"].every((n) => body6d.hidden.includes(n)), JSON.stringify(body6d.hidden));
-  check("all-known: no settings write", ctx6d.__updateCalls.length === 0, JSON.stringify(ctx6d.__updateCalls));
-}
-
-// ── context 7: set endpoint validation and dedupe ────────────────────────────
-{
-  const routes7 = new Map();
-  const ctx7 = makeCtx(routes7, {}, { initialHidden: [] });
-
-  let r7 = await postRequest(routes7, "/command-setting/set", { hidden: "not-an-array" });
-  check("set: bad-hidden 400", r7.status === 400 && JSON.parse(r7._body).code === "bad-hidden");
-
-  r7 = await postRequest(routes7, "/command-setting/set", { hidden: ["export", "BAD Name"] });
-  check("set: bad-name 400", r7.status === 400 && JSON.parse(r7._body).code === "bad-name");
-
-  r7 = await postRequest(routes7, "/command-setting/set", { hidden: ["export", "export", "feedback", "plan"] });
-  const body7 = JSON.parse(r7._body);
-  check("set: ok", r7.status === 200 && body7.ok === true);
-  check("set: duplicates collapsed", JSON.stringify(body7.hidden) === JSON.stringify(["export", "feedback"]), JSON.stringify(body7.hidden));
-  check("set: protected dropped on write", !body7.hidden.includes("plan"));
-  check("set: persisted", JSON.stringify(ctx7.__value.hidden) === JSON.stringify(["export", "feedback"]), JSON.stringify(ctx7.__value.hidden));
-
-  r7 = await postRequest(routes7, "/command-setting/set", { hidden: ["a".repeat(100000)] });
-  check("set: oversized body rejected (not 200)", r7.status !== 200, "status=" + r7.status);
-}
-
-// ── context 8: ask 模式 ─────────────────────────────────────────────────────
-// 8a. 纯判定函数 askToolDenyReason：只读放行、写类硬拦、bash 写命令拦、bash 只读放行
+// ── context 1: ask 判定函数 askToolDenyReason ───────────────────────────────
+// 只读放行、写类硬拦、bash 写命令拦、bash 只读放行
 {
   const { askToolDenyReason } = await import("../lib/index.js");
   check("ask: edit denied", askToolDenyReason("edit", { file_path: "a.txt" }) !== void 0);
@@ -360,7 +101,8 @@ function makeRestartCtx(routes) {
     command: "python3 - <<'EOF'\np='src/messages.ts'\nprint(open(p).read()[:100])\nEOF"
   }) === void 0);
 }
-// 8b. ask 提示段：禁改文件 / 禁诱导提问 / 可只读验证 / 退出方式
+
+// ── context 2: ask 提示段：禁改文件 / 禁诱导提问 / 可只读验证 / 退出方式 ──────
 {
   const { buildAskSection } = await import("../lib/index.js");
   const section = buildAskSection();
@@ -370,22 +112,27 @@ function makeRestartCtx(routes) {
   check("ask: section mentions exit", section.includes("/ask off"));
 }
 
-// 8c. /ask 命令注册 + ask-state 端点（mock ctx 下：命令注册成功、端点可查、事件监听就绪）
+// ── context 3: /ask 命令注册 + ask-state 端点 ───────────────────────────────
+// mock ctx 下：命令注册成功、端点可查、事件监听就绪
 {
-  const routes8c = new Map();
-  const ctx8c = makeCtx(routes8c, {}, { initialHidden: [] });
-  check("ask: /ask command registered", Array.isArray(ctx8c.__registeredCommands) && ctx8c.__registeredCommands.includes("ask"));
-  check("ask: agent/created listener attached", Array.isArray(ctx8c.__events?.["agent/created"]) && ctx8c.__events["agent/created"].length >= 1);
-  check("ask: agent/disposed listener attached", Array.isArray(ctx8c.__events?.["agent/disposed"]) && ctx8c.__events["agent/disposed"].length >= 1);
-  let r8c = await request(routes8c, "/command-setting/ask-state", { session: "s1" });
-  let body8c = JSON.parse(r8c._body);
-  check("ask: state endpoint ok (off)", r8c.status === 200 && body8c.ok === true && body8c.active === false);
-  r8c = await request(routes8c, "/command-setting/ask-state", { session: "nope;rm" });
-  body8c = JSON.parse(r8c._body);
-  check("ask: state endpoint rejects malformed session", r8c.status === 200 && body8c.ok === true && body8c.active === false);
+  const routes3 = new Map();
+  const ctx3 = makeCtx(routes3);
+  check("ask: /ask command registered", Array.isArray(ctx3.__registeredCommands) && ctx3.__registeredCommands.includes("ask"));
+  check("ask: agent/created listener attached", Array.isArray(ctx3.__events?.["agent/created"]) && ctx3.__events["agent/created"].length >= 1);
+  check("ask: agent/disposed listener attached", Array.isArray(ctx3.__events?.["agent/disposed"]) && ctx3.__events["agent/disposed"].length >= 1);
+  let r3 = await request(routes3, "/command-setting/ask-state", { session: "s1" });
+  let body3 = JSON.parse(r3._body);
+  check("ask: state endpoint ok (off)", r3.status === 200 && body3.ok === true && body3.active === false);
+  r3 = await request(routes3, "/command-setting/ask-state", { session: "nope;rm" });
+  body3 = JSON.parse(r3._body);
+  check("ask: state endpoint rejects malformed session", r3.status === 200 && body3.ok === true && body3.active === false);
+  r3 = await request(routes3, "/command-setting/ask-state");
+  body3 = JSON.parse(r3._body);
+  check("ask: state endpoint without session", r3.status === 200 && body3.ok === true && body3.active === false);
+  check("ask: only the ask-state route is registered", [...routes3.keys()].join(",") === "/command-setting/ask-state", [...routes3.keys()].join(","));
 }
 
-// 8d. ask 模式切换把「模式变了」注入会话（agent.inject），并装卸拦截
+// ── context 4: ask 模式切换把「模式变了」注入会话（agent.inject），并装卸拦截 ─
 //     （HOME 先指向临时目录：ask.js 的侧文件路径由 homedir() 在模块加载时决定，
 //     用查询串换一个模块实例，避免污染真实的 ~/.dsh/command-setting-ask.json）
 {
@@ -404,15 +151,15 @@ function makeRestartCtx(routes) {
   let sectionDisposed = 0;
   let guardDisposed = 0;
   let definition = null;
-  const ctx8d = {
+  const ctx4 = {
     logger: { info: () => {}, warn: () => {} },
     on: () => () => {},
     commands: { register: (def) => { definition = def; return () => {}; } }
   };
-  const controller8d = createAskController(ctx8d);
-  controller8d.registerAskCommand();
+  const controller4 = createAskController(ctx4);
+  controller4.registerAskCommand();
   const injected = [];
-  const agent8d = {
+  const agent4 = {
     id: "session-ask-test",
     options: {},
     session: { header: { origin: "main" } },
@@ -423,25 +170,25 @@ function makeRestartCtx(routes) {
     }
   };
 
-  const onResult8d = definition.handler({ agent: agent8d, rawInput: "" });
-  check("ask notice: /ask succeeds", onResult8d.kind === "success");
+  const onResult4 = definition.handler({ agent: agent4, rawInput: "" });
+  check("ask notice: /ask succeeds", onResult4.kind === "success");
   check("ask notice: entry injects one user message", injected.length === 1 && injected[0].role === "user");
   check("ask notice: entry message is a plugin notice",
     injected[0]?.source?.kind === "plugin:dsh-plugin-command-setting" && injected[0]?.source?.form === "notice"
       && !Object.hasOwn(injected[0]?.source ?? {}, "plugin") && typeof injected[0]?.source?.summary === "string");
   check("ask notice: entry text names ask mode", String(injected[0]?.content?.[0]?.text ?? "").includes("只问答"));
   check("ask notice: entry installs prompt section",
-    sectionCalls === 1 && controller8d.active("session-ask-test") === true);
+    sectionCalls === 1 && controller4.active("session-ask-test") === true);
 
-  const offResult8d = definition.handler({ agent: agent8d, rawInput: "off" });
-  check("ask notice: /ask off succeeds", offResult8d.kind === "success");
+  const offResult4 = definition.handler({ agent: agent4, rawInput: "off" });
+  check("ask notice: /ask off succeeds", offResult4.kind === "success");
   check("ask notice: exit injects a second notice", injected.length === 2);
   check("ask notice: exit text says default mode",
     String(injected[1]?.content?.[0]?.text ?? "").includes("普通模式"));
   check("ask notice: exit summary differs from entry",
     injected[1]?.source?.summary !== injected[0]?.source?.summary);
   check("ask notice: exit removes section and guard",
-    sectionDisposed === 1 && guardDisposed === 1 && controller8d.active("session-ask-test") === false);
+    sectionDisposed === 1 && guardDisposed === 1 && controller4.active("session-ask-test") === false);
 
   // 准入回归护栏：v4 会话对 message.source.kind 的准入规则（宿主
   // dsh-session-format-v3-to-v4 的 source()）要求非空字符串且**不允许裸 "plugin"**
@@ -455,9 +202,9 @@ function makeRestartCtx(routes) {
         && sourceValue.kind !== "plugin" && !Object.hasOwn(sourceValue, "plugin");
     }));
 
-  const noopResult8d = definition.handler({ agent: agent8d, rawInput: "off" });
+  const noopResult4 = definition.handler({ agent: agent4, rawInput: "off" });
   check("ask notice: repeated off injects nothing",
-    noopResult8d.kind === "success" && injected.length === 2);
+    noopResult4.kind === "success" && injected.length === 2);
 
   // 隔离自证：状态写进临时 HOME，真实侧文件逐字节不变
   check("ask notice: side file written under fake HOME",
@@ -465,6 +212,24 @@ function makeRestartCtx(routes) {
   const realAfter = fsm.existsSync(realAskFile) ? fsm.readFileSync(realAskFile, "utf8") : null;
   check("ask notice: real side file untouched", realAfter === realBefore);
   fsm.rmSync(fakeHome, { recursive: true, force: true });
+}
+
+// ── guard: 命令隐藏已整体移除，不得回潮 ─────────────────────────────────────
+// 0.9.0 删掉了「从命令菜单隐藏命令」这一功能（原因见 CHANGELOG）：node 半边不再
+// shadow commands.list，也不再提供 catalog/set 端点。逐字节钉住这三点，避免以后
+// 又把隐藏域写回来；同时旧域文件（commands.js / hidden.js）不得复活。
+{
+  const srcDir = new URL("../lib/", import.meta.url);
+  const files = ["index.js", "routes.js", "ask.js"];
+  const banned = /settings\s*\.\s*(register|watch)\s*\(|shadowCommandList|sweepArchived|hiddenSet/;
+  const offenders = [];
+  for (const file of files) {
+    const text = readFileSync(new URL(file, srcDir), "utf8");
+    if (banned.test(text)) offenders.push(file);
+  }
+  check("guard: no hiding code left in the node half", offenders.length === 0, offenders.join(", "));
+  check("guard: hiding domain files removed",
+    !existsSync(new URL("commands.js", srcDir)) && !existsSync(new URL("hidden.js", srcDir)));
 }
 
 console.log(failed === 0 ? "\nALL PASS" : "\n" + failed + " FAILED");
