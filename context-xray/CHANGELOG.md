@@ -1,8 +1,15 @@
 # 变更日志
 
+## 0.1.1
+
+- **注入块展示名跟上格式 v4 的 producer-owned kind**：v4 只收「生产者自有 kind」——运行时快照从退役的 `{ kind: 'plugin' }` 包装变成裸名 `runtime-context`，第三方插件变成 `plugin:<包名>`；标签表里只认退役的 `plugin` 键，于是报告里冒出「注入：runtime-context」「注入：plugin:dsh-plugin-theseus-crew」这种机器名。
+  改为熟键（`runtime-context` → 运行时快照、`tool-jobs` → 后台任务通知、`plugin:dsh-plugin-theseus-crew` → Theseus Crew 阶段指令）+ fallback 剥 `plugin:` 前缀再查一次，都不中才原样展示。不逐个插件补键，是因为插件面开放、补不完。
+  fallback 里保留前缀是有意的：前缀本身标的是「第三方来源」；退役的 `plugin` 键保留，是因为离线入口读的仍是 v3 日志。
+- smoke 19 → 20 项（新增注入标签用例）。
+
 ## 0.1.0
 
-首个版本（尚未提交，改动都并在这里）。
+首个版本。
 
 **产出**
 

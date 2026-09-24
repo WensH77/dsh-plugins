@@ -42,13 +42,45 @@ export function terms(text, options = {}) {
   return out;
 }
 
-/** 上下文块的展示名。注入类必须与用户自己发的消息分开，否则归因会说谎。 */
+/**
+ * 上下文块的展示名。注入类必须与用户自己发的消息分开，否则归因会说谎。
+ *
+ * kind 由生产者命名。dsh 0.1.7 起格式 v4 只收「生产者自有 kind」：第一方用裸名
+ * （`runtime-context` / `tool-jobs` / `agent-instructions` …），第三方插件用
+ * `plugin:<包名>`，退役的 `{ kind: 'plugin', plugin }` 包装会被拒绝（见
+ * @deepseek-ai/dsh-session-format-v3-to-v4 的 producerKind）。所以这里只列真正
+ * 见过、且裸名读不出意思的几种，不给每个插件补键——插件面是开放的，补不完。
+ */
 const INJECTION_LABELS = {
   'session-reference': '注入：会话引用快照',
   'agent-instructions': '注入：工作区指令',
   'skill-catalog': '注入：技能目录',
+  'runtime-context': '注入：运行时快照',
+  'tool-jobs': '注入：后台任务通知',
+  'plugin:dsh-plugin-theseus-crew': '注入：Theseus Crew 阶段指令',
+  // v4 之前写入的退役包装：kind 恒为 'plugin'，真正的生产者名字在 plugin 字段里，
+  // 这里只读得到 kind，所以旧日志只能沿用最粗的那个标签（离线入口仍读 v3 日志）。
   plugin: '注入：运行时快照'
 };
+
+/**
+ * 取注入块的展示名。
+ *
+ * 表里没有就剥掉 `plugin:` 前缀再查一次——第一方的 kind 也可能被命名空间化，
+ * 剥完能命中已有标签；两者都不中才原样展示。fallback 里保留前缀是有意的：前缀
+ * 本身就是「这是第三方插件、不是宿主来源」的信息，为了好看抹掉它，归因会变模糊。
+ * @param kind - 宿主写入的 data.source.kind。
+ * @returns 展示名。
+ */
+function injectionLabel(kind) {
+  const text = typeof kind === 'string' ? kind : String(kind);
+  if (Object.hasOwn(INJECTION_LABELS, text)) return INJECTION_LABELS[text];
+  if (text.startsWith('plugin:')) {
+    const bare = text.slice('plugin:'.length);
+    if (Object.hasOwn(INJECTION_LABELS, bare)) return INJECTION_LABELS[bare];
+  }
+  return `注入：${text}`;
+}
 
 /** @returns 单行预览，用于区分同名的块（三个「工具结果：bash」得能分辨）。 */
 function preview(text) {
@@ -207,7 +239,7 @@ export function split(events) {
       const text = (data.content ?? []).map((block) => block.text ?? '').join('');
       if (text === '') continue;
       if (source === 'user') pushBlock({ kind: 'user', label: '用户消息', text });
-      else pushBlock({ kind: 'inject', label: INJECTION_LABELS[source] ?? `注入：${source}`, text });
+      else pushBlock({ kind: 'inject', label: injectionLabel(source), text });
       continue;
     }
     if (event?.type === 'tool/result') {

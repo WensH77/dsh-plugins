@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { analyzeMentions } from '../lib/mention.js';
+import { analyzeMentions, split } from '../lib/mention.js';
 import { apply } from '../lib/index.js';
 import { renderReport } from '../lib/render.js';
 
@@ -56,6 +56,34 @@ test('split 把上下文按来源分类，注入与用户消息分开', () => {
   assert.ok(kinds.includes('assistant'));
   assert.equal(report.totals.reasoning, 2);
   assert.equal(report.blocks.length, report.totals.blocks);
+});
+
+/** 造一条带指定 source.kind 的用户消息事件。 */
+function injected(kind) {
+  return { type: 'user/message', seq: 0, data: { role: 'user', source: { kind }, content: [{ type: 'text', text: '注入内容 widget' }] } };
+}
+
+/** 取一条注入事件拆出来的块标签。 */
+function injectLabel(kind) {
+  return split([injected(kind)]).blocks.find((block) => block.kind === 'inject')?.label;
+}
+
+test('注入块的展示名跟着生产者的 kind 走，未知插件剥前缀后仍能命中', () => {
+  // dsh 0.1.7 的格式 v4 把「运行时快照」从退役的 { kind: 'plugin' } 包装改成裸名
+  // runtime-context：不认这个键，报告里就会显示成「注入：runtime-context」。
+  assert.equal(injectLabel('runtime-context'), '注入：运行时快照');
+  assert.equal(injectLabel('agent-instructions'), '注入：工作区指令');
+  assert.equal(injectLabel('tool-jobs'), '注入：后台任务通知');
+  // 第三方插件的 kind 是 plugin:<包名>，熟键命中就给可读的名字。
+  assert.equal(injectLabel('plugin:dsh-plugin-theseus-crew'), '注入：Theseus Crew 阶段指令');
+  // 第一方 kind 被命名空间化时，剥前缀要能回落到已有标签。
+  assert.equal(injectLabel('plugin:tool-jobs'), '注入：后台任务通知');
+  // 不认识的插件：前缀保留——它标的是「第三方来源」，不是可有可无的装饰。
+  assert.equal(injectLabel('plugin:dsh-plugin-unknown'), '注入：plugin:dsh-plugin-unknown');
+  // 裸名不认识的原样展示。
+  assert.equal(injectLabel('team-message'), '注入：team-message');
+  // v4 之前的退役包装（离线入口读的 v3 日志里还在）不该退化。
+  assert.equal(injectLabel('plugin'), '注入：运行时快照');
 });
 
 test('归因带出覆盖率与强度，且 reasoning 里提到的块命中不为零', () => {
