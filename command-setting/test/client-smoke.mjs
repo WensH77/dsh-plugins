@@ -143,7 +143,7 @@ sandbox.fetch = async (url, init) => {
     inject: () => {},
     get: () => void 0,
     commandUi: ui,
-    sessions: { list: { getSnapshot: () => ({ current: "s1" }) } },
+    sessions: { list: { getSnapshot: () => ({ ids: ["s1"], byId: { s1: { id: "s1", retainedBy: { mainView: 1 } } }, phase: "ready" }) } },
     remote,
     on: () => () => {}
   });
@@ -403,7 +403,7 @@ sandbox.fetch = async (url, init) => {
 
 // ── 划词引用：纯函数 + 伪 DOM 交互 ─────────────────────────────────────────
 {
-  const { quoteSelectionText, appendQuoteToDraft, quoteAnchor, insertQuote } = loaded;
+  const { quoteSelectionText, appendQuoteToDraft, quoteAnchor, insertQuote, quoteSessionId } = loaded;
 
   check("quote text: blockquote per line", quoteSelectionText("a\nb") === "> a\n> b", quoteSelectionText("a\nb"));
   check("quote text: blank line kept as bare >", quoteSelectionText("a\n\nb") === "> a\n>\n> b", quoteSelectionText("a\n\nb"));
@@ -439,18 +439,26 @@ sandbox.fetch = async (url, init) => {
   // insertQuote：setDraft（无 chip）/ paste（有 chip）/ 缺会话或 shell
   const drafts = [];
   const pasted = [];
+  // 真实宿主的 sessions.list 快照：只有 ids/byId/phase/projectionsBySession，
+  // 「当前会话」体现为 retainedBy.mainView > 0（没有 current 字段）。
+  const hostList = (id) => ({ ids: [id], byId: { [id]: { id, retainedBy: { mainView: 1 } } }, phase: "ready" });
   const makeCtx = (snapshot, shellExtras = {}) => ({
     get: (name) => {
-      if (name === "sessions") return { list: { getSnapshot: () => ({ current: "s1" }) } };
+      if (name === "sessions") return { list: { getSnapshot: () => hostList("s1") } };
       if (name === "conversation") return { input: { shell: () => ({ state: { getSnapshot: () => snapshot }, setDraft: (value) => drafts.push(value), ...shellExtras }) } };
       return void 0;
     }
   });
+  check("quoteSessionId: main-view retained session", quoteSessionId(hostList("s7")) === "s7", String(quoteSessionId(hostList("s7"))));
+  check("quoteSessionId: no current field needed", quoteSessionId({ ids: ["a", "b"], byId: { a: { retainedBy: {} }, b: { retainedBy: { mainView: 1 } } }, phase: "ready" }) === "b");
+  check("quoteSessionId: legacy current honoured", quoteSessionId({ ids: [], byId: {}, current: "legacy" }) === "legacy");
+  check("quoteSessionId: last-resort first id", quoteSessionId({ ids: ["only"], byId: {}, phase: "ready" }) === "only");
+  check("quoteSessionId: empty / missing list", quoteSessionId({ ids: [], byId: {}, phase: "pending" }) === void 0 && quoteSessionId(void 0) === void 0 && quoteSessionId(null) === void 0);
   check("insertQuote: setDraft appends the quote", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "a\nb") === true && drafts[0] === "hi\n\n> a\n> b\n\n", JSON.stringify(drafts));
   check("insertQuote: empty selection is a no-op", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "   ") === false);
   check("insertQuote: existing chips go through paste", insertQuote(makeCtx({ draft: "@file", occurrences: [{}] }, { paste: (value) => pasted.push(value) }), "a") === true && pasted[0] === "\n\n> a\n\n", JSON.stringify(pasted));
-  check("insertQuote: no current session", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => ({ current: void 0 }) } } : void 0 }, "a") === false);
-  check("insertQuote: no shell", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => ({ current: "s1" }) } } : { input: { shell: () => void 0 } } }, "a") === false);
+  check("insertQuote: no current session", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => ({ ids: [], byId: {}, phase: "ready" }) } } : void 0 }, "a") === false);
+  check("insertQuote: no shell", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => hostList("s1") } } : { input: { shell: () => void 0 } } }, "a") === false);
 
   // installQuoteSelection：伪 DOM 下浮标显示/点击/卸载
   const originalDocument = sandbox.document;

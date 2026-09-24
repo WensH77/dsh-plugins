@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.8.5
+
+- **修复划词引用点击后静默无反应（内容进不了输入框）**：`insertQuote` 用 `ctx.get("sessions")?.list.getSnapshot().current` 取目标会话，但客户端 `sessions.list` 快照只发 `ids` / `byId` / `phase` / `projectionsBySession`（`dsh-api-session-controller/lib/client.js` 的初始化与两处 `list.set`），**从来不包含 `current`**——取到的 id 恒为 `undefined`，函数在第二行 `return false`，表现就是「浮标能浮出来、点了没任何反应」。宿主自己取当前会话用的是 `Object.values(list.byId).find((s) => (s.retainedBy.mainView ?? 0) > 0)?.id`（`dsh-client-ui-workspace` 的 `mainSessionId`），现按同一口径新增 `quoteSessionId(list)`：优先 `retainedBy.mainView > 0` 的会话（id 取 `byId` 的键，不赌行对象上是否有 `id` 字段），其次兼容遗留的 `list.current`，最后退回 `ids[0]`。
+- 测试：client-smoke 新增 `quoteSessionId` 一组（main-view 命中、无 `current` 字段也命中、legacy `current`、退回 `ids[0]`、空/缺列表返回 `undefined`）；`makeCtx` 与 apply fixture 的 `sessions` mock 从伪造的 `{ current: "s1" }` 改为真实宿主形状（只带 `ids`/`byId`/`phase`）——原来的 mock 正是这个缺陷长期未被测试发现的原因。改回旧写法时 `insertQuote: setDraft appends the quote`、`insertQuote: existing chips go through paste`、`quote: click writes the quote into the draft` 三条会 FAIL（已实测）。
+
 ## 0.8.4
 
 - **修复 0.8.3 的 ask 切换通知被 v4 会话准入整条拒掉（静默退化）**：0.8.3 注入的那条 notice 用的是 v3 包装写法 `source: { kind: 'plugin', plugin: 'command-setting', form: 'notice' }`，而当前会话格式是 v4——message source 的 `kind` 必须是**生产者自有**的（非空字符串且不能是裸 `'plugin'`），落盘编码（`session-persistence-jsonl` 的 `encodeEvent` → `dsh-session-format-v3-to-v4` 的 `assertV4RowAdmission` → `source()`）会抛 `format v4 message requires a producer-owned source kind`。实测：把插件真实的 `buildAskNotice(true)` 交给 `releasedV4SessionFormatCodec.encodeEvent`，正是这条报错。后果是 `/ask`、`/ask off` 的切换通知进不了会话日志（转录里没有这条 notice，重载后模型看不到模式已变），ask 开关本身仍生效——0.8.3 想修的问题原样还在。

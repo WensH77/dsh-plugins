@@ -750,6 +750,27 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 解析「当前会话」id：优先主视图保留的会话（`retainedBy.mainView > 0`，
+		 * 与宿主 `mainSessionId` 同构），其次列表快照上遗留的 `current`，最后列表首个 id。
+		 *
+		 * 客户端的 `sessions.list` 快照只发 `ids` / `byId` / `phase` /
+		 * `projectionsBySession`（`dsh-api-session-controller`），**没有 `current`**；
+		 * 曾按 `snapshot.current` 取 id，结果恒为 undefined，划词引用静默 no-op。
+		 * @param list - `sessions.list.getSnapshot()` 的返回值。
+		 * @returns 会话 id，或 undefined（无可用会话）。
+		 */
+		function quoteSessionId(list) {
+			if (list === null || list === void 0) return void 0;
+			const byId = list.byId ?? {};
+			for (const [id, row] of Object.entries(byId)) {
+				if (((row ?? {}).retainedBy?.mainView ?? 0) > 0 && id !== "") return id;
+			}
+			const legacy = list.current;
+			if (typeof legacy === "string" && legacy !== "") return legacy;
+			return Array.isArray(list.ids) && typeof list.ids[0] === "string" ? list.ids[0] : void 0;
+		}
+
+		/**
 		 * 把选中文本追加到当前会话 composer（草稿末尾，光标停在引用块下方）。
 		 * 草稿里已有原子引用 chip 时走 `paste`（`setDraft` 会把 chip 压成纯文本）。
 		 * @returns 是否写入成功。
@@ -757,7 +778,7 @@ window.__ModuleLoader__.load({
 		function insertQuote(ctx, text) {
 			const quote = quoteSelectionText(text);
 			if (quote === "") return false;
-			const sessionId = ctx.get("sessions")?.list.getSnapshot().current;
+			const sessionId = quoteSessionId(ctx.get("sessions")?.list.getSnapshot());
 			if (typeof sessionId !== "string" || sessionId === "") return false;
 			let shell;
 			try {
@@ -1014,6 +1035,7 @@ window.__ModuleLoader__.load({
 		exports.appendQuoteToDraft = appendQuoteToDraft;
 		exports.installQuoteSelection = installQuoteSelection;
 		exports.insertQuote = insertQuote;
+		exports.quoteSessionId = quoteSessionId;
 		exports.quoteAnchor = quoteAnchor;
 		exports.quoteSelectionText = quoteSelectionText;
 		exports.installHashTrigger = installHashTrigger;
