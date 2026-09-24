@@ -1,4 +1,4 @@
-import { readFile, writeFile, rm } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { execFile } from 'node:child_process'
 
@@ -34,11 +34,6 @@ function execEnv(extra = {}) {
   return { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...extra }
 }
 
-/** 递归强制删除并吞错（清理临时/隔离目录的统一样板；仅删单个文件请直接 rm + force 不递归）。 */
-async function rmrf(target) {
-  await rm(target, { recursive: true, force: true }).catch(() => {})
-}
-
 /** 读 JSON 文件；文件缺失/损坏/解析失败返回 fallback（~/.dsh 状态文件的统一读取骨架）。 */
 async function readJsonFile(file, fallback) {
   try {
@@ -65,10 +60,6 @@ async function collectBody(req) {
   }
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^$(){}|[\]\\]/gu, '\\$&')
-}
-
 function githubRepoInfo(raw) {
   const value = String(raw ?? '').trim()
   if (value === '') throw new Error('仓库地址不能为空')
@@ -92,15 +83,6 @@ function githubRepoInfo(raw) {
     return { owner: pair[0], name: pair[1], path }
   }
   throw new Error('GitHub 地址格式无效（应为 owner/name 或完整 URL，可带 #path:子目录）')
-}
-
-/** 生成 pnpm git 安装 spec；带子目录时追加 #path: */
-function gitSpec(repoInfo) {
-  const base = 'github:' + repoInfo.owner + '/' + repoInfo.name
-  if (repoInfo.path !== null && repoInfo.path !== undefined && repoInfo.path !== '') {
-    return base + '#path:' + repoInfo.path
-  }
-  return base
 }
 
 /** 互斥队列工厂：串行化同类异步操作（同一 profile / store 并发会锁冲突，状态文件读改写会交错）。 */
@@ -154,14 +136,4 @@ function compareVersions(a, b) {
   return 0
 }
 
-/** 从 package.json 的 repository 字段解析 GitHub 仓库（owner/name/path），非 GitHub 返回 null。 */
-function repoToGithub(rawRepo) {
-  if (typeof rawRepo !== 'string' || rawRepo === '') return null
-  try {
-    return githubRepoInfo(rawRepo)
-  } catch {
-    return null
-  }
-}
-
-export { execFileAsync, isLoopback, sendJson, sendError, errMsg, execEnv, rmrf, readJsonFile, writeJsonFile, collectBody, escapeRegExp, githubRepoInfo, gitSpec, makeQueue, compareVersions, repoToGithub }
+export { execFileAsync, isLoopback, sendJson, sendError, errMsg, execEnv, readJsonFile, writeJsonFile, collectBody, githubRepoInfo, makeQueue, compareVersions }

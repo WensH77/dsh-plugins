@@ -4,10 +4,88 @@ import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { compareVersions, execEnv, execFileAsync, readJsonFile, writeJsonFile } from './util.js'
+import { compareVersions, execEnv, execFileAsync, makeQueue, readJsonFile, writeJsonFile } from './util.js'
 import { entryPkgMeta, findPatchPath, isUserInstalled, listEntries, readPatchState } from './patch.js'
-import { installedPackageDir, queuedStateFile } from './install.js'
-import { PROMPT_CAP, reviewLlmRoute, streamLlmText } from './review.js'
+
+// ── 以下 5 个小工具原属已删除的市场模块（install.js / review.js），随本文件保留 ──
+
+/** 已装包的本地目录（支持 scoped 包名）。 */
+function installedPackageDir(profileDir, moduleName) {
+  return moduleName.startsWith('@') ? join(profileDir, 'node_modules', ...moduleName.split('/')) : join(profileDir, 'node_modules', moduleName)
+}
+
+/** dsh 判定状态文件读写队列：read-modify-write 串行化，避免并发检测/分析收尾交错写坏文件。 */
+const queuedStateFile = makeQueue()
+
+/** 升级分析 prompt 的内容上限（防止逐版本材料 + diff 撑爆上下文）。 */
+const PROMPT_CAP = 85000
+
+/** 读取分析用的 LLM 路由：优先级 请求级 override（用户选的模型/推理程度）> 用户
+ *  agent-default-model 设置 > 回退 deepseek-official。override 形如 { model?, reasoningEffort? }。 */
+function reviewLlmRoute(ctx, override) {
+  try {
+    const settings = ctx.get('settings')
+    const model = settings?.get?.('agent-default-model')
+    const route = { provider: 'deepseek-official' }
+    if (model !== null && typeof model === 'object') {
+      if (typeof model.provider === 'string' && model.provider !== '') route.provider = model.provider
+      if (typeof model.model === 'string' && model.model !== '') route.model = model.model
+      if (typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '') route.reasoningEffort = model.reasoningEffort
+    }
+    if (override !== null && override !== undefined && typeof override === 'object') {
+      if (typeof override.model === 'string' && override.model !== '') route.model = override.model
+      if (typeof override.reasoningEffort === 'string' && override.reasoningEffort !== '') route.reasoningEffort = override.reasoningEffort
+    }
+    return route
+  } catch {
+    return { provider: 'deepseek-official' }
+  }
+}
+
+/**
+ * 直连 LLM 流式取完整回复文本（ctx.llm.stream，跟随 agent-default-model 路由或请求级
+ * 模型/推理程度 override，120s 自身超时；超时/中断返回 null，模型 finish 报错则抛出）。
+ * 手工组装消息与流式输出（插件零第三方依赖，不 import dsh-llm）。
+ */
+async function streamLlmText(ctx, promptText, signal, routeOverride) {
+  let llm = null
+  try { llm = ctx.get('llm') } catch {}
+  if (!llm || typeof llm.stream !== 'function') return null
+  const route = reviewLlmRoute(ctx, routeOverride)
+  const message = Object.freeze({
+    role: 'user',
+    id: randomUUID(),
+    content: Object.freeze([Object.freeze({ type: 'text', text: promptText })]),
+    source: Object.freeze({ kind: 'plugin', plugin: 'dsh-plugin-market' }),
+  })
+  const ownTimeout = AbortSignal.timeout(120000)
+  const effectiveSignal = signal !== undefined && signal !== null ? AbortSignal.any([signal, ownTimeout]) : ownTimeout
+  const options = {
+    provider: route.provider,
+    messages: Object.freeze([message]),
+    signal: effectiveSignal,
+  }
+  if (route.model !== undefined) options.model = route.model
+  if (route.reasoningEffort !== undefined) options.reasoningEffort = route.reasoningEffort
+  let text = ''
+  let finishFailure = null
+  try {
+    for await (const chunk of llm.stream(options)) {
+      if (signal?.aborted || ownTimeout.aborted) return null
+      if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'finish') {
+        if (chunk.reason?.kind === 'error') finishFailure = chunk.reason.failure
+        else if (chunk.reason?.kind === 'aborted') return null
+      }
+    }
+  } catch (error) {
+    if (signal?.aborted || ownTimeout.aborted) return null
+    throw error
+  }
+  if (finishFailure !== null) throw new Error('LLM 调用失败：' + String(finishFailure?.message ?? '未知错误'))
+  if (text === '') return null
+  return text
+}
 
 /** dsh 本体的 GitHub 仓库（侧边栏版本状态灯的检测对象，非插件市场自身）。 */
 const DSH_REPO = { owner: 'deepseek-ai', name: 'deepseek-harness' }
@@ -711,66 +789,6 @@ function parseBreakingReport(text) {
   }
 }
 
-/** 尽力把分析会话挂到当前工作区（客户端传当前 sessionId 定位；失败挂最近工作区/跳过）。 */
-async function attachSessionToWorkspace(ctx, sessionId, currentSessionId) {
-  try {
-    const ws = ctx.get('workspaceRegistry')
-    if (ws === null || ws === undefined || typeof ws.list !== 'function') return false
-    const workspaces = ws.list()
-    if (!Array.isArray(workspaces)) return false
-    let target = null
-    if (typeof currentSessionId === 'string' && currentSessionId !== '') {
-      target = workspaces.find((w) => Array.isArray(w?.sessionIds) && w.sessionIds.includes(currentSessionId)) ?? null
-    }
-    if (target === null) target = workspaces[workspaces.length - 1] ?? null
-    if (target !== null && typeof target.attachSession === 'function') {
-      await target.attachSession(sessionId)
-      return true
-    }
-  } catch {}
-  return false
-}
-
-/**
- * 创建可见的分析/执行会话并自动发题（默认模型）。与审查通道（纯 LLM 直连）不同：
- * 不归档、不 dispose，会话保留在侧边栏供用户查看。返回 { sessionId, session, startIdx }
- * 供后台轮询提取回复。
- * @param prefix - 会话 id 前缀（默认 dsh-update-，供按用途区分）。
- */
-async function createVisibleAnalysisSession(ctx, promptText, signal, prefix = 'dsh-update-') {
-  let agents = null
-  try { agents = ctx.get('agents') } catch {}
-  if (!agents || typeof agents.create !== 'function') return null
-  const route = reviewLlmRoute(ctx)
-  const sessionId = prefix + randomUUID().slice(0, 8)
-  let handle = null
-  try {
-    handle = await agents.create({
-      sessionId,
-      meta: { cwd: process.cwd() },
-      agentOptions: {
-        ...(route.provider !== undefined ? { provider: route.provider } : {}),
-        ...(route.model !== undefined ? { model: route.model } : {}),
-      },
-      signal,
-    })
-  } catch { return null }
-  if (handle === null || handle === undefined) return null
-  let agent = handle
-  try { agent = agents.get ? (agents.get(sessionId) ?? handle) : handle } catch { agent = handle }
-  if (!agent || typeof agent.followup !== 'function') return null
-  const session = agent.session ?? null
-  const message = Object.freeze({
-    role: 'user',
-    id: randomUUID(),
-    content: Object.freeze([Object.freeze({ type: 'text', text: promptText })]),
-    source: Object.freeze({ kind: 'plugin', plugin: 'dsh-plugin-market' }),
-  })
-  const startIdx = Array.isArray(session?.log) ? session.log.length : 0
-  agent.followup(message)
-  return { sessionId, session, startIdx }
-}
-
 /** dsh 升级分析直连通道：流式取文本 → 解析 breaking 报告（changes/breakingChanges/affectedPlugins）。 */
 async function runDshAnalysisLlm(ctx, promptText, signal) {
   const text = await streamLlmText(ctx, promptText, signal)
@@ -891,4 +909,4 @@ async function analyzeDshUpdate(ctx) {
   }
 }
 
-export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, attachSessionToWorkspace, createVisibleAnalysisSession, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard }
+export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard }

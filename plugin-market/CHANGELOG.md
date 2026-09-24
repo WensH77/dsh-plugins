@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.16.0
+
+- **重构：插件从「插件市场」精简为「dsh 版本状态灯」**——删除设置页「插件 → 插件市场」tab 及其全部功能：插件清单、启用/停用开关、GitHub 源管理、两阶段安装（隔离拉取 + 安全审查）、检查更新、更新、卸载、清理缓存、待重启提示、pnpm allowBuilds 自动授权、「帮我安装 / 帮我更新」会话入口。设置页不再有本插件的 tab，`dsh.client.inject` 也不再声明 `@deepseek-ai/dsh-client-ui-settings`。
+- **保留**：侧边栏品牌名下方的 dsh 版本状态灯及其全部行为——GitHub Releases 版本检测（启动 + 每小时）、绿/黄/红/灰四档、点击判定弹窗（可复制升级命令 / 版本变更明细 / 本地插件契约扫描证据）、未分析时先跑 L1 契约扫描再直连 LLM 逐版本分析、1s 快轮询 + 120s 守卫、判定口径 `verdictSchema` 与 `~/.dsh/plugin-market-dsh.json` 持久化。
+- **端点收敛到 3 个**：`GET /plugin-market/dsh-version`、`POST /plugin-market/dsh-version/check`、`POST /plugin-market/dsh-version/analyze`；其余 13 个端点与 `routeOverrideOf` 一并删除。
+- **宿主模块收敛**：删除 `lib/install.js`（安装/更新/任务队列/审查缓存）、`lib/review.js`（L0 扫描 + LLM 审查通道）、`lib/pnpm.js`（pnpm 与 git 通道）。dsh 版本检测用到的 `installedPackageDir`、`queuedStateFile`、`PROMPT_CAP`、`reviewLlmRoute`、`streamLlmText` 搬入 `lib/dsh.js`；`lib/patch.js` 裁剪为只保留只读视图 `findPatchPath` / `readPatchState` / `listEntries` / `entryPkgMeta` / `isUserInstalled`。`lib/index.js` 只剩 dsh 版本检测定时器 + 路由注册。
+- **test**：smoke 从「市场契约快照」改为「存留契约」——保留 util 纯函数、`readPatchState`、dsh 判定的 `rangeBreakFinding` / `scanFindingTag` / `pluginMachineLevel` / `dshBreakingGuard` 与 prompt 口径断言、client 渲染块（扫描报告折叠 / 升级命令推导 / 状态灯 paint 与轮询时间线）的假 DOM 执行；路由表断言从 16 条改为 3 条。删除的市场侧断言（补丁层写操作、`reviewKey`、`routeOverrideOf`、`localDependencyInfo`）随实现一并移除。
+
 ## 0.15.0
 
 - **fix：卸载带额外键的 insert 插件后写出非法 YAML、dsh 整树起不来**——`removeInsertRow` 原先只用正则吃掉「`- insert:` + `    - id: X` + 可选 `      name:`」三行，块内第 4 行起（`config:`／`disabled:` 等任意缩进键）会留在顶层变成裸缩进行，`cordis.patch.yml` 随即非法（`YAMLException: end of the stream or a document separator is expected`），重启 dsh 时整棵插件树起不来、市场 UI 也进不去，只能手改文件。改为按行定位条目区间（目标行 + 其后所有更深缩进的续行）并整体删除；块头若因此变空也一并删掉。

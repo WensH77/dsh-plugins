@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-market",
-  "description": "插件市场基础版：设置→插件页新增「插件市场」tab，展示已安装插件、管理可编辑保存的 GitHub 插件源、检查更新并更新插件（走 dsh 自己的 patch/pnpm 机制，HMR/重启生效）；侧边栏 DeepSeek Harness 下方新增 dsh 版本状态灯（启动+每小时检测 deepseek-harness 新版本，点击开新会话分析破坏性更新）",
-  "version": "0.15.0",
+  "description": "dsh 版本状态灯：侧边栏 DeepSeek Harness 下方显示已装 dsh 版本与更新状态（启动 + 每小时检测 deepseek-harness 最新发布版本），点击跑本地插件契约扫描 + LLM 逐版本分析，判断新版本是否影响本机已装插件的运行期兼容性（原「插件市场」的设置页 tab 与安装/更新/卸载功能已在 0.16.0 移除）",
+  "version": "0.16.0",
   "scripts": {
     "test": "node test/smoke.mjs"
   },
@@ -21,8 +21,7 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-locale"
       ]
     }
   },
@@ -34,17 +33,13 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-client-locale": "*",
-    "@deepseek-ai/dsh-client-ui-settings": "*"
+    "@deepseek-ai/dsh-client-locale": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
       "optional": true
     },
     "@deepseek-ai/dsh-client-locale": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-settings": {
       "optional": true
     }
   }
