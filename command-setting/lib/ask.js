@@ -123,7 +123,16 @@ function buildAskSection() {
  *  看不到「用户刚把 ask 关掉」这件事，只能靠自己历史里的旧结论判断，表现就是
  *  `/ask off` 后仍按 ask 模式作答。与 dsh-plan-mode 的 narration 同机制：注入一条
  *  `form: 'notice'` 的 plugin 消息（`agent.inject` = 排入 next-step、不唤醒），
- *  模型下一次请求可见，并留在会话历史里供后续步骤 / 轮次继续读到。 */
+ *  模型下一次请求可见，并留在会话历史里供后续步骤 / 轮次继续读到。
+ *
+ *  `kind` 必须是 **producer-owned**：裸 `'plugin'` 是 v3 的包装写法，v4 落盘准入
+ *  （jsonl 写盘的 `encodeEvent` → `assertV4RowAdmission` → `source()`）会以
+ *  「format v4 message requires a producer-owned source kind」整条拒掉。本 build 的
+ *  内存 `session.append` 不筛 source，失败出现在写盘那一站，症状是这条 notice 进不了
+ *  会话日志（转录里没有、重载后模型看不到），只留一条 warn。
+ *  写法取 v4 升级器（`dsh-session-format-v3-to-v4` 的 `producerKind`）对未登记插件名
+ *  的映射结果 `plugin:<包名>`，并去掉 `plugin` 字段——0.8.3 写成裸 `'plugin'` 就是这个
+ *  静默退化。 */
 function buildAskNotice(active) {
   const text = active
     ? '用户已把本会话切换为 ask（只问答）模式：只回答问题、只做只读验证，不要改动或创建文件。'
@@ -131,8 +140,7 @@ function buildAskNotice(active) {
   return createUserMessage({
     content: [{ type: 'text', text }],
     source: {
-      kind: 'plugin',
-      plugin: 'command-setting',
+      kind: 'plugin:dsh-plugin-command-setting',
       form: 'notice',
       summary: active ? 'ask 模式已开启（只问答）' : 'ask 模式已关闭'
     }

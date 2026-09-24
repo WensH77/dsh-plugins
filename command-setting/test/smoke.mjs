@@ -427,8 +427,8 @@ function makeRestartCtx(routes) {
   check("ask notice: /ask succeeds", onResult8d.kind === "success");
   check("ask notice: entry injects one user message", injected.length === 1 && injected[0].role === "user");
   check("ask notice: entry message is a plugin notice",
-    injected[0]?.source?.kind === "plugin" && injected[0]?.source?.form === "notice"
-      && injected[0]?.source?.plugin === "command-setting" && typeof injected[0]?.source?.summary === "string");
+    injected[0]?.source?.kind === "plugin:dsh-plugin-command-setting" && injected[0]?.source?.form === "notice"
+      && !Object.hasOwn(injected[0]?.source ?? {}, "plugin") && typeof injected[0]?.source?.summary === "string");
   check("ask notice: entry text names ask mode", String(injected[0]?.content?.[0]?.text ?? "").includes("只问答"));
   check("ask notice: entry installs prompt section",
     sectionCalls === 1 && controller8d.active("session-ask-test") === true);
@@ -442,6 +442,18 @@ function makeRestartCtx(routes) {
     injected[1]?.source?.summary !== injected[0]?.source?.summary);
   check("ask notice: exit removes section and guard",
     sectionDisposed === 1 && guardDisposed === 1 && controller8d.active("session-ask-test") === false);
+
+  // 准入回归护栏：v4 会话对 message.source.kind 的准入规则（宿主
+  // dsh-session-format-v3-to-v4 的 source()）要求非空字符串且**不允许裸 "plugin"**
+  // ——那是 v3 的包装写法，只有升级器才会把它映射成 plugin:<名>。写成裸 "plugin" 时
+  // 带这条 notice 的 agent/inbox/spliced 会在落盘编码那一站被整条拒绝，notice 静默
+  // 丢失（0.8.3 的真实缺陷）。这里不依赖宿主包，直接把该规则钉在两条 notice 上。
+  check("ask notice: sources pass v4 producer-owned admission",
+    injected.length === 2 && injected.every((message) => {
+      const sourceValue = message?.source;
+      return typeof sourceValue?.kind === "string" && sourceValue.kind.length > 0
+        && sourceValue.kind !== "plugin" && !Object.hasOwn(sourceValue, "plugin");
+    }));
 
   const noopResult8d = definition.handler({ agent: agent8d, rawInput: "off" });
   check("ask notice: repeated off injects nothing",

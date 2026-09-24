@@ -53,7 +53,7 @@ dsh web 命令设置插件：
 
 1. **开关**：composer 工具行 Ask 按钮（Plan 左侧，order -1）点击执行 `/ask`（进入）或 `/ask off`（退出）；直接输入 `/ask` 亦可。状态写入 `~/.dsh/command-setting-ask.json`（`{ 会话id: true }`），dsh web 重启后 `agent/created` 时自动恢复（`GET /command-setting/ask-state?session=<id>` 供按钮回显）。
 2. **提示约束**：开启时给该会话注入 `ask:policy` 系统提示段——专注问答、可读文件与 run_code/内联命令验证；**禁止改动或创建文件**；用户强行要求“直接改”时拒绝并提示先 `/ask off`；**禁止诱导性追加提问**（“需要我帮你改 xxx 吗”“需要我现在改 xxx 吗”“要不要顺手把 xxx 也改了”等）。
-3. **切换通知（会话上下文注入）**：`/ask`、`/ask off` 成功切换后向该会话注入一条 `plugin` 来源的 user notice（`agent.inject`，`form: 'notice'`，如「用户已把本会话切回普通模式（ask 已关闭）」）。slash 命令是 log-only 生命周期、**命令文本不下发模型**，系统提示段又只是「有 / 无」的静态渲染——没有这条通知时模型感知不到模式已变，会按旧模式继续作答（`/ask off` 后仍拒绝改文件）。通知排在下一步、不唤醒空闲会话，随下一次请求进入上下文并留在会话历史里；判定为 `noop` 的重复开关不注入。与宿主 `dsh-plan-mode` 的 narration 同机制。
+3. **切换通知（会话上下文注入）**：`/ask`、`/ask off` 成功切换后向该会话注入一条插件来源的 user notice（`agent.inject`，如「用户已把本会话切回普通模式（ask 已关闭）」），source 为 `{ kind: 'plugin:dsh-plugin-command-setting', form: 'notice', summary }`——v4 会话要求 `kind` 是生产者自有的，写裸 `'plugin'` 会让这条注入被落盘准入整条拒掉。slash 命令是 log-only 生命周期、**命令文本不下发模型**，系统提示段又只是「有 / 无」的静态渲染——没有这条通知时模型感知不到模式已变，会按旧模式继续作答（`/ask off` 后仍拒绝改文件）。通知排在下一步、不唤醒空闲会话，随下一次请求进入上下文并留在会话历史里；判定为 `noop` 的重复开关不注入。与宿主 `dsh-plan-mode` 的 narration 同机制。
 4. **执行级硬拦（tools.guard）**：注册在该会话 agent.ctx 的工具守卫在每次工具 dispatch 前判定——`edit` / `write` / `str_replace_editor` 一律拒绝；`bash` 检测到写命令/重定向（`cp`/`mv`/`rm`/`tee`/`sed -i`/`>`/`>>` 等）也拒绝；`read` / `grep` / `glob` / `run_code` 与只读 bash（`node -e` / `python3 -c` / 运行已有脚本 / `ping` / `curl`）放行。守卫返回拒绝文案而非静默放行，模型层面无法绕过（与 arena-v2 的 guard 同机制）；关闭 ask（`/ask off`）或会话销毁时随 disposer 卸载。
 5. **范围**：ask 为**会话级**——只影响开启它的会话主代理，其它会话、子代理不受影响；只读约束只作用于本会话的工具面，不改变全局 sandbox/approval 策略。
 

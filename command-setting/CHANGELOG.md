@@ -2,6 +2,14 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.8.4
+
+- **修复 0.8.3 的 ask 切换通知被 v4 会话准入整条拒掉（静默退化）**：0.8.3 注入的那条 notice 用的是 v3 包装写法 `source: { kind: 'plugin', plugin: 'command-setting', form: 'notice' }`，而当前会话格式是 v4——message source 的 `kind` 必须是**生产者自有**的（非空字符串且不能是裸 `'plugin'`），落盘编码（`session-persistence-jsonl` 的 `encodeEvent` → `dsh-session-format-v3-to-v4` 的 `assertV4RowAdmission` → `source()`）会抛 `format v4 message requires a producer-owned source kind`。实测：把插件真实的 `buildAskNotice(true)` 交给 `releasedV4SessionFormatCodec.encodeEvent`，正是这条报错。后果是 `/ask`、`/ask off` 的切换通知进不了会话日志（转录里没有这条 notice，重载后模型看不到模式已变），ask 开关本身仍生效——0.8.3 想修的问题原样还在。
+  - 现按 v4 升级器（`producerKind`）对未登记插件名的映射结果改写：`kind: 'plugin:dsh-plugin-command-setting'`，删掉 `plugin` 字段。
+  - 同一 build 的内存 `session.append` 不筛 source，拒掉发生在写盘那一站；0.8.3 的 warn 文案（`ask notice inject failed`）与写盘 warn 哪个先出现取决于具体路径，两者都只记 warn、不整轮失败。
+- 测试：node smoke 的 `ask notice` 断言改为钉新 kind（并断言 source 上不存在 `plugin` 字段）；新增一条不依赖宿主包的准入护栏——两条 notice 的 `source.kind` 必须非空、不得等于 `'plugin'`、不得携带 `plugin` 字段（该规则来自 `dsh-session-format-v3-to-v4` 的 `source()`）。把 `kind` 改回裸 `'plugin'` 时这条护栏与 kind 断言会一起 FAIL（已实测）。
+- 未改行为的部分：`/ask`、`/ask off` 的开关语义、`ask:policy` 提示段、`tools.guard` 硬拦、侧文件恢复、重复开关不注入，均与 0.8.3 一致。
+
 ## 0.8.3
 
 - **修复 `/ask off` 感知不到（ask 模式切换现在注入会话上下文）**：症状是关闭 ask 后 agent 仍按 ask 模式作答（继续以“当前是 ask 模式”为由拒绝改动文件）。根因有两条：
