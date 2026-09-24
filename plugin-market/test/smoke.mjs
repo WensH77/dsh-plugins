@@ -412,6 +412,16 @@ console.log('\n[状态灯「正在分析」← client.js 抽取]')
   assert(clientText.includes('ANALYZE_GUARD_MS'), '守卫带上限，请求卡死时不会把灯永久钉在「正在分析」')
 }
 
+// ── 消息 source 形态：v4 口径 plugin:<包名>，不得回退到退役的 { kind:'plugin', plugin } ──
+console.log('\n[消息 source 形态 ← lib/dsh.js]')
+{
+  const dshSrc = readFileSync(LIB_DSH, 'utf8')
+  assert(dshSrc.includes("source: Object.freeze({ kind: 'plugin:dsh-plugin-market' })"),
+    '直连 LLM 的消息 source 用 v4 口径 plugin:<包名>')
+  assert(!/source: Object\.freeze\(\{ kind: 'plugin',/.test(dshSrc),
+    "不再出现退役的 { kind: 'plugin', plugin } 包装（v4 准入会拒收，其它插件已统一）")
+}
+
 // ── 4) 路由表契约：routes.js 分发表 3 条固定 + client 引用 ⊆ 全集 ─────────────
 console.log('\n[路由表契约]')
 {

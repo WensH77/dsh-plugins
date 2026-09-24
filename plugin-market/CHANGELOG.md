@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.16.1
+
+- **fix：直连 LLM 的消息 source 跟上 v4 口径**——`lib/dsh.js` 里手工组装给 `ctx.llm.stream` 的消息原用退役的 `{ kind: 'plugin', plugin: 'dsh-plugin-market' }` 包装。这条消息**不落会话日志**（`assertV4RowAdmission` 只在 `dsh-session-persistence-jsonl` 与 `dsh-session-format-v3-to-v4` 里，`dsh-llm` 的 `createMessage` 只 clone+freeze、不校验 kind），所以它不会像 command-setting / theseus-crew 那样整轮 append 被拒；但同工作区其它插件已统一成 `plugin:<包名>`（command-setting `lib/ask.js:143`），这里跟上，避免将来这条消息接上持久化时踩同一个坑。
+- **test**：smoke 增加两条源码断言（必须含 `source: Object.freeze({ kind: 'plugin:dsh-plugin-market' })`、不得再出现 `source: Object.freeze({ kind: 'plugin',`）。
+
 ## 0.16.0
 
 - **重构：插件从「插件市场」精简为「dsh 版本状态灯」**——删除设置页「插件 → 插件市场」tab 及其全部功能：插件清单、启用/停用开关、GitHub 源管理、两阶段安装（隔离拉取 + 安全审查）、检查更新、更新、卸载、清理缓存、待重启提示、pnpm allowBuilds 自动授权、「帮我安装 / 帮我更新」会话入口。设置页不再有本插件的 tab，`dsh.client.inject` 也不再声明 `@deepseek-ai/dsh-client-ui-settings`。

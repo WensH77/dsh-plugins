@@ -46,6 +46,9 @@ function reviewLlmRoute(ctx, override) {
  * 直连 LLM 流式取完整回复文本（ctx.llm.stream，跟随 agent-default-model 路由或请求级
  * 模型/推理程度 override，120s 自身超时；超时/中断返回 null，模型 finish 报错则抛出）。
  * 手工组装消息与流式输出（插件零第三方依赖，不 import dsh-llm）。
+ * source 用 v4 口径的 `plugin:<包名>`（退役的 `{ kind: 'plugin', plugin }` 包装会被
+ * dsh-session-format-v3-to-v4 的准入拒绝；本条消息只进 llm.stream、不落会话日志，
+ * 但保持与其它插件同一形态，避免将来接持久化时踩坑）。
  */
 async function streamLlmText(ctx, promptText, signal, routeOverride) {
   let llm = null
@@ -56,7 +59,7 @@ async function streamLlmText(ctx, promptText, signal, routeOverride) {
     role: 'user',
     id: randomUUID(),
     content: Object.freeze([Object.freeze({ type: 'text', text: promptText })]),
-    source: Object.freeze({ kind: 'plugin', plugin: 'dsh-plugin-market' }),
+    source: Object.freeze({ kind: 'plugin:dsh-plugin-market' }),
   })
   const ownTimeout = AbortSignal.timeout(120000)
   const effectiveSignal = signal !== undefined && signal !== null ? AbortSignal.any([signal, ownTimeout]) : ownTimeout
