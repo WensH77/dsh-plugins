@@ -71,6 +71,8 @@ node tools/xray.mjs --workspace dsh-plugins  # 指定工作区
 node tools/xray.mjs --json                   # 原始 JSON
 ```
 
+按会话 id / 工作区定位时只认当前一代日志 `session.v4.jsonl.zstd`（dsh 0.1.7 起会话写这一代）；目录里只剩停更 v3 代的老会话要用「直接给文件」那条路传进去。
+
 ## 配置
 
 无。所有可调项都是工具参数。

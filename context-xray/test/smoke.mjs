@@ -82,7 +82,7 @@ test('注入块的展示名跟着生产者的 kind 走，未知插件剥前缀�
   assert.equal(injectLabel('plugin:dsh-plugin-unknown'), '注入：plugin:dsh-plugin-unknown');
   // 裸名不认识的原样展示。
   assert.equal(injectLabel('team-message'), '注入：team-message');
-  // v4 之前的退役包装（离线入口读的 v3 日志里还在）不该退化。
+  // v4 之前的退役包装（显式传入的老 v3 文件里还在）不该退化。
   assert.equal(injectLabel('plugin'), '注入：运行时快照');
 });
 

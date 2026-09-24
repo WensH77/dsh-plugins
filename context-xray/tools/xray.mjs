@@ -45,7 +45,9 @@ function locate(args) {
     for (const session of readdirSync(base, { withFileTypes: true })) {
       if (!session.isDirectory()) continue;
       if (args.target !== '' && !session.name.includes(args.target)) continue;
-      const file = join(base, session.name, 'session.v3.jsonl.zstd');
+      // 只认当前一代（v4）：dsh 0.1.7 起新会话写 session.v4.jsonl.zstd，老会话目录里
+      // 可能只有停更的 v3 代——那种要显式传文件路径（`<文件.v3.jsonl.zstd>`）。
+      const file = join(base, session.name, 'session.v4.jsonl.zstd');
       try {
         candidates.push({ path: file, id: session.name, mtime: statSync(file).mtimeMs });
       } catch {

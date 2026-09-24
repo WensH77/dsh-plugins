@@ -59,7 +59,7 @@ const INJECTION_LABELS = {
   'tool-jobs': '注入：后台任务通知',
   'plugin:dsh-plugin-theseus-crew': '注入：Theseus Crew 阶段指令',
   // v4 之前写入的退役包装：kind 恒为 'plugin'，真正的生产者名字在 plugin 字段里，
-  // 这里只读得到 kind，所以旧日志只能沿用最粗的那个标签（离线入口仍读 v3 日志）。
+  // 这里只读得到 kind，所以旧日志只能沿用最粗的那个标签（显式传入的老 v3 文件仍会走到）。
   plugin: '注入：运行时快照'
 };
 

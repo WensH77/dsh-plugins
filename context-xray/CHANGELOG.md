@@ -1,5 +1,11 @@
 # 变更日志
 
+## 0.1.2
+
+- **离线入口改读 v4 会话日志**：`tools/xray.mjs` 的 `locate()` 写死了 `session.v3.jsonl.zstd`，而 dsh 0.1.7 起新会话只写 `session.v4.jsonl.zstd`——新会话报「没有匹配的会话日志」，扫到的老会话读到的是停更的 v3 代（实测某会话目录：v3 代停在 9/23 16:36，v4 代写到 9/24 09:49）。改为只认当前一代 `session.v4.jsonl.zstd`。
+  - 只有 v3 代的老会话目录不再进扫描（测时本机 217 个会话目录带 v3 代，其中 206 个只有 v3、没有 v4 代），要分析它们得显式传文件路径：`node tools/xray.mjs <文件.v3.jsonl.zstd>`；退役的 `plugin` 标签键就是为这条路径保留的。
+  - 实测：`--workspace dsh-plugins` 命中目录里只有 `session.v4.jsonl.zstd` 的 `session-4b521d5d` 并正常出报告；显式传 v3 文件（`session-6394837a`）也正常出报告。
+
 ## 0.1.1
 
 - **注入块展示名跟上格式 v4 的 producer-owned kind**：v4 只收「生产者自有 kind」——运行时快照从退役的 `{ kind: 'plugin' }` 包装变成裸名 `runtime-context`，第三方插件变成 `plugin:<包名>`；标签表里只认退役的 `plugin` 键，于是报告里冒出「注入：runtime-context」「注入：plugin:dsh-plugin-theseus-crew」这种机器名。
