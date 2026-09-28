@@ -7,11 +7,12 @@
 //   2. 对每块分词、去停用词，得到该块的词集。
 //   3. 统计这些词在各 reasoning 块里的出现次数。
 //
-// 两个指标的口径差别很大，不能混用：
+// 三个指标的口径差别很大，不能混用：
 //   - rawHits（原始提及次数）有严重长度偏置：11,798 字符的系统提示词天然压过
 //     41 字符的用户消息。它只能当「总声量」看。
-//   - intensity（每词平均加权提及次数）做了长度归一化，才是接近「注意力」的那个
-//     数。本仓库实测：用户消息 8.3，AGENTS.md 1.8，系统提示词 0.94。
+//   - intensity（每千 token 的加权提及数）是唯一和「体积」同单位的那个数，两者
+//     并排读才是「同样体积谁被想得多」。它早期除的是「不同词数」，那会系统性抬高
+//     代码块（同一 token 数下词密度差 5–6 倍），已改。
 //   - coverage（多少比例的词被提到过）用来发现「整块内容从没被用上」。
 //
 // 已知天花板：reasoning 是自然语言生成物，它反映的是「我在思考时提到了什么」，
@@ -353,6 +354,10 @@ export function analyzeMentions(events, options = {}) {
       if (best === undefined || contribution > best.weight) termTop.set(word, { index, weight: contribution });
     }
     const termCount = map.size;
+    // 强度与体积必须同单位才能并排读。早先这里除的是「不同词数」，于是同一 token
+    // 数下词密度高的代码块被系统性抬高（实测每千 token 的词数跨块差 5–6 倍），
+    // 「同样体积谁被想得多」这句话就不成立。改成除 token。
+    const tokens = (block.price ?? 0) * tokenScale;
     return {
       index,
       kind: block.kind,
@@ -361,7 +366,7 @@ export function analyzeMentions(events, options = {}) {
       chars: block.text.length,
       // 体积两列：tokens 是最终快照里这块的规模，cumulative 是整个会话为它付的
       // 总账（每步重发一次，所以固定成本类的内容累计远大于快照）。
-      tokens: Math.round((block.price ?? 0) * tokenScale),
+      tokens: Math.round(tokens),
       cumulative: Math.round(blockCost[index]),
       terms: termCount,
       covered,
@@ -369,8 +374,8 @@ export function analyzeMentions(events, options = {}) {
       rawHits,
       perTerm: termCount === 0 ? 0 : rawHits / termCount,
       weighted: Math.round(weighted * 10) / 10,
-      // 主指标：df 加权后按词数归一化，长度偏置因此被消掉。
-      intensity: termCount === 0 ? 0 : weighted / termCount,
+      // 主指标：每千 token 的 df 加权提及数。
+      intensity: tokens === 0 ? 0 : (weighted / tokens) * 1000,
       series: series[index]
     };
   });

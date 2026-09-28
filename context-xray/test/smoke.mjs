@@ -102,7 +102,7 @@ test('矩阵只保留真正被提及过的词', () => {
 });
 
 test('renderReport 输出关键段落', () => {
-  const text = renderReport(analyzeMentions(fixture(), { matrixTerms: 10 }), { minTerms: 1 });
+  const text = renderReport(analyzeMentions(fixture(), { matrixTerms: 10 }), { minTokens: 1 });
   for (const heading of ['## 上下文 X 光', '### 来源占比', '### 强度榜', '### 时间分布', '### 关键词']) {
     assert.ok(text.includes(heading), `报告缺少 ${heading}`);
   }
@@ -244,7 +244,7 @@ test('apply 注册 context_xray，执行返回报告文本', async () => {
   assert.equal(tool.name, 'context_xray');
 
   const session = fakeSession('session-test', fixture());
-  const text = await tool.execute({ minTerms: 1 }, { agent: { session } });
+  const text = await tool.execute({ minTokens: 1 }, { agent: { session } });
   assert.equal(typeof text, 'string');
   assert.ok(text.includes('session-test'));
   assert.ok(text.includes('### 来源占比'));
@@ -267,6 +267,6 @@ test('指定活跃会话时分析的是那个会话', async () => {
   const other = fakeSession('session-other', fixture());
   const ctx = fakeCtx(new Map([['session-other', other]]));
   apply(ctx);
-  const text = await ctx.registered[0].execute({ session: 'session-other', minTerms: 1 }, {});
+  const text = await ctx.registered[0].execute({ session: 'session-other', minTokens: 1 }, {});
   assert.ok(text.includes('session-other'));
 });

@@ -47,7 +47,7 @@ function apply(ctx) {
       session: { type: 'string', description: '要分析的会话 id；省略则分析当前会话' },
       limit: { type: 'integer', description: '强度榜条数，默认 12' },
       matrix: { type: 'integer', description: '关键词矩阵行数，默认 10' },
-      minTerms: { type: 'integer', description: '进入强度榜的最小词数门槛，默认 20（词太少的块每词均值虚高）' }
+      minTokens: { type: 'integer', description: '进入强度榜的最小 token 门槛，默认 150（太短的块比值不稳：一句「我复现了这个错误」能冲到每千 token 6000+）' }
     },
     output: {
       schema: { type: 'string' },
@@ -61,7 +61,7 @@ function apply(ctx) {
       return renderReport(report, {
         limit: Math.min(Math.max(args.limit ?? 12, 1), 60),
         matrix: Math.min(Math.max(args.matrix ?? 10, 0), 200),
-        minTerms: Math.max(args.minTerms ?? 20, 1),
+        minTokens: Math.max(args.minTokens ?? 150, 1),
         title: session.id
       });
     }

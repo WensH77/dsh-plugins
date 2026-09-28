@@ -158,7 +158,7 @@ function kindSummary(blocks) {
 /**
  * 渲染完整报告。
  * @param report - analyzeMentions() 的结果。
- * @param options - { limit, matrix, dead, minTerms, title, buckets }。
+ * @param options - { limit, matrix, dead, minTokens, title, buckets }。
  * @returns markdown 文本。
  */
 export function renderReport(report, options = {}) {
@@ -166,9 +166,9 @@ export function renderReport(report, options = {}) {
   const matrixLimit = options.matrix ?? 10;
   const deadLimit = options.dead ?? 8;
   const buckets = options.buckets ?? 40;
-  // 词数太少的块，每词均值天然虚高（9 个词的用户消息能拿 6.0），
-  // 所以强度榜设一个门槛，否则榜单在奖励「词少」。
-  const minTerms = options.minTerms ?? 20;
+  // 门槛看 token 而不是词数：强度改成除以 token 之后，被冤枉的恰恰是词少的代码块，
+  // 再按词数设门槛会把它们二次排除。要挡的是太短的块——一句话的比值不稳。
+  const minTokens = options.minTokens ?? 150;
   const lines = [];
   const steps = report.totals.reasoning;
 
@@ -192,16 +192,17 @@ export function renderReport(report, options = {}) {
   }
   lines.push('');
 
-  const ranked = report.blocks.filter((block) => block.terms >= minTerms);
-  lines.push(`### 强度榜（词数 ≥ ${minTerms}，按每词加权提及数排序）`);
+  const ranked = report.blocks.filter((block) => block.tokens >= minTokens);
+  lines.push(`### 强度榜（token ≥ ${minTokens}，按每千 token 的加权提及数排序）`);
   lines.push('');
-  lines.push('> 「体积」是这块在当前 prompt 里的规模，「累计」是整个会话为它付的总账。两个数差得越大，说明越是被反复重发的固定成本；累计为 0 表示这块是最后一次输出，还没被任何请求重发过。');
+  lines.push('> **强度 = 加权提及 ÷ token × 1000**，和「体积」同单位，所以这两列可以直接并排读成性价比：体积大而强度低 = 贵但没被想起。');
+  lines.push('> 「累计」是整个会话为它付的总账。两数差得越大，越说明它是被反复重发的固定成本；累计为 0 表示这块是最后一次输出，还没被任何请求重发过。');
   lines.push('');
-  const strengthWidths = [50, 7, 7, 7, 8, 9];
-  lines.push(row(['块', '覆盖率', '提及', '强度', '体积', '累计'], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
+  const strengthWidths = [46, 7, 7, 9, 8, 9];
+  lines.push(row(['块', '覆盖率', '提及', '强度/千tok', '体积', '累计'], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
   lines.push(divider(strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
   for (const block of ranked.slice(0, limit)) {
-    lines.push(row([blockName(block), `${(block.coverage * 100).toFixed(0)}%`, String(block.rawHits), block.intensity.toFixed(2), (block.tokens ?? 0).toLocaleString('en-US'), (block.cumulative ?? 0).toLocaleString('en-US')], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
+    lines.push(row([blockName(block), `${(block.coverage * 100).toFixed(0)}%`, String(block.rawHits), block.intensity.toFixed(1), (block.tokens ?? 0).toLocaleString('en-US'), (block.cumulative ?? 0).toLocaleString('en-US')], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
   }
   if (ranked.length === 0) lines.push('| （没有达到词数门槛的块） |  |  |  |  |  |');
   lines.push('');
