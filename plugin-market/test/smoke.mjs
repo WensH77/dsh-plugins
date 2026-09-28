@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { githubRepoInfo, compareVersions, makeQueue, readJsonFile, writeJsonFile } from '../lib/util.js'
 import { readPatchState } from '../lib/patch.js'
 import { ROUTES } from '../lib/routes.js'
-import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard } from '../lib/dsh.js'
+import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
@@ -195,6 +195,55 @@ console.log('\n[pluginMachineLevel / dshBreakingGuard ← dsh.js]')
   assert(dshText.includes('**勿**据此判定 breakingChanges'), '扫描提示区显式要求模型不得据 devDeps 判 breakingChanges')
   assert(dshText.includes('const DSH_VERDICT_SCHEMA = 2') && dshText.includes('prev.verdictSchema === DSH_VERDICT_SCHEMA'),
     '判定口径版本：口径升级后旧缓存作废（回到待分析），修复不必等远端再发新版')
+}
+
+// ── 宿主闭包核对：dependencies + peerDependencies + 一层传递，疑似消失的包过 registry 复核 ──
+// 真实误报复刻：rc.2 把 dsh-llm-deepseek 从 dsh-base 的直接依赖挪成 dsh-llm-deepseek-api-key 的
+// peerDependency。只看直接依赖会把「包还在、只是换了挂载位置」判成模块消失，进而让护栏失效。
+console.log('\n[宿主模块闭包 ← dsh.js]')
+{
+  assertEq([...closureFromManifest({ dependencies: { '@deepseek-ai/a': '1.0.0' }, devDependencies: { '@deepseek-ai/b': '1.0.0' } })],
+    ['@deepseek-ai/a'], '闭包含 dependencies，不含 devDependencies')
+  assertEq([...closureFromManifest({ peerDependencies: { '@deepseek-ai/c': '1.0.0' }, dependencies: { 'left-pad': '1.0.0' } })],
+    ['@deepseek-ai/c'], '闭包含 peerDependencies（provider 包就是这么挂实现包的），忽略非 @deepseek-ai 包')
+
+  const rc1Base = { dependencies: { '@deepseek-ai/dsh-llm-deepseek': '0.1.7-rc.1', '@deepseek-ai/dsh-llm': '0.1.7-rc.1' } }
+  const rc2Base = { dependencies: { '@deepseek-ai/dsh-llm-deepseek-api-key': '0.1.7-rc.2', '@deepseek-ai/dsh-llm': '0.1.7-rc.2' } }
+  const rc2Provider = { peerDependencies: { '@deepseek-ai/dsh-llm-deepseek': '0.1.7-rc.2' } }
+  const rc2Adapter = { dependencies: { '@deepseek-ai/dsh-llm': '0.1.7-rc.2' } }
+  const lookup = async (name) => (name === '@deepseek-ai/dsh-llm-deepseek-api-key'
+    ? rc2Provider
+    : (name === '@deepseek-ai/dsh-llm-deepseek' ? rc2Adapter : null))
+
+  const installed = await closureWithTransitiveHostModules([rc1Base], lookup)
+  const target = await closureWithTransitiveHostModules([rc2Base], lookup)
+  assert(installed.has('@deepseek-ai/dsh-llm-deepseek'), '已装闭包含 dsh-llm-deepseek（rc.1 的直接依赖）')
+  assert(target.has('@deepseek-ai/dsh-llm-deepseek'),
+    '目标闭包经 provider 包的 peerDependency 仍含 dsh-llm-deepseek（不再误判为消失）')
+  assertEq([...installed].filter((m) => !target.has(m)), [], 'rc.1 → rc.2 复刻：无模块被判消失')
+
+  const absent = [...installed].filter((m) => !target.has(m))
+  const gap = await classifyClosureGap(absent.length > 0 ? absent : ['@deepseek-ai/dsh-llm-deepseek'], lookup)
+  assertEq(gap, { removed: [], demoted: ['@deepseek-ai/dsh-llm-deepseek'] },
+    '包仍在目标版本发布 → 归入 demotedModules（降为间接依赖），不算移除')
+
+  const gone = await classifyClosureGap(['@deepseek-ai/dsh-removed-for-real'], lookup)
+  assertEq(gone, { removed: ['@deepseek-ai/dsh-removed-for-real'], demoted: [] },
+    '目标版本已不发布该包 → 归入 removedModules')
+
+  // 护栏：只有经复核确认「已不存在」的 removed 才挡住降级；降为间接依赖的模块不挡
+  const withDemoted = { method: 'registry-closure', removedModules: [], demotedModules: ['@deepseek-ai/dsh-llm-deepseek'], plugins: [] }
+  assertEq(dshBreakingGuard(withDemoted, true), true,
+    'rc.2 复刻：模块降为间接依赖不构成运行期破坏点，模型判 breaking 仍被降级为兼容')
+  assertEq(dshBreakingGuard({ method: 'registry-closure', removedModules: ['@deepseek-ai/dsh-gone'], demotedModules: [], plugins: [] }, true), false,
+    '确有模块被移除 → 保持模型结论')
+  assertEq(dshBreakingGuard({ method: 'registry-closure', removedModules: ['@deepseek-ai/dsh-llm-deepseek'], plugins: [] }, true), false,
+    '旧缓存无 demotedModules 字段 → 保守按未降级处理（不凭缺失字段放宽）')
+
+  // prompt 口径：降级模块必须显式标注「不属于模块移除」，否则模型仍会把它当破坏性写进 summary
+  const demotedText = buildScanPromptSection({ method: 'registry-closure', installed: '0.1.7-rc.1', target: '0.1.7-rc.2', errors: [], removedModules: [], demotedModules: ['@deepseek-ai/dsh-llm-deepseek'], plugins: [] })
+  assert(demotedText.includes('结构性调整') && demotedText.includes('不属于模块移除') && demotedText.includes('勿据此判 breakingChanges'),
+    '扫描提示区把「降为间接依赖」单列并显式要求不得据此判破坏性')
 }
 
 // ── 渲染行为契约：把 client.js 里真实的「按插件折叠」渲染块抽出来，用假 DOM 跑一遍 ──
@@ -407,9 +456,14 @@ console.log('\n[状态灯「正在分析」← client.js 抽取]')
     assertEq(h.fast(), false, '分析结束自动降回 60s 轮询')
   }
   const clientText = readFileSync(LIB_CLIENT, 'utf8')
-  assert(clientText.includes('paint({ ...(lastState ?? {}), ok: true, status: "analyzing" })'),
+  assert(clientText.includes('paint({ ...(lastState ?? {}), ok: true, status: "analyzing", error: null })'),
     '点击瞬间就切「正在分析」文案（不等服务端翻状态，也不再只把圆点置橙）')
   assert(clientText.includes('ANALYZE_GUARD_MS'), '守卫带上限，请求卡死时不会把灯永久钉在「正在分析」')
+  assert(clientText.includes('t(failed ? "dshAnalyzeFailed" : "dshHasUpdateShort")'),
+    '分析失败时灯上文案 = 分析失败（不再继续显示「有新版本」掩盖失败）')
+  assert(clientText.includes('if (d && typeof d.error === "string" && d.error !== "") {')
+    && clientText.includes('retry.textContent = t("dshRetry")'),
+    '失败弹窗给出原始错误 + 「重试」（否则关掉弹窗后再点还是同一个错误，无法重新分析）')
 }
 
 // ── 消息 source 形态：v4 口径 plugin:<包名>，不得回退到退役的 { kind:'plugin', plugin } ──
@@ -420,6 +474,27 @@ console.log('\n[消息 source 形态 ← lib/dsh.js]')
     '直连 LLM 的消息 source 用 v4 口径 plugin:<包名>')
   assert(!/source: Object\.freeze\(\{ kind: 'plugin',/.test(dshSrc),
     "不再出现退役的 { kind: 'plugin', plugin } 包装（v4 准入会拒收，其它插件已统一）")
+  // 默认模型来源：settings 服务（dsh-settings 的 SettingsForms）没有 get()，读它只会静默拿到
+  // undefined——请求就没带 model，宿主按 model "undefined" 解析元数据直接失败（0.16.2 修的就是这个）。
+  assert(dshSrc.includes("ctx.get('agentDefaultModel')?.currentSelection?.()"),
+    '直连 LLM 的默认模型取自 agentDefaultModel 服务的 currentSelection()')
+  assert(!dshSrc.includes("settings?.get?.('agent-default-model')"),
+    "不再从没有 get() 的 settings 服务读 agent-default-model")
+  assert(dshSrc.includes("if (route.model === undefined) throw new Error"),
+    '解析不出 model 时抛错，不再发出缺 model 的请求')
+  // 失败码：只存 message 时，「上游抖一下」和「配置坏了」在状态文件里长得一模一样，
+  // 两者都只能重试，但排查方向不同——所以宿主给的 failure.code 必须随原文一起落盘。
+  assert(dshSrc.includes('failureCodeOf(finishFailure)') && dshSrc.includes("throw analysisFailure('LLM 调用失败：'"),
+    'finish 失败时把宿主给的 failure.code 挂在错误上（原文不改）')
+  assert(dshSrc.includes('errorCode = failureCodeOf(failure)') && /^\s+errorCode,$/mu.test(dshSrc),
+    '失败码随 error 一起持久化进状态文件')
+  assert(/ctx\.logger\?\.warn\?\.\('plugin-market: dsh 升级分析失败：' \+ \(errorCode !== null/u.test(dshSrc),
+    '宿主日志把失败码打在原文前面，便于直接分辨失败类别')
+  const clientSrcForCode = readFileSync(LIB_CLIENT, 'utf8')
+  assert(clientSrcForCode.includes('const analysisErrorCode = ') && clientSrcForCode.includes('t("dshErrorCode") + "：" + analysisErrorCode'),
+    '失败弹窗单独显示失败码（原文照旧）')
+  assert(clientSrcForCode.includes('dshErrorCode: "失败码"') && clientSrcForCode.includes('dshErrorCode: "Failure code"'),
+    '失败码文案中英双份（本地化表不得只加一边）')
 }
 
 // ── 4) 路由表契约：routes.js 分发表 3 条固定 + client 引用 ⊆ 全集 ─────────────

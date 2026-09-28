@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { compareVersions, execEnv, execFileAsync, makeQueue, readJsonFile, writeJsonFile } from './util.js'
+import { compareVersions, errMsg, execEnv, execFileAsync, makeQueue, readJsonFile, writeJsonFile } from './util.js'
 import { entryPkgMeta, findPatchPath, isUserInstalled, listEntries, readPatchState } from './patch.js'
 
 // ── 以下 5 个小工具原属已删除的市场模块（install.js / review.js），随本文件保留 ──
@@ -20,31 +20,34 @@ const queuedStateFile = makeQueue()
 /** 升级分析 prompt 的内容上限（防止逐版本材料 + diff 撑爆上下文）。 */
 const PROMPT_CAP = 85000
 
-/** 读取分析用的 LLM 路由：优先级 请求级 override（用户选的模型/推理程度）> 用户
- *  agent-default-model 设置 > 回退 deepseek-official。override 形如 { model?, reasoningEffort? }。 */
+/** 读取分析用的 LLM 路由：宿主默认模型（agentDefaultModel 服务）打底，请求级 override 覆盖。
+ *  早先读的是 `settings.get('agent-default-model')`，但 settings 服务（dsh-settings 的
+ *  SettingsForms）没有 get()，这一句恒为 undefined——路由于是只剩 provider、没有 model，
+ *  宿主按 model "undefined" 解析元数据直接失败（症状是状态灯永远走不出「有新版本」）。
+ *  model 解析不出来时抛错，不再静默降级成缺 model 的请求。 */
 function reviewLlmRoute(ctx, override) {
-  try {
-    const settings = ctx.get('settings')
-    const model = settings?.get?.('agent-default-model')
-    const route = { provider: 'deepseek-official' }
-    if (model !== null && typeof model === 'object') {
-      if (typeof model.provider === 'string' && model.provider !== '') route.provider = model.provider
-      if (typeof model.model === 'string' && model.model !== '') route.model = model.model
-      if (typeof model.reasoningEffort === 'string' && model.reasoningEffort !== '') route.reasoningEffort = model.reasoningEffort
-    }
-    if (override !== null && override !== undefined && typeof override === 'object') {
-      if (typeof override.model === 'string' && override.model !== '') route.model = override.model
-      if (typeof override.reasoningEffort === 'string' && override.reasoningEffort !== '') route.reasoningEffort = override.reasoningEffort
-    }
-    return route
-  } catch {
-    return { provider: 'deepseek-official' }
+  const route = { provider: 'deepseek-official' }
+  const selection = ctx.get('agentDefaultModel')?.currentSelection?.()
+  if (selection !== null && typeof selection === 'object') {
+    if (typeof selection.provider === 'string' && selection.provider !== '') route.provider = selection.provider
+    if (typeof selection.model === 'string' && selection.model !== '') route.model = selection.model
+    if (typeof selection.reasoningEffort === 'string' && selection.reasoningEffort !== '') route.reasoningEffort = selection.reasoningEffort
   }
+  if (override !== null && override !== undefined && typeof override === 'object') {
+    if (typeof override.model === 'string' && override.model !== '') route.model = override.model
+    if (typeof override.reasoningEffort === 'string' && override.reasoningEffort !== '') route.reasoningEffort = override.reasoningEffort
+  }
+  if (route.model === undefined) throw new Error('无法解析宿主默认模型（agentDefaultModel 服务未返回 model）')
+  return route
 }
 
 /**
- * 直连 LLM 流式取完整回复文本（ctx.llm.stream，跟随 agent-default-model 路由或请求级
- * 模型/推理程度 override，120s 自身超时；超时/中断返回 null，模型 finish 报错则抛出）。
+ * 直连 LLM 流式取完整回复文本（ctx.llm.stream，路由取宿主默认模型或请求级 override，
+ * 模型/推理程度 override，120s 自身超时；任何失败（无 llm 服务 / 中断 / 空文本 / finish 报错）
+ * 都抛错并带上原因，由调用方记进状态）。
+ * 消息文本与失败原因都保留原文；宿主给的 failure.code（TRANSPORT / TIMEOUT / SERVER /
+ * RATE_LIMIT…）挂在 err.code 上，供调用方随原文一起持久化——只存 message 的话，用户和排查者
+ * 无法区分「上游抖一下」和「配置坏了」，两种都得重试才知道。
  * 手工组装消息与流式输出（插件零第三方依赖，不 import dsh-llm）。
  * source 用 v4 口径的 `plugin:<包名>`（退役的 `{ kind: 'plugin', plugin }` 包装会被
  * dsh-session-format-v3-to-v4 的准入拒绝；本条消息只进 llm.stream、不落会话日志，
@@ -52,8 +55,8 @@ function reviewLlmRoute(ctx, override) {
  */
 async function streamLlmText(ctx, promptText, signal, routeOverride) {
   let llm = null
-  try { llm = ctx.get('llm') } catch {}
-  if (!llm || typeof llm.stream !== 'function') return null
+  try { llm = ctx.get('llm') } catch (error) { throw new Error('读取 llm 服务失败：' + errMsg(error)) }
+  if (!llm || typeof llm.stream !== 'function') throw new Error('宿主未提供 llm 服务（ctx.get("llm") 为空或没有 stream 方法）')
   const route = reviewLlmRoute(ctx, routeOverride)
   const message = Object.freeze({
     role: 'user',
@@ -72,22 +75,46 @@ async function streamLlmText(ctx, promptText, signal, routeOverride) {
   if (route.reasoningEffort !== undefined) options.reasoningEffort = route.reasoningEffort
   let text = ''
   let finishFailure = null
+  let aborted = false
   try {
     for await (const chunk of llm.stream(options)) {
-      if (signal?.aborted || ownTimeout.aborted) return null
+      if (signal?.aborted || ownTimeout.aborted) { aborted = true; break }
       if (chunk.type === 'text-delta') text += chunk.text
       else if (chunk.type === 'finish') {
         if (chunk.reason?.kind === 'error') finishFailure = chunk.reason.failure
-        else if (chunk.reason?.kind === 'aborted') return null
+        else if (chunk.reason?.kind === 'aborted') { aborted = true; break }
       }
     }
   } catch (error) {
-    if (signal?.aborted || ownTimeout.aborted) return null
-    throw error
+    if (signal?.aborted || ownTimeout.aborted) aborted = true
+    else throw error
   }
-  if (finishFailure !== null) throw new Error('LLM 调用失败：' + String(finishFailure?.message ?? '未知错误'))
-  if (text === '') return null
+  if (aborted) throw analysisFailure('LLM 调用被中断（120 秒超时或主动取消）')
+  if (finishFailure !== null) {
+    throw analysisFailure('LLM 调用失败：' + String(finishFailure?.message ?? '未知错误'), failureCodeOf(finishFailure))
+  }
+  if (text === '') throw analysisFailure('LLM 返回空文本')
   return text
+}
+
+/** 分析链路自己的错误类型：原文仍在 message 里（客户端原样展示），宿主给的失败码挂在 code 上。
+ *  errMsg() 只取 message，所以调用方不额外处理也不会改变原有文案。 */
+class AnalysisError extends Error {
+  constructor(message, code) {
+    super(message)
+    this.name = 'AnalysisError'
+    if (typeof code === 'string' && code !== '') this.code = code
+  }
+}
+
+function analysisFailure(message, code) {
+  return new AnalysisError(message, code)
+}
+
+/** 取宿主 finish chunk 里的失败码（形如 { message, code }）；拿不到返回 null。 */
+function failureCodeOf(failure) {
+  const code = failure?.code
+  return typeof code === 'string' && code !== '' ? code : null
 }
 
 /** dsh 本体的 GitHub 仓库（侧边栏版本状态灯的检测对象，非插件市场自身）。 */
@@ -274,6 +301,11 @@ function checkDshUpdate(ctx) {
       details: sameTarget ? (prev.details ?? null) : null,
       sessionId: sameTarget ? (prev.sessionId ?? null) : null,
       analyzedAt: sameTarget ? (prev.analyzedAt ?? null) : null,
+      // 上一次直连 LLM 分析的失败原因（无失败为 null）：随判定一起复用/作废，供状态灯显示
+      error: sameTarget ? (prev.error ?? null) : null,
+      // 宿主给的失败码（TRANSPORT / TIMEOUT / MODEL_OUTPUT…）：与 error 同生共死，便于分辨
+      // 「上游抖一下」还是「配置坏了」——两者都只能重试，但排查方向不同
+      errorCode: sameTarget ? (prev.errorCode ?? null) : null,
       // L1 契约扫描结果随判定一起持久化：目标版本未变时复用（客户端弹窗可直接展示机器证据）
       scan: sameTarget ? (prev.scan ?? null) : null,
       // 判定口径版本：口径升级后旧缓存作废（见 DSH_VERDICT_SCHEMA）
@@ -382,41 +414,84 @@ async function registryManifestAt(pkgName, version) {
   }
 }
 
-/** 某版本的宿主依赖闭包：给定包的 dependencies 中 `@deepseek-ai/*` 的名字集合（不含 dev）。 */
-function closureFromManifest(manifest) {
-  const deps = manifest?.dependencies ?? {}
-  const out = new Set()
-  for (const key of Object.keys(deps)) {
-    if (key.startsWith('@deepseek-ai/')) out.add(key)
+/** 一个 manifest 直接可见的宿主模块名：dependencies + peerDependencies 中的 `@deepseek-ai/*`（不含 dev，
+ *  dev 不随发布安装；peer 会被 profile 装上、且插件能从宿主树解析到，必须算作「存在」）。 */
+function closureEntriesOf(manifest) {
+  const out = []
+  for (const section of ['dependencies', 'peerDependencies']) {
+    for (const key of Object.keys(manifest?.[section] ?? {})) {
+      if (key.startsWith('@deepseek-ai/')) out.push(key)
+    }
   }
   return out
 }
 
-/** 目标版本 dsh 的宿主模块闭包（registry，按精确版本拉 dsh-web-app + dsh-base 的依赖并集）。
- *  任一失败返回 null（无法机器核对移除模块），错误文案并入 scan.errors。 */
+/** 某版本的宿主依赖闭包：给定包的 dependencies／peerDependencies 中 `@deepseek-ai/*` 的名字集合。 */
+function closureFromManifest(manifest) {
+  return new Set(closureEntriesOf(manifest))
+}
+
+/** 把闭包沿 `@deepseek-ai/*` 再走一层（depth 1）：dsh 的默认装配里 provider 包会把真正的实现包
+ *  挂成自己的 peerDependency（如 rc.2 的 dsh-llm-deepseek-api-key → dsh-llm-deepseek），只看
+ *  dsh-web-app/dsh-base 的直接依赖会把它误判成「模块消失」。lookup(name) 返回该包声明版本的
+ *  manifest 或 null；取不到的包跳过（宁可少报，也不拿缺数据当移除证据）。 */
+async function closureWithTransitiveHostModules(manifests, lookup) {
+  const out = new Set()
+  const direct = new Set()
+  for (const manifest of manifests) {
+    for (const m of closureEntriesOf(manifest)) { out.add(m); direct.add(m) }
+  }
+  const loaded = await Promise.all([...direct].map(async (name) => [name, await lookup(name)]))
+  for (const [, manifest] of loaded) {
+    if (manifest === null || manifest === undefined) continue
+    for (const m of closureEntriesOf(manifest)) out.add(m)
+  }
+  return out
+}
+
+/** 目标版本 dsh 的宿主模块闭包（registry，按精确版本拉 dsh-web-app + dsh-base 依赖并集 + 一层传递）。
+ *  任一顶层包失败返回 null（无法机器核对移除模块），错误文案并入 scan.errors。 */
 async function targetDshClosure(version) {
   const manifests = await Promise.all(DSH_CLOSURE_PACKAGES.map((pkg) => registryManifestAt(pkg, version)))
   if (manifests.some((manifest) => manifest === null)) return null
+  return closureWithTransitiveHostModules(manifests, (name) => registryManifestAt(name, version))
+}
+
+/** 已安装 dsh 的宿主模块闭包：从运行树解析 dsh-web-app/dsh-base 的 package.json（dependencies + peer）
+ *  并集 + 一层传递。两侧口径必须一致，否则「已装闭包」里的直接依赖会被目标侧的传递层比对漏判。 */
+function installedDshClosure(ctx) {
   const out = new Set()
-  for (const manifest of manifests) {
-    for (const m of closureFromManifest(manifest)) out.add(m)
+  const baseUrl = ctx?.baseUrl ?? 'file:///'
+  const require = createRequire(baseUrl)
+  const readManifest = (name) => JSON.parse(readFileSync(require.resolve(name + '/package.json'), 'utf8'))
+  for (const pkg of DSH_CLOSURE_PACKAGES) {
+    try {
+      for (const m of closureEntriesOf(readManifest(pkg))) out.add(m)
+    } catch {}
+  }
+  // 一层传递：用运行树自身的解析结果，不联网（拿不到就跳过，同 target 侧的保守口径）
+  for (const name of [...out]) {
+    try {
+      for (const m of closureEntriesOf(readManifest(name))) out.add(m)
+    } catch {}
   }
   return out
 }
 
-/** 已安装 dsh 的宿主模块闭包：从运行树解析 dsh-web-app/dsh-base 的 package.json 依赖并集。 */
-function installedDshClosure(ctx) {
-  const out = new Set()
-  const baseUrl = ctx?.baseUrl ?? 'file:///'
-  for (const pkg of DSH_CLOSURE_PACKAGES) {
-    try {
-      const require = createRequire(baseUrl)
-      const pkgPath = require.resolve(pkg + '/package.json')
-      const manifest = JSON.parse(readFileSync(pkgPath, 'utf8'))
-      for (const m of closureFromManifest(manifest)) out.add(m)
-    } catch {}
+/** 复核「已装闭包有、目标闭包没有」的模块：目标闭包已含依赖/peer 与一层传递，仍落空的只可能是
+ *  更深层的传递依赖或真的被移除。按目标版本去 registry 确认该包是否仍发布——仍存在则归入
+ *  demotedModules（降为间接依赖，运行期仍可从宿主树解析），不存在才归入 removedModules。
+ *  返回 { removed, demoted }，两侧名字均排序。lookup(name) 同 closureWithTransitiveHostModules。 */
+async function classifyClosureGap(absentModules, lookup) {
+  const absent = [...new Set(Array.isArray(absentModules) ? absentModules : [])].sort()
+  const checked = await Promise.all(absent.map(async (name) => [name, await lookup(name)]))
+  const removed = []
+  const demoted = []
+  for (const [name, manifest] of checked) {
+    if (manifest === null || manifest === undefined) removed.push(name)
+    else demoted.push(name)
   }
-  return out
+  return { removed, demoted }
 }
 
 /**
@@ -587,13 +662,23 @@ function pluginMachineLevel(findings) {
 
 /** 破坏性判定的兜底护栏（纯函数，收尾与 smoke 共用）：机器扫描确认「零运行期破坏点」时，
  * 模型的 breakingChanges=true 应降级为兼容。返回 true=降级、false=保持、null=无法判定
- * （扫描不可用，如 local-only / 未跑扫描，此时保持模型结论）。 */
+ * （扫描不可用，如 local-only / 未跑扫描，此时保持模型结论）。
+ *  removedModules 只含经 registry 复核确认「目标版本已不再发布」的包；被拆包后降为间接依赖的
+ *  模块在 demotedModules，运行期仍可从宿主树解析，不得只凭它挡住降级。 */
 function dshBreakingGuard(scan, modelBreaking) {
   if (modelBreaking !== true) return false
   if (scan === null || scan === undefined || scan.method !== 'registry-closure') return null
-  const removed = Array.isArray(scan.removedModules) ? scan.removedModules.length : 0
+  const removed = Array.isArray(scan.removedModules)
+    ? scan.removedModules.filter((m) => !isDemotedModule(scan, m)).length
+    : 0
   const hasHigh = Array.isArray(scan.plugins) && scan.plugins.some((p) => Array.isArray(p?.findings) && p.findings.some((f) => f?.severity === 'high'))
   return removed === 0 && !hasHigh
+}
+
+/** 某模块是否已被复核归入「降为间接依赖」：旧缓存没有 demotedModules 字段，缺失时按未降级处理
+ *  （保守：宁可保持模型结论，也不凭缺失字段放宽）。 */
+function isDemotedModule(scan, moduleName) {
+  return Array.isArray(scan?.demotedModules) && scan.demotedModules.includes(moduleName)
 }
 
 async function runDshCompatScan(ctx, target) {
@@ -604,6 +689,7 @@ async function runDshCompatScan(ctx, target) {
     checkedAt: Date.now(),
     errors: [],
     removedModules: [],
+    demotedModules: [],
     plugins: [],
   }
   const [installedClosure, targetClosure] = await Promise.all([
@@ -617,8 +703,13 @@ async function runDshCompatScan(ctx, target) {
     scan.method = 'local-only'
     scan.errors.push('已安装宿主闭包读取失败，跳过模块移除判定')
   } else {
-    for (const m of installedClosure) if (!targetClosure.has(m)) scan.removedModules.push(m)
-    scan.removedModules.sort()
+    // 疑似消失的模块先过 registry 复核：目标闭包已含依赖/peer 与一层传递，仍落空的模块里，
+    // 「包仍在目标版本发布」只是降为更深层的间接依赖，不能当移除证据（rc.2 的
+    // dsh-llm-deepseek 就是被 provider 包挂成 peer 后旧的直接依赖判定误报的）。
+    const absent = [...installedClosure].filter((m) => !targetClosure.has(m))
+    const gap = await classifyClosureGap(absent, (name) => registryManifestAt(name, scan.target))
+    scan.demotedModules = gap.demoted
+    scan.removedModules = gap.removed
   }
   const plugins = await listUserPlugins(ctx)
   for (const plugin of plugins) {
@@ -638,8 +729,8 @@ async function runDshCompatScan(ctx, target) {
         evidence.codeRefs.push(m)
         continue
       }
-      if (scan.method === 'registry-closure' && !targetClosure.has(m)) {
-        findings.push({ severity: 'high', kind: 'removed-module', message: '引用宿主模块 ' + m + ' 在目标版本 dsh 宿主闭包（dsh-web-app/dsh-base 直接依赖）中消失（可能被移除/改名/更换为其它包）' })
+      if (scan.method === 'registry-closure' && !targetClosure.has(m) && scan.removedModules.includes(m)) {
+        findings.push({ severity: 'high', kind: 'removed-module', message: '引用宿主模块 ' + m + ' 在目标版本 dsh 宿主闭包中消失（dependencies／peerDependencies 与一层传递均未出现，且该包未在目标版本发布；可能被移除/改名/更换为其它包）' })
       }
     }
     // 2) 版本范围判定：插件声明 @deepseek-ai/dsh-*（宿主同版本发布的包）范围 vs 目标版本。
@@ -665,10 +756,15 @@ async function runDshCompatScan(ctx, target) {
 function buildScanPromptSection(scan) {
   if (scan === null || scan === undefined) return ''
   const lines = ['--- 本地插件契约扫描（机器判定，先于模型分析；结论带证据，不是猜测） ---']
-  lines.push('扫描方法：' + (scan.method === 'registry-closure' ? 'registry-closure（已核对已装→目标版本的宿主模块闭包）' : 'local-only（registry 不可达，仅指纹）'))
+  lines.push('扫描方法：' + (scan.method === 'registry-closure' ? 'registry-closure（已核对已装→目标版本的宿主模块闭包，含 dependencies／peerDependencies 与一层传递依赖，并按 registry 复核疑似消失的包）' : 'local-only（registry 不可达，仅指纹）'))
   if (scan.installed) lines.push('已装版本：' + scan.installed + (scan.target ? '　目标版本：' + scan.target : ''))
   if (scan.method === 'registry-closure' && scan.removedModules.length > 0) {
     lines.push('已装闭包中存在、目标版本闭包中消失的宿主模块（' + scan.removedModules.length + ' 个）：' + scan.removedModules.slice(0, 40).join(', '))
+  }
+  // 拆包/改依赖位置导致的「直接依赖降为间接依赖」：包仍在目标版本发布，不构成删除，单独列出
+  // 并显式要求模型不得据此判定破坏性（rc.2 的 dsh-llm-deepseek → provider 包 peer 就是这种）。
+  if (scan.method === 'registry-closure' && Array.isArray(scan.demotedModules) && scan.demotedModules.length > 0) {
+    lines.push('（**结构性调整**：以下宿主模块在目标版本仍发布，但不再是 dsh-web-app／dsh-base 的直接依赖或 peer，已降为更深层的间接依赖——**不属于模块移除**，勿据此判 breakingChanges，也勿列入 affectedPlugins）' + scan.demotedModules.slice(0, 40).join(', '))
   }
   if (scan.plugins.length === 0) {
     lines.push('（未发现用户安装的第三方插件）')
@@ -792,11 +888,13 @@ function parseBreakingReport(text) {
   }
 }
 
-/** dsh 升级分析直连通道：流式取文本 → 解析 breaking 报告（changes/breakingChanges/affectedPlugins）。 */
+/** dsh 升级分析直连通道：流式取文本 → 解析 breaking 报告（changes/breakingChanges/affectedPlugins）。
+ *  失败一律抛错（由调用方记进状态，不再静默返回 null）。 */
 async function runDshAnalysisLlm(ctx, promptText, signal) {
   const text = await streamLlmText(ctx, promptText, signal)
-  if (text === null) return null
-  return parseBreakingReport(text)
+  const parsed = parseBreakingReport(text)
+  if (parsed === null) throw analysisFailure('模型回复不是预期的 JSON（前 200 字：' + text.slice(0, 200) + '）', 'MODEL_OUTPUT')
+  return parsed
 }
 
 /** 后台收尾：直连 LLM 分析 → 解析 breakingChanges → 持久化 verdict（不建任何会话）。
@@ -805,9 +903,15 @@ async function runDshAnalysisLlm(ctx, promptText, signal) {
 async function finishDshAnalysisLlm(ctx, promptText, state, knownVersions) {
   try {
     let parsed = null
+    let error = null
+    let errorCode = null
     try {
       parsed = await runDshAnalysisLlm(ctx, promptText, null)
-    } catch {}
+    } catch (failure) {
+      error = errMsg(failure)
+      errorCode = failureCodeOf(failure)
+      try { ctx.logger?.warn?.('plugin-market: dsh 升级分析失败：' + (errorCode !== null ? '[' + errorCode + '] ' : '') + error) } catch {}
+    }
     // 归一化逐版本结果：以「已知版本清单」为准，模型漏掉的版本补占位（missing: true）
     const known = Array.isArray(knownVersions) ? knownVersions.map((v) => String(v?.version ?? '')).filter((s) => s !== '') : []
     const byVersion = new Map()
@@ -841,6 +945,8 @@ async function finishDshAnalysisLlm(ctx, promptText, state, knownVersions) {
       sessionId: null,
       analyzedAt: Date.now(),
       status: 'idle',
+      error,
+      errorCode,
       verdictSchema: DSH_VERDICT_SCHEMA,
     }
     dshStateCache = next
@@ -855,7 +961,7 @@ async function finishDshAnalysisLlm(ctx, promptText, state, knownVersions) {
 async function analyzeDshUpdate(ctx) {
   const state = dshStateCache ?? await checkDshUpdate(ctx)
   if (state === null || state.hasUpdate !== true || !state.installed || !state.latest) {
-    return { ok: false, skipped: true, error: '当前已是最新版本或未能检测到更新', ...state }
+    return { ...state, ok: false, skipped: true, error: '当前已是最新版本或未能检测到更新' }
   }
   // 已分析且远端版本未变：直接复用已有判定，不重复分析。
   // 仅当判定是「新格式」（versions 数组非空）且口径版本一致时复用——旧格式（无逐版本明细，
@@ -900,7 +1006,7 @@ async function analyzeDshUpdate(ctx) {
       ? scan.plugins.map((p) => p.moduleName + (p.version ? '@' + p.version : ''))
       : await listInstalledPluginsForPrompt(ctx)
     const promptText = buildDshUpdatePrompt(state.installed, state.latest, versions, compare, installedPlugins, scan)
-    const analyzing = { ...state, status: 'analyzing', sessionId: null, scan }
+    const analyzing = { ...state, status: 'analyzing', sessionId: null, scan, error: null, errorCode: null }
     dshStateCache = analyzing
     await writeDshState(analyzing)
     // 后台收尾会在其 finally 中复位 in-flight；此处只有「还没调度收尾就抛错」才手动复位
@@ -912,4 +1018,4 @@ async function analyzeDshUpdate(ctx) {
   }
 }
 
-export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard }
+export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection }

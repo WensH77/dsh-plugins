@@ -69,6 +69,9 @@ window.__ModuleLoader__.load({
 			dshHasUpdate: "有新版本 v{version}",
 			dshBreaking: "有新版本 v{version}，可能影响已装插件的兼容性",
 			dshUnknown: "无法检查更新",
+			dshAnalyzeFailed: "分析失败",
+			dshErrorCode: "失败码",
+			dshRetry: "重试",
 			dshAnalyzing: "正在分析新版本…",
 			dshHasUpdateShort: "有新版本",
 			dshBreakingShort: "兼容性问题",
@@ -102,6 +105,9 @@ window.__ModuleLoader__.load({
 			dshHasUpdate: "New version available: v{version}",
 			dshBreaking: "New version v{version} — may affect installed plugin compatibility",
 			dshUnknown: "Unable to check for updates",
+			dshAnalyzeFailed: "Analysis failed",
+			dshErrorCode: "Failure code",
+			dshRetry: "Retry",
 			dshAnalyzing: "Analyzing the new version…",
 			dshHasUpdateShort: "update available",
 			dshBreakingShort: "compatibility issue",
@@ -232,7 +238,9 @@ window.__ModuleLoader__.load({
 						// 简约拼接：版本号 + 状态标记（判定详情点击弹窗查看）
 						state = "breaking"; text = (d.installed ? "v" + d.installed + " · " : "") + t("dshBreakingShort");
 					} else if (d.hasUpdate === true) {
-						state = "update"; text = (d.installed ? "v" + d.installed + " · " : "") + t("dshHasUpdateShort");
+						// 上次分析失败时灯上直说失败：否则一直显示「有新版本」，用户看不出点了个寂寞
+						const failed = typeof d.error === "string" && d.error !== "";
+						state = "update"; text = (d.installed ? "v" + d.installed + " · " : "") + t(failed ? "dshAnalyzeFailed" : "dshHasUpdateShort");
 					} else if (d.checked === false) {
 						state = "unknown"; text = d.installed ? "v" + d.installed : "";
 					} else {
@@ -249,9 +257,16 @@ window.__ModuleLoader__.load({
 					if (dshReportOverlay && dshReportOverlay.parentElement) dshReportOverlay.parentElement.removeChild(dshReportOverlay);
 					dshReportOverlay = null;
 				};
+				// 失败弹窗的「重试」按钮要用（函数体在下方 onClick 段赋值，那里才拿得到 fetchState/startPoll）
+				let runAnalyze = null;
 				// 判定弹窗：已分析（红/黄）点击时展示 verdict/summary/变更/受影响插件/详情
 				const showDshReport = (d) => {
 					closeDshReport();
+					// 上次直连 LLM 分析失败的原因（无失败为空串）：弹窗标题/正文/重试按钮都看它
+					const analysisError = d && typeof d.error === "string" && d.error !== "" ? d.error : "";
+					// 宿主给的失败码（TRANSPORT / TIMEOUT / MODEL_OUTPUT…）：同一句原始错误下，
+					// 排查方向完全不同——上游抖一下 vs 配置坏了，所以单独顶一行
+					const analysisErrorCode = d && typeof d.errorCode === "string" && d.errorCode !== "" ? d.errorCode : "";
 					const overlay = document.createElement("div");
 					overlay.className = "pm-overlay";
 					overlay.style.zIndex = "1001";
@@ -467,14 +482,32 @@ window.__ModuleLoader__.load({
 							body.appendChild(p);
 						}
 					} else {
-						title.textContent = t("dshUnknown");
+						title.textContent = analysisError !== "" ? t("dshAnalyzeFailed") : t("dshUnknown");
+						if (analysisError !== "") title.classList.add("danger");
+						if (analysisErrorCode !== "") {
+							const code = document.createElement("p");
+							code.className = "pm-modalText";
+							code.style.fontWeight = "600";
+							code.textContent = t("dshErrorCode") + "：" + analysisErrorCode;
+							body.appendChild(code);
+						}
 						const p = document.createElement("p");
 						p.className = "pm-modalText";
-						p.textContent = (d && typeof d.error === "string" && d.error !== "") ? d.error : t("dshUnknown");
+						p.textContent = analysisError !== "" ? analysisError : t("dshUnknown");
 						body.appendChild(p);
 					}
 					const row = document.createElement("div");
 					row.className = "pm-modalRow";
+					if (analysisError !== "") {
+						const retry = document.createElement("button");
+						retry.className = "pm-btn";
+						retry.textContent = t("dshRetry");
+						retry.addEventListener("click", () => {
+							closeDshReport();
+							if (typeof runAnalyze === "function") runAnalyze();
+						});
+						row.appendChild(retry);
+					}
 					const ok = document.createElement("button");
 					ok.className = "pm-btn primary";
 					ok.textContent = t("ok");
@@ -507,28 +540,38 @@ window.__ModuleLoader__.load({
 						.catch(() => {});
 				};
 
+				// 触发一次直连 LLM 分析（点击待分析状态灯 / 失败弹窗的「重试」都走这里）
+				runAnalyze = () => {
+					if (analyzeBusy) return;
+					analyzeBusy = true;
+					// 立刻切「正在分析…」文案（不再是只把圆点置橙）：服务端在材料拉取 + L1 扫描
+					// 完成前仍是 idle，不主动画的话文案会一直停在「有新版本」。
+					analyzeUntil = Date.now() + ANALYZE_GUARD_MS;
+					paint({ ...(lastState ?? {}), ok: true, status: "analyzing", error: null });
+					startPoll(true);
+					call("/plugin-market/dsh-version/analyze", {})
+						.then((d2) => { analyzeUntil = 0; if (!d2 || d2.ok !== true) fetchState(); })
+						.catch(() => { analyzeUntil = 0; fetchState(); })
+						.finally(() => { analyzeBusy = false; });
+				};
+
 				const onClick = () => {
 					if (!statusEl || analyzeBusy) return;
 					const state = statusEl.dataset.state;
 					if (state === "analyzing") return; // 分析进行中：忽略重复点击（服务端同样不并发起第二次分析）
 					if (state === "update" || state === "breaking") {
-						// 已有判定 → 弹判定弹窗；待分析 → 静默直连 LLM 分析（不弹窗），完成后点击再看弹窗
+						// 已有判定 → 弹判定弹窗；上次分析失败 → 弹失败原因 + 重试；待分析 → 直接分析
 						call("/plugin-market/dsh-version")
 							.then((d) => {
 								if (d && d.hasUpdate === true && (d.verdict === "safe" || d.verdict === "breaking")) {
 									showDshReport(d);
 									return;
 								}
-								analyzeBusy = true;
-								// 立刻切「正在分析…」文案（不再是只把圆点置橙）：服务端在材料拉取 + L1 扫描
-								// 完成前仍是 idle，不主动画的话文案会一直停在「有新版本」。
-								analyzeUntil = Date.now() + ANALYZE_GUARD_MS;
-								paint({ ...(lastState ?? {}), ok: true, status: "analyzing" });
-								startPoll(true);
-								call("/plugin-market/dsh-version/analyze", {})
-									.then((d2) => { analyzeUntil = 0; if (!d2 || d2.ok !== true) fetchState(); })
-									.catch(() => { analyzeUntil = 0; fetchState(); })
-									.finally(() => { analyzeBusy = false; });
+								if (d && typeof d.error === "string" && d.error !== "") {
+									showDshReport(d);
+									return;
+								}
+								runAnalyze();
 							})
 							.catch(() => fetchState());
 					} else {

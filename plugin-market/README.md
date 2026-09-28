@@ -22,20 +22,29 @@
     alpha → 精确版本、正式版 → `@latest`）、版本变更明细、变更要点、可能受影响的插件、
     本地插件契约扫描证据、详情。报告文本一律简体中文。
   - 尚未分析（黄灯待分析）→ 先跑 L1 本地插件契约扫描（机器判定，不依赖 LLM），再静默直连 LLM
-    （`ctx.llm.stream`，跟随 `agent-default-model`，120s 超时，不建会话）逐版本分析
-    「当前版本 → 最新版本」之间每一个版本，给出 `breakingChanges` 与逐版本 `breaking` 标注。
+    （`ctx.llm.stream`，模型取宿主默认选择 `agentDefaultModel.currentSelection()`，120s 超时，
+    不建会话）逐版本分析「当前版本 → 最新版本」之间每一个版本，给出 `breakingChanges` 与逐版本
+    `breaking` 标注。
+  - 分析失败 → 灯上文案显示「分析失败」，点击弹出失败弹窗：失败码（如 `TRANSPORT` / `TIMEOUT` /
+    `MODEL_OUTPUT`）+ 原始错误 + 「重试」。失败原因同时写进状态文件与宿主日志（`ctx.logger.warn`），
+    不再静默回落到「有新版本」。
 - **分析期间的文案时机**：点击后立即切成「正在分析新版本…」并转 1s 快轮询；服务端在
   「拉版本材料 + L1 契约扫描」阶段仍是 idle，客户端用 120s 守卫期忽略这种陈旧响应，
   既不把文案打回去也不退回 60s 慢轮询，判定写回后 1s 内切到结果。
 - **L1 契约扫描**：枚举已安装用户插件，读 `dsh.client.inject` 注入名、`lib/*.js` 里的
   `@deepseek-ai/…` 引用字面量与声明的宿主依赖范围；按精确版本号从 npm registry 拉目标版本的
-  `dsh-web-app`/`dsh-base` 依赖闭包做对比，产出 `removed-module`（宿主模块消失）与
-  `range-break`（声明范围不覆盖目标版本）。按声明 section 定档：只有 `removed-module` 与
+  `dsh-web-app`/`dsh-base` 闭包（`dependencies` + `peerDependencies`，再沿 `@deepseek-ai/*` 走一层
+  传递依赖——provider 包把实现包挂成自己的 peer，只看直接依赖会把这种拆包误判成模块消失）做对比，
+  产出 `removed-module`（宿主模块消失）与 `range-break`（声明范围不覆盖目标版本）。疑似消失的模块
+  再过一次 registry 复核：目标版本仍在发布这个包 → 只算「降为间接依赖」记入 `demotedModules`，
+  不算移除，也不参与破坏性判定。按声明 section 定档：只有 `removed-module` 与
   `dependencies` 越界计入「受影响」；`devDependencies` 越界记为开发期提示、`peer` 越界为声明
   失真，两者都不作为破坏性更新的判据。registry 不可达时降级 `local-only`（仅指纹），不阻塞分析。
 - **点击幂等**：分析进行中重复点击不并发起第二次；远端版本未变且判定口径一致时直接复用已有判定。
   判定口径版本 `verdictSchema` 升级后旧缓存作废、点击即按当前口径重新分析。
 - **持久化**：判定写在 `~/.dsh/plugin-market-dsh.json`，重启后仍生效；远端版本变化后重置为待分析。
+  其中 `error` 是上一次直连 LLM 分析的失败原因原文、`errorCode` 是宿主给的失败码（无失败均为
+  `null`），两者随判定一起复用、目标版本变化时作废。
 
 ## 端点
 

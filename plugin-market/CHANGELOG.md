@@ -2,6 +2,19 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.16.3
+
+- **fix：宿主模块闭包只比直接依赖，把「拆包」误判成「模块消失」。** 0.1.7-rc.2 把 `@deepseek-ai/dsh-llm-deepseek` 从 `dsh-base` 的直接依赖挪成了新包 `@deepseek-ai/dsh-llm-deepseek-api-key`／`-account` 的 `peerDependency`（两个新包仍默认挂载在 `dsh-base/cordis.patch.yml` 的 `llm-deepseek` 行上），包本身在 rc.2 照常发布、版本号同为 `0.1.7-rc.2`。旧实现只看 `dsh-web-app`/`dsh-base` 的 `dependencies`，于是把它判成 `removed-module`，弹窗跟着写出「宿主模块在目标版本闭包中消失」这种读起来像适配器被拿掉的结论。更实际的危害在护栏：`dshBreakingGuard` 要求 `removedModules` 为空才肯把模型的 `breakingChanges=true` 降级为兼容，非空即恒不降级——这次没变红灯只是因为模型自己回了 `false`。现在闭包口径改为 `dependencies` + `peerDependencies`，并沿 `@deepseek-ai/*` 走一层传递依赖（两侧口径一致），疑似消失的模块再过一次 registry 复核：目标版本仍在发布该包 → 记入新增的 `demotedModules`（降为间接依赖），只有确认不再发布的才进 `removedModules`；`dshBreakingGuard` 随之只看真正的移除。实测 rc.1 → rc.2：目标闭包 246 个模块、`removedModules` 为空、`dsh-llm-deepseek` 在闭包内。
+- **feat：失败原因带上宿主给的失败码。** 之前 `error` 只存 message，`LLM 调用失败：DeepSeek Messages transport failed` 在状态文件里既分不出是上游抖了一下还是配置坏了，也留不下可用于判断的字段。现在 `streamLlmText` 把 finish chunk 的 `reason.failure.code` 挂在错误上（原文不改，`errMsg()` 取到的仍是原句），`finishDshAnalysisLlm` 把它写进状态的 `errorCode`，宿主日志打成 `[TRANSPORT] LLM 调用失败：…`，失败弹窗在原文之上单独一行显示「失败码：TRANSPORT」。模型回复不是预期 JSON 记 `MODEL_OUTPUT`。
+- **test**：smoke 新增闭包口径用例（依赖/peer/一层传递、rc.1→rc.2 拆包复刻不报消失、`classifyClosureGap` 的 removed/demoted 分流、`dshBreakingGuard` 对降级模块不挡降级、旧缓存缺 `demotedModules` 时保守处理、prompt 提示区把「降为间接依赖」单列且要求不得据此判破坏性）与失败码用例（错误挂码、`errorCode` 落盘、日志前缀、弹窗显示、中英词条都有）。
+
+## 0.16.2
+
+- **fix：状态灯点击「没反应」——直连 LLM 的请求根本没带 model**。`reviewLlmRoute` 读的是 `ctx.get('settings').get('agent-default-model')`，但 settings 服务（`dsh-settings` 的 `SettingsForms`）只有 `configure / invalidate / prepareDocument / describe / schema`，**没有 `get()`**：这句恒为 `undefined`，路由于是只剩 `provider: 'deepseek-official'` 而没有 `model`。宿主拿 `model === undefined` 去解析精确模型元数据，直接以错误终止请求——`~/.dsh/plugin-market-dsh.json` 里表现是 `verdict: null`、`versions[].missing: true`，而分析**在 30ms 内就写完了**（真调模型不可能这么快）。现在默认模型取自宿主真正的服务 `ctx.get('agentDefaultModel')?.currentSelection()`（`dsh-agent-default-model`，返回 `{provider, model, reasoningEffort}`），请求级 override 仍可覆盖；解析不出 model 时抛错，不再发出缺 model 的请求。该请求的报错原文：`LLM 调用失败：adapter returned invalid exact model metadata for provider "deepseek-official" model "undefined"`。
+- **fix：失败不再被静默吞掉（这才是「点了没反应」的直接原因）**。`streamLlmText` 原先在「没有 llm 服务 / 超时 / 空文本」时返回 `null`，`finishDshAnalysisLlm` 又用 `catch {}` 吞掉异常，客户端同样只 `catch(() => fetchState())`——分析失败后状态灯照旧显示「有新版本」，再点一次只是重跑一遍、仍然什么都不显示，唯一痕迹是状态文件里的 `verdict: null`。现在：失败原因写进状态（`error` 字段，随判定一起持久化、目标版本变化时作废）、`ctx.logger.warn` 落一条日志、`streamLlmText` 的各类失败全部改为带原因抛错（含「LLM 返回空文本」「模型回复不是预期的 JSON（前 200 字：…）」）。
+- **fix：客户端把失败告诉用户**。灯上文案在有 `error` 时显示「分析失败」而不是「有新版本」；点击弹失败弹窗（标题「分析失败」+ 原始错误 + 「重试」按钮），重试复用同一条点击分析链路，不再是死路（此前关掉弹窗后再点还是同一个错误、无法重新分析）。
+- **test**：smoke 增加三条源码断言（默认模型取自 `agentDefaultModel.currentSelection()`、不得再出现 `settings?.get?.('agent-default-model')`、解析不出 model 必须抛错），并同步「点击瞬间切正在分析文案」的断言到重构后的 `runAnalyze`。
+
 ## 0.16.1
 
 - **fix：直连 LLM 的消息 source 跟上 v4 口径**——`lib/dsh.js` 里手工组装给 `ctx.llm.stream` 的消息原用退役的 `{ kind: 'plugin', plugin: 'dsh-plugin-market' }` 包装。这条消息**不落会话日志**（`assertV4RowAdmission` 只在 `dsh-session-persistence-jsonl` 与 `dsh-session-format-v3-to-v4` 里，`dsh-llm` 的 `createMessage` 只 clone+freeze、不校验 kind），所以它不会像 command-setting / theseus-crew 那样整轮 append 被拒；但同工作区其它插件已统一成 `plugin:<包名>`（command-setting `lib/ask.js:143`），这里跟上，避免将来这条消息接上持久化时踩同一个坑。
