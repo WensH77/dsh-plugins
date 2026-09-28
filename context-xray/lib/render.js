@@ -166,7 +166,7 @@ export function renderReport(report, options = {}) {
   const matrixLimit = options.matrix ?? 10;
   const deadLimit = options.dead ?? 8;
   const buckets = options.buckets ?? 40;
-  // 门槛看 token 而不是词数：强度改成除以 token 之后，被冤枉的恰恰是词少的代码块，
+  // 门槛看 token 而不是词数：重叠度改成除以 token 之后，被冤枉的恰恰是词少的代码块，
   // 再按词数设门槛会把它们二次排除。要挡的是太短的块——一句话的比值不稳。
   const minTokens = options.minTokens ?? 150;
   const lines = [];
@@ -192,19 +192,22 @@ export function renderReport(report, options = {}) {
   }
   lines.push('');
 
-  const ranked = report.blocks.filter((block) => block.tokens >= minTokens);
-  lines.push(`### 强度榜（token ≥ ${minTokens}，按每千 token 的加权提及数排序）`);
+  // 只排「被给予」的块：我自己的产出（工具入参 / 回复正文）天然含我的用词，拿它参与
+  // 词汇重叠排名是循环论证——实测某会话强度榜前 10 有 5 个是我自己写的话。
+  const ranked = report.blocks.filter((block) => block.tokens >= minTokens && block.direction === 'given');
+  lines.push(`### 词汇重叠榜（token ≥ ${minTokens}，只排被给予的块）`);
   lines.push('');
-  lines.push('> **强度 = 加权提及 ÷ token × 1000**，和「体积」同单位，所以这两列可以直接并排读成性价比：体积大而强度低 = 贵但没被想起。');
-  lines.push('> 「累计」是整个会话为它付的总账。两数差得越大，越说明它是被反复重发的固定成本；累计为 0 表示这块是最后一次输出，还没被任何请求重发过。');
+  lines.push('> **重叠 = 加权提及 ÷ token × 1000**，与「体积」同单位，两列并排读成性价比：体积大而重叠低 = 贵但没被想起。');
+  lines.push('> 它测的是**词汇重叠**，不是影响——实测一个块约 58% 的提及来自它出现**之前**的 reasoning（零假设 52%，向之后的偏差 −0.084），所以别把它读成「这块塑造了我的思考」。');
+  lines.push('> 我自己的产出不进这张榜（它们在「来源占比」里照常计入体积与累计）；「累计」是整个会话为它付的总账，累计为 0 表示它是最后一次输出、还没被重发过。');
   lines.push('');
   const strengthWidths = [46, 7, 7, 9, 8, 9];
-  lines.push(row(['块', '覆盖率', '提及', '强度/千tok', '体积', '累计'], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
+  lines.push(row(['块', '覆盖率', '提及', '重叠/千tok', '体积', '累计'], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
   lines.push(divider(strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
   for (const block of ranked.slice(0, limit)) {
-    lines.push(row([blockName(block), `${(block.coverage * 100).toFixed(0)}%`, String(block.rawHits), block.intensity.toFixed(1), (block.tokens ?? 0).toLocaleString('en-US'), (block.cumulative ?? 0).toLocaleString('en-US')], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
+    lines.push(row([blockName(block), `${(block.coverage * 100).toFixed(0)}%`, String(block.rawHits), block.overlap.toFixed(1), (block.tokens ?? 0).toLocaleString('en-US'), (block.cumulative ?? 0).toLocaleString('en-US')], strengthWidths, ['left', 'right', 'right', 'right', 'right', 'right']));
   }
-  if (ranked.length === 0) lines.push('| （没有达到词数门槛的块） |  |  |  |  |  |');
+  if (ranked.length === 0) lines.push('| （没有达到 token 门槛的被给予块） |  |  |  |  |  |');
   lines.push('');
 
   const tracked = ranked.slice(0, 8);
@@ -244,6 +247,25 @@ export function renderReport(report, options = {}) {
       const source = entry.sourceIndex < 0 ? '—' : `#${entry.sourceIndex + 1} ${truncate(`${entry.sourceLabel}${entry.sourcePreview ? ` · ${entry.sourcePreview}` : ''}`, 30)}`;
       lines.push(row([entry.term, entry.attribution.toFixed(2), String(entry.total), String(entry.contextTotal), String(entry.blocks), source], matrixWidths, ['left', 'right', 'right', 'right', 'right', 'left']));
     }
+    lines.push('');
+  }
+
+  if (report.lowMention.length > 0) {
+    const { lowSpan } = report.totals;
+    lines.push(`### 跨块重复却从未被提及的词（跨度 ≥ ${lowSpan} 的 ${report.lowMention.length} 个）`);
+    lines.push('');
+    lines.push('> 这些词在很多个块里反复出现，却一次都没进过 reasoning。它们通常是**固定包装文本**——工具结果每份都带的样板、路径前缀、安全声明——也就是「每步都在付钱、从没用上」的那部分。');
+    lines.push('>');
+    lines.push(`> 按**跨多少个块**排而不是按出现次数：按次数排，榜首是 \`ok\` / \`await\` 这类集中在大文件里的代码样板；按跨度排才浮出跨块的固定成本。只看被给予的块，我自己的产出不算。`);
+    lines.push('');
+    const lowWidths = [24, 6, 8, 44];
+    lines.push(row(['词', '跨块', '出现', '出现最多的块'], lowWidths, ['left', 'right', 'right', 'left']));
+    lines.push(divider(lowWidths, ['left', 'right', 'right', 'left']));
+    for (const entry of report.lowMention.slice(0, limit)) {
+      const source = `#${entry.sourceIndex + 1} ${truncate(`${entry.sourceLabel}${entry.sourcePreview ? ` · ${entry.sourcePreview}` : ''}`, 40)}`;
+      lines.push(row([entry.term, String(entry.span), String(entry.total), source], lowWidths, ['left', 'right', 'right', 'left']));
+    }
+    if (report.lowMention.length > limit) lines.push(`| …另有 ${report.lowMention.length - limit} 个 |  |  |  |`);
     lines.push('');
   }
 

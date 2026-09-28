@@ -10,7 +10,7 @@
 // 三个指标的口径差别很大，不能混用：
 //   - rawHits（原始提及次数）有严重长度偏置：11,798 字符的系统提示词天然压过
 //     41 字符的用户消息。它只能当「总声量」看。
-//   - intensity（每千 token 的加权提及数）是唯一和「体积」同单位的那个数，两者
+//   - overlap（每千 token 的加权提及数）是唯一和「体积」同单位的那个数，两者
 //     并排读才是「同样体积谁被想得多」。它早期除的是「不同词数」，那会系统性抬高
 //     代码块（同一 token 数下词密度差 5–6 倍），已改。
 //   - coverage（多少比例的词被提到过）用来发现「整块内容从没被用上」。
@@ -325,6 +325,10 @@ export function analyzeMentions(events, options = {}) {
   const df = new Map();
   for (const map of blockTerms) for (const word of map.keys()) df.set(word, (df.get(word) ?? 0) + 1);
 
+  /** 所有进过我 reasoning 的词，后面的「从未被提及」判据要用。 */
+  const mentionedWords = new Set();
+  for (const entry of stepCounts) for (const word of entry.counts.keys()) mentionedWords.add(word);
+
   const series = blocks.map(() => new Array(reasoning.length).fill(0));
   for (const [index, map] of blockTerms.entries()) {
     for (const [word, count] of map) {
@@ -375,13 +379,22 @@ export function analyzeMentions(events, options = {}) {
       perTerm: termCount === 0 ? 0 : rawHits / termCount,
       weighted: Math.round(weighted * 10) / 10,
       // 主指标：每千 token 的 df 加权提及数。
-      intensity: tokens === 0 ? 0 : (weighted / tokens) * 1000,
+      //
+      // 它测的是**词汇重叠**，不是影响：实测一个块约 58% 的提及来自它出现**之前**的
+      // reasoning（零假设 52%，向之后的偏差 −0.084），也就是说它主要反映「这块和
+      // 整场思考共享多少词」，与它出现后我有没有讨论它几乎无关。所以字段名叫 overlap
+      // 而不是 intensity/attribution，报告里也只拿它排「被给予」的块——我自己的产出
+      // 天然含我的用词，拿它参与排名是循环论证。
+      overlap: tokens === 0 ? 0 : (weighted / tokens) * 1000,
+      // given = 我被给予的（系统提示词 / 注入 / 用户消息 / 工具结果）；
+      // produced = 我自己写进上下文的（工具入参 / 回复正文）。
+      direction: block.kind === 'assistant' ? 'produced' : 'given',
       series: series[index]
     };
   });
 
-  const totalIntensity = rows.reduce((sum, row) => sum + row.intensity, 0);
-  for (const row of rows) row.share = totalIntensity === 0 ? 0 : row.intensity / totalIntensity;
+  const totalOverlap = rows.reduce((sum, row) => sum + row.overlap, 0);
+  for (const row of rows) row.share = totalOverlap === 0 ? 0 : row.overlap / totalOverlap;
 
   // 原始矩阵：只保留真正被提及过的词，避免把整个词表倒出来。
   // 排序键必须与展示的「提及」列一致——曾经按词在上下文块里的出现次数排序，
@@ -478,6 +491,44 @@ export function analyzeMentions(events, options = {}) {
     for (const word of terms(block.text, options)) seenSoFar.add(word);
   }
 
+  // 跨块重复却从未被提及的词：固定包装文本的指纹。
+  //
+  // 排序必须按「跨多少个块」而不是「出现多少次」：按次数排，榜首是 `ok(187)` /
+  // `await(170)` 这类集中在大文件里的代码样板；按跨度排才浮出真正的固定成本——
+  // 实测某会话 `Security` / `Enclosed` / `UNTRUSTED_PAGE_CONTENT` / `nonce`
+  // 出现在 81 个块里、一次都没进过 reasoning，那是浏览器工具结果每份都带的
+  // 安全包装文本。只看被给予的块，我自己的产出不算。
+  const lowSpan = options.lowSpan ?? 5;
+  const termStat = new Map();
+  for (const block of blocks) {
+    if (block.kind === 'assistant') continue;
+    const per = new Map();
+    for (const word of terms(block.text, options)) per.set(word, (per.get(word) ?? 0) + 1);
+    for (const [word, count] of per) {
+      const entry = termStat.get(word) ?? { span: 0, total: 0, top: block.index, topCount: 0 };
+      entry.span += 1;
+      entry.total += count;
+      if (count > entry.topCount) {
+        entry.topCount = count;
+        entry.top = block.index;
+      }
+      termStat.set(word, entry);
+    }
+  }
+  const lowMention = [];
+  for (const [word, entry] of termStat) {
+    if (entry.span < lowSpan || mentionedWords.has(word)) continue;
+    lowMention.push({
+      term: word,
+      span: entry.span,
+      total: entry.total,
+      sourceIndex: entry.top,
+      sourceLabel: blocks[entry.top].label,
+      sourcePreview: blocks[entry.top].preview
+    });
+  }
+  lowMention.sort((a, b) => b.span - a.span || b.total - a.total || a.term.localeCompare(b.term));
+
   return {
     totals: {
       blocks: rows.length,
@@ -485,6 +536,7 @@ export function analyzeMentions(events, options = {}) {
       distinctTerms: totals.size,
       minSpan,
       skippedBySpan,
+      lowSpan,
       realPrompt,
       tokenScale,
       occupancy: contextWindow === null ? null : realPrompt / contextWindow,
@@ -492,9 +544,10 @@ export function analyzeMentions(events, options = {}) {
       rawHits: rows.reduce((sum, row) => sum + row.rawHits, 0),
       weighted: Math.round(rows.reduce((sum, row) => sum + row.weighted, 0) * 10) / 10
     },
-    blocks: [...rows].sort((a, b) => b.intensity - a.intensity),
+    blocks: [...rows].sort((a, b) => b.overlap - a.overlap),
     steps,
     matrix,
+    lowMention,
     unclosed,
     inactive
   };

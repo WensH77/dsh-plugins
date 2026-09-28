@@ -91,7 +91,7 @@ test('归因带出覆盖率与强度，且 reasoning 里提到的块命中不为
   const user = report.blocks.find((block) => block.kind === 'user');
   assert.ok(user.covered > 0, '用户消息里的词应当被 reasoning 提到');
   assert.ok(user.coverage > 0 && user.coverage <= 1);
-  assert.ok(user.intensity > 0);
+  assert.ok(user.overlap > 0);
   assert.equal(report.blocks.reduce((sum, block) => sum + block.rawHits, 0), report.totals.rawHits);
 });
 
@@ -103,7 +103,7 @@ test('矩阵只保留真正被提及过的词', () => {
 
 test('renderReport 输出关键段落', () => {
   const text = renderReport(analyzeMentions(fixture(), { matrixTerms: 10 }), { minTokens: 1 });
-  for (const heading of ['## 上下文 X 光', '### 来源占比', '### 强度榜', '### 时间分布', '### 关键词']) {
+  for (const heading of ['## 上下文 X 光', '### 来源占比', '### 词汇重叠榜', '### 时间分布', '### 关键词']) {
     assert.ok(text.includes(heading), `报告缺少 ${heading}`);
   }
   assert.ok(text.includes('提及度'), '报告必须声明这是提及度而非注意力');
@@ -234,6 +234,29 @@ test('引用上下文里已有的词不算不活跃', () => {
   ];
   const report = analyzeMentions(events, { matrixTerms: 5 });
   assert.equal(report.inactive.length, 0, '引用用户原文里的词不该被判为不活跃');
+});
+
+test('块分「被给予」与「我产出」两个方向，重叠榜只排被给予的', () => {
+  const report = analyzeMentions(fixture(), { matrixTerms: 10 });
+  assert.equal(report.blocks.find((block) => block.kind === 'system').direction, 'given');
+  assert.equal(report.blocks.find((block) => block.label.startsWith('工具入参')).direction, 'produced');
+  const table = renderReport(report, { minTokens: 1, limit: 30 }).split('### 词汇重叠榜')[1].split('###')[0];
+  // 我自己的产出天然含我的用词，进重叠榜就是循环论证。
+  assert.ok(!table.includes('工具入参'), '工具入参不该出现在重叠榜里');
+});
+
+test('跨块重复却从未被提及的词会被列出', () => {
+  const events = [];
+  for (let index = 0; index < 5; index += 1) {
+    events.push({ type: 'tool/result', seq: index, data: { message: { source: { kind: 'tool', callId: `c${index}` }, content: [{ type: 'tool-result', toolCallId: `c${index}`, content: [{ type: 'text', text: 'gadget wrapper notice' }] }] } } });
+  }
+  events.push({ type: 'assistant/message', seq: 9, data: { usage: { inputTokens: 10, cacheReadTokens: 90, outputTokens: 5, reasoningTokens: 2 }, message: { role: 'assistant', content: [{ type: 'reasoning', text: 'notice needs work' }] } } });
+  const report = analyzeMentions(events, { matrixTerms: 5 });
+  const gadget = report.lowMention.find((entry) => entry.term === 'gadget');
+  assert.ok(gadget !== undefined, '跨 5 个块重复且从未提及的词该被列出');
+  assert.equal(gadget.span, 5);
+  // notice 在 reasoning 里出现过 → 不算「从未被提及」。
+  assert.ok(!report.lowMention.some((entry) => entry.term === 'notice'));
 });
 
 test('apply 注册 context_xray，执行返回报告文本', async () => {
