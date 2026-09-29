@@ -1,83 +1,84 @@
 # dsh-plugins
 
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）web profile 编写的一组插件。
-仓库采用 **pnpm 子目录依赖** 结构：每个插件是一个独立的包目录，可直接从 GitHub 安装，无需发布 npm。
 
-## 插件清单
+仓库是**多插件 monorepo**：每个插件是一个独立包目录（各自的 `package.json` / `README.md` / `CHANGELOG.md`），
+可以直接从 GitHub 按子目录安装，不需要发布到 npm；顶层没有统一 lockfile，各插件版本独立维护。
+
+## 在用插件
 
 | 插件 | 目录 | 功能 |
 |---|---|---|
-| **chat-rollback** | [`chat-rollback/`](chat-rollback/README.md) | 对话回滚：在用户消息操作条（与复制按钮同行）点击回滚到这条消息之前，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档 |
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 输入区增强：外置 Plan / Ask 切换按钮（`/plan`、`/ask`——ask 为会话级只问答模式，禁改/禁建文件）、`#` 引用历史会话（跨工作区/未归档/主代理）、划词引用。**0.9.0 起移除原「命令隐藏」功能**，不再过滤命令菜单 |
 | **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发 |
-| **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做注意力代理——输出三口径来源占比（提及 / 体积 / 累计）、强度榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
-| ~~**arena-v2**~~（已弃用） | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | arena v2：类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者（业务探索/知识沉淀/测试用例场景、双 persona、固定挑战者模型）。**已停止维护**，移入 `deprecated/` 仅作存档；后续方案为 Theseus Crew（由 arena-v2 迁移而来） |
-| ~~**model-arena**~~（已弃用） | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图开启「竞技场」toggle 选场景/模型后一次提问，自动执行「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。**曾由 arena-v2 取代（arena-v2 亦已弃用）**，移入 `deprecated/` 仅作存档 |
-| ~~**temperature-inject**~~（已弃用） | [`deprecated/temperature-inject/`](deprecated/temperature-inject/README.md) | 温度注入：会话页开关 + 0~1/step 0.2 滑杆，经 `agent/request` waterfall 把主代理委派子代理的 `LlmCallConfig` 改写为「指定模型 + 关 thinking + 指定温度」。宿主端与客户端均已实现、测试通过（宿主 36 项 + 浏览器端）。**已弃用**：温度对"快速出 HTML 方案"这类多步 agentic 任务不是有效杠杆——同 prompt 下 T0/T1 的组内相似度 0.470 vs 0.359，视觉方向仍然雷同，真正拉开差异的是 prompt 里的设计约束；而温度生效必须先关 thinking（降低方案质量），且 1.5 起输出退化成 token soup。移入 `deprecated/` 仅作存档 |
-| **dsh-version-check** | [`dsh-version-check/`](dsh-version-check/README.md) | dsh 版本状态灯：侧边栏品牌名（DeepSeek Harness）下方显示已装 dsh 版本与更新状态（启动 + 每小时检测 `deepseek-harness` 最新发布），点击跑本地插件契约扫描 + 直连 LLM 逐版本分析——判断新版本会不会影响本机已装插件的运行期兼容性，给出可复制的升级命令、版本变更明细与扫描证据。**原名 plugin-market**：0.16.0 已移除原「插件市场」的设置页 tab 与安装/更新/卸载功能，0.17.0 更名为 dsh-version-check |
-| ~~**session-export**~~（已弃用） | [`deprecated/session-export/`](deprecated/session-export/README.md) | 会话导出长图：会话标题栏「导出长图」按钮，把当前会话从第一条到最新一条导出为长图 PNG——只展示用户输入与模型输出，自动剔除思考（Think/reasoning）与工具调用等过程内容（GFM 子集 Markdown 排版、主题取色、长会话自动拆多张）。**已停止维护**，移入 `deprecated/` 仅作存档 |
-| ~~**tool-both**~~（已弃用） | [`deprecated/tool-both/`](deprecated/tool-both/README.md) | 工具呈现模式（both）：激活时自动安装「BOTH模式」预设——原生工具直调与 run_code 并存、无 code-only 限制。**已停止维护**，移入 `deprecated/` 仅作存档：`both` 在同一请求里重复渲染工具入参类型声明（`interface ToolArgsMap` 35,940 字符，占 SDK 段的 76%），而实测 77% 的 both 会话一次 `run_code` 都没调过、全部 Jira MCP 调用也都走原生直调——默认 `standard`、需要时按会话切呈现模式更划算 |
+| **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做归因代理——输出三口径来源占比（提及 / 体积 / 累计）、词汇重叠榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
+| **dsh-version-check** | [`dsh-version-check/`](dsh-version-check/README.md) | dsh 版本状态灯：侧边栏品牌名下方显示已装 dsh 版本与更新状态（启动 + 每小时检测 `deepseek-harness` 最新发布），点击跑本地插件契约扫描 + 直连 LLM 逐版本分析——判断新版本会不会影响本机已装插件的运行期兼容性，给出可复制的升级命令、版本变更明细与扫描证据。**原名 plugin-market**：0.16.0 移除原「插件市场」的设置页 tab 与安装/更新/卸载功能，0.17.0 更名为 dsh-version-check |
 
-各插件目录内有完整的独立 README（功能、原理、安装、配置、已知限制）。
+## 已弃用存档（`deprecated/`）
 
-## 快速安装（dsh web）
+不再维护、也不再提供安装指引，各目录 README 顶部有弃用说明，代码与测试保留作存档。
 
-前置：`dsh plugin` 命令会把参数转发给 **PATH 上的 pnpm**（`npm i -g pnpm` 或 corepack）。仓库是**公开**的，直接安装即可，无需任何凭据或配置。
+| 插件 | 目录 | 曾经的用途 / 弃用原因 |
+|---|---|---|
+| **arena-v2** | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | 类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者。后续方案为 Theseus Crew |
+| **chat-rollback** | [`deprecated/chat-rollback/`](deprecated/chat-rollback/README.md) | 对话回滚：用户消息操作条里的回滚按钮，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档。已停止维护；本机副本早在 2026-09-15 卸载（insert 段、profile 依赖、node_modules 与 7.6 GB 快照目录一并删除），2026-09-29 归档 |
+| **model-arena** | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图选场景/模型后一次提问，自动跑「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。曾由 arena-v2 取代 |
+| **session-export** | [`deprecated/session-export/`](deprecated/session-export/README.md) | 会话导出长图：会话标题栏按钮把当前会话导成 PNG，只含用户输入与模型输出（剔除思考与工具调用），长会话自动拆多张 |
+| **temperature-inject** | [`deprecated/temperature-inject/`](deprecated/temperature-inject/README.md) | 温度注入：会话页开关 + 滑杆，经 `agent/request` waterfall 改写子代理的 `LlmCallConfig`。弃用原因是它无效——同 prompt 下 T0/T1 的组内相似度 0.470 vs 0.359，视觉方向仍雷同，真正拉开差异的是 prompt 里的设计约束；而且它要生效必须关掉 thinking，后续实测确认 thinking 模式下 temperature 被屏蔽（见 `tools/`），等于用方案质量换多样性 |
+| **tool-both** | [`deprecated/tool-both/`](deprecated/tool-both/README.md) | 工具呈现模式 both：激活时安装「BOTH模式」预设，原生工具直调与 run_code 并存。弃用原因是 both 在同一请求里重复渲染工具入参类型声明（`interface ToolArgsMap` 35,940 字符，占 SDK 段的 76%），而实测 77% 的 both 会话一次 `run_code` 都没调过 |
 
-**chat-rollback / command-setting**（普通插件，git 通道安装）：
+## 安装
+
+前置：`dsh plugin` 会把参数转发给 **PATH 上的 pnpm**（`npm i -g pnpm` 或 corepack）。
+仓库是**公开**的，git 安装走 HTTPS，无需任何凭据或 SSH key。
+
+**bundle 包**（自带 `cordis.patch.yml`，安装时把自己插入 profile 组合树，不需要手写补丁）：
+`todo-tab` / `context-xray` / `dsh-version-check`
 
 ```bash
-# 安装两个插件（公开仓库，HTTPS 拉取，无需 SSH key；跟随默认分支最新提交）
-dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:chat-rollback'
+dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:todo-tab'
+dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:context-xray'
+dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:dsh-version-check'
+```
+
+想改代码、或要锁版本，就 clone 后按本地路径装（`dsh-version-check` 自己的 README 用的是这种写法）：
+
+```bash
+dsh plugin --profile web add ./todo-tab
+```
+
+**普通插件**（要在 `~/.dsh/profiles/web/cordis.patch.yml` 顶层数组里手写 insert）：
+`command-setting`
+
+```bash
 dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:command-setting'
 ```
-
-> 装了 GitHub SSH key 的机器也可用简写（等价，走 SSH）：
-> `dsh plugin --profile web add 'github:WensH77/dsh-plugins#path:chat-rollback'`
-> （command-setting 同理）
-
-**dsh-version-check**（dsh 版本状态灯，原名 plugin-market；建议本地/克隆安装）：
-
-```bash
-git clone https://github.com/WensH77/dsh-plugins.git
-dsh plugin --profile web add ./dsh-version-check
-```
-
-~~**tool-both**（一键开启 both 工具呈现模式）：已弃用，移入 `deprecated/tool-both/`——不再提供安装指引。~~
-
-~~**session-export**（会话导出长图）：已停止维护，移入 `deprecated/session-export/`——不再提供安装指引。~~
-
-~~**arena-v2**（竞技场 v2）：已弃用，移入 `deprecated/arena-v2/`，后续方案为 Theseus Crew——不再提供安装指引。~~
-
-~~**model-arena**（模型竞技场 v1）：已弃用，移入 `deprecated/model-arena/`，曾由 arena-v2 取代（arena-v2 亦已弃用）——不再提供安装指引。~~
-
-安装后在补丁层启用（chat-rollback / command-setting 示例；dsh-version-check 为 bundle 包，无需此步，重启即加载）：
 
 ```yaml
 # ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
 - insert:
-    - id: chat-rollback
-      name: dsh-plugin-chat-rollback
     - id: command-setting
       name: dsh-plugin-command-setting
 ```
 
+装完重启 dsh web：
+
 ```bash
-# 重启 dsh web
 dsh web
 ```
 
-更新 / 卸载：
+更新 / 卸载（包名见上面各插件的 `package.json`；`dsh-version-check` 没有 `dsh-plugin-` 前缀）：
 
 ```bash
-dsh plugin --profile web update dsh-plugin-chat-rollback      # 更新（git 依赖锁定在 lockfile 的提交）
-dsh plugin --profile web remove dsh-plugin-chat-rollback     # 卸载（并移除 patch.yml 条目）
+dsh plugin --profile web update dsh-plugin-command-setting   # 更新（git 依赖锁定在 lockfile 的提交）
+dsh plugin --profile web remove dsh-plugin-command-setting   # 卸载（并移除 patch.yml 条目）
 ```
 
-> 说明：纯 JS 插件、无 prepare 构建脚本，安装无需 allowBuilds；`dsh plugin add` 打印的
-> `declares no dsh.bundle` 警告是预期提示（普通插件不是 bundle 层，忽略即可）。
-> pnpm v9 不支持「分支 + 子目录」组合写法（`#分支#path:` 会解析失败），需要锁定版本时先 clone 再用本地路径：
-> `dsh plugin --profile web add ./chat-rollback`。
+> - 装了 GitHub SSH key 的机器可用简写（等价，走 SSH）：
+>   `dsh plugin --profile web add 'github:WensH77/dsh-plugins#path:command-setting'`
+> - 纯 JS 插件、没有 prepare 构建脚本 → 安装无需 allowBuilds；普通插件安装时打印的
+>   `declares no dsh.bundle` 是预期提示（普通插件不在 bundle 层，忽略即可）。
+> - pnpm v9 不支持「分支 + 子目录」组合写法（`#分支#path:` 会解析失败）；要锁版本就 clone 后走上面的本地路径写法。
 
 ## 本地开发
 
@@ -85,90 +86,100 @@ dsh plugin --profile web remove dsh-plugin-chat-rollback     # 卸载（并移�
 git clone https://github.com/WensH77/dsh-plugins.git   # 公开仓库，HTTPS 即可
 cd dsh-plugins
 
-# 依赖解析（插件 import @deepseek-ai/*，仓库根需要能解析到它们；
-# 若本机已安装 dsh，可软链其 node_modules）
-ln -s <dsh 安装路径>/node_modules node_modules
-
-# 测试
-node --test chat-rollback/test/fork-rollback.mjs     # chat-rollback 测试（8 项：快照/继承/回滚/预填/恢复保护/冲突检测/双会话端到端）
-node chat-rollback/test/client-emit.mjs              # chat-rollback 浏览器端：回滚预填 emit 定向性（防 composer 广播）
-node command-setting/test/smoke.mjs                  # command-setting node 端测试
-node command-setting/test/client-smoke.mjs           # command-setting 浏览器端测试
-node todo-tab/test/smoke.mjs                        # todo-tab 宿主端测试（定位域/端点/只读）
-node todo-tab/test/client-smoke.mjs                 # todo-tab 浏览器端测试（注册面/渲染）
-node --test context-xray/test/*.mjs                  # context-xray 测试（19 项：拆块/归因折扣/体积校准/两张清单/工具注册）
-node deprecated/temperature-inject/test/smoke.mjs     # temperature-inject（已弃用）宿主端测试（配置/判定/waterfall/端点）
-node deprecated/temperature-inject/test/client-smoke.mjs # temperature-inject（已弃用）浏览器端测试（注册面/规格/端点契约）
-node deprecated/arena-v2/test/smoke.mjs               # arena-v2（已弃用）node 端测试
-node deprecated/model-arena/test/smoke.mjs           # model-arena（已弃用）node 端测试
-node deprecated/model-arena/test/client-smoke.mjs    # model-arena（已弃用）浏览器端测试
-node deprecated/session-export/test/smoke.mjs        # session-export（已弃用）node 端测试（转录抽取/标题/接口/路由）
-node deprecated/session-export/test/client-smoke.mjs # session-export（已弃用）浏览器端测试（Markdown/分段/词典）
-node deprecated/tool-both/test/smoke.mjs             # tool-both（已弃用）测试（导出/预设安装/幂等/loader 方言）
-node dsh-version-check/test/smoke.mjs                              # dsh-version-check 契约/渲染 smoke 测试
-node --check dsh-version-check/lib/index.js dsh-version-check/lib/client.js   # dsh-version-check 语法检查
+# 测试要 import @deepseek-ai/*（各插件的 peer 依赖）。node_modules 与根 package.json 都不入库，
+# 指向本机 dsh 安装的 node_modules 即可：
+ln -s "$(npm root -g)/@deepseek-ai/dsh/node_modules" node_modules
 ```
 
-> dsh-version-check host 端（lib/index.js）改动需重启 dsh web 生效；client 端（lib/client.js）每次请求实时加载。
+各插件目录（含归档的）都可直接 `npm test`（= 该目录 `package.json` 里的 `scripts.test`）。等价的直接命令与当前断言数：
+
+```bash
+node command-setting/test/smoke.mjs                  # command-setting node 端（47 项）
+node command-setting/test/client-smoke.mjs           # command-setting 浏览器端（95 项）
+node todo-tab/test/smoke.mjs                         # todo-tab 宿主端（69 项：约定注入/技能注册/端点/只读）
+node todo-tab/test/client-smoke.mjs                  # todo-tab 浏览器端（49 项：注册面/渲染/打开失败文案）
+node --test context-xray/test/smoke.mjs              # context-xray（22 项：拆块/归因折扣/体积校准/两张清单/工具注册）
+node dsh-version-check/test/smoke.mjs                # dsh-version-check 契约快照 + client 渲染（157 项）
+node --check dsh-version-check/lib/index.js dsh-version-check/lib/client.js
+```
+
+已弃用插件的测试（同一套 node 脚本，改存档代码时可拿来回归）：
+
+```bash
+node --test deprecated/chat-rollback/test/fork-rollback.mjs deprecated/chat-rollback/test/matcher-fuzz.mjs
+                                                     # 22 项：fork/回滚（21）+ excludes 匹配器差分 fuzz（1）
+node deprecated/chat-rollback/test/client-emit.mjs   # 浏览器端：回滚预填 emit 定向性（防 composer 广播）
+node deprecated/arena-v2/test/smoke.mjs
+node deprecated/model-arena/test/smoke.mjs
+node deprecated/model-arena/test/client-smoke.mjs
+node deprecated/session-export/test/smoke.mjs
+node deprecated/session-export/test/client-smoke.mjs
+node deprecated/temperature-inject/test/smoke.mjs
+node deprecated/temperature-inject/test/client-smoke.mjs
+node deprecated/tool-both/test/smoke.mjs
+```
+
+> 宿主端（Node 半段）改动要**重启 dsh web** 才生效（`dsh-version-check` 的 `lib/index.js`、`lib/dsh.js`、
+> `lib/patch.js`、`lib/routes.js` 同理）；浏览器端（`lib/client.js`）每次请求实时加载，刷新页面即可。
+> 宿主 peer 范围：需要 `@deepseek-ai/dsh-tools` / `dsh-llm` / `dsh-home-paths` 的三个插件声明
+> `>=0.1.7-rc.1 <0.3.0`，客户端注入依赖一律 `*`。宿主换版本线时这些范围要跟着 bump，
+> 否则 dsh-version-check 的契约扫描会报 `range-break`（属声明失真，无运行期影响）。
+
+## 实验与探针（`tools/`）
+
+不是插件，是几个一次性验证与调查脚本，保留是为了让结论可复核。
+
+| 目录 | 结论 |
+|---|---|
+| [`tools/temperature-p0/`](tools/temperature-p0/README.md) | deepseek-v4 是否响应 temperature（两轮都在 thinking 模式下跑）：v1（360 次调用）判 INCONCLUSIVE，仅作存档；v2（432 次调用，补 seed 对照与 dupRate）判定 **temperature 空转**——high / max 两种 effort 下都没有可检测的效应 |
+| [`tools/temperature-nothink/`](tools/temperature-nothink/README.md) | 补上 thinking 关闭的那一格：非 thinking 模式下 temperature **生效**，方向符合温度语义（温度↑ → 回答更分散）。也就是说 temperature 有没有用由 thinking 开关决定，不是模型不支持该参数 |
+| [`tools/thinking-voice/`](tools/thinking-voice/README.md) | 「We need / Let me」思维链语态调查（21,646 块真实数据 + 因果对照实验）：语态由**提问形式**触发，不是 persona 锚定出来的稳定状态，也无法被强制或锚定 |
 
 ## 仓库结构
 
 ```
 dsh-plugins/
-├── chat-rollback/          # 对话回滚插件
-│   ├── lib/index.js        #   Node 端：轮次快照 + rollback 端点
-│   ├── lib/client.js       #   浏览器端：用户气泡回滚按钮（DOM 注入）
-│   ├── test/               #   fork/rollback 测试
-│   └── package.json        #   dsh.client 声明 + peer 依赖
-├── command-setting/        # 输入区增强插件（Plan/Ask 按钮、# 会话引用、划词引用）
-│   ├── lib/index.js        #   Node 端：ask 装配 + ask-state 端点
-│   ├── lib/ask.js          #   ask（只问答）域：判定/提示段/切换通知/会话控制器
-│   ├── lib/client.js       #   浏览器端：Plan/Ask 按钮 + # 会话引用 + 划词引用
-│   ├── test/               #   smoke 测试
+├── command-setting/          # 输入区增强（Plan/Ask 按钮、# 会话引用、划词引用）
+│   ├── lib/index.js          #   Node 端：ask 装配 + ask-state 端点
+│   ├── lib/ask.js            #   ask（只问答）域：判定/提示段/切换通知/会话控制器
+│   ├── lib/routes.js
+│   ├── lib/client.js         #   浏览器端：Plan/Ask 按钮 + # 会话引用 + 划词引用
+│   ├── test/                 #   smoke / client-smoke
 │   └── package.json
-├── deprecated/             # 已弃用插件存档（arena-v2、model-arena 竞技场 v1、session-export、tool-both）
-│   ├── arena-v2/           #   arena v2（已弃用，后续方案 Theseus Crew）
-│   │   ├── lib/index.js    #     Node 端：竞技场状态/子代理编排 + system-prompt persona 注入
-│   │   ├── lib/client.js   #     浏览器端：chip/hero 开关 + 竞技场运行时
-│   │   ├── test/           #     smoke 测试
-│   │   └── package.json
-│   ├── model-arena/        #   模型竞技场 v1（挑战模式，曾由 arena-v2 取代）
-│   │   ├── lib/index.js    #     Node 端：links/persona 持久化 + system-prompt 角色注入
-│   │   ├── lib/client.js   #     浏览器端：hero toggle + 竞技场运行时 + 挑战编排
-│   │   ├── test/           #     smoke 测试
-│   │   └── package.json
-│   ├── session-export/     #   会话导出长图（只含用户输入 + 模型输出，剔除思考/工具调用）
-│   │   ├── lib/index.js    #     Node 端：转录抽取 + /session-export/data 端点
-│   │   ├── lib/client.js   #     浏览器端：标题栏导出按钮 + Markdown 渲染 + 长图栅格化
-│   │   ├── test/           #     smoke 测试
-│   │   └── package.json
-│   └── tool-both/          #   工具呈现模式（both）：原生直调与 run_code 并存（已弃用）
-│       ├── lib/index.js    #     Node 端：激活时安装 both 预设
-│       ├── lib/presentation.js # agent 层呈现行组件（./presentation，默认 both）
-│       ├── preset/both/    #     分发的 both 预设（标准组成 + presentation both）
-│       ├── test/           #     smoke 测试
-│       └── package.json
-├── dsh-version-check/      # dsh 版本状态灯（原名 plugin-market）
-│   ├── lib/index.js        #   Node 端：dsh 自更新检测 + 分析路由（前缀 /dsh-version-check）
-│   ├── lib/client.js       #   浏览器端：侧边栏版本状态灯 + 判定弹窗
+├── todo-tab/                 # Todo 页签 + 待办约定（bundle 包）
+│   ├── lib/index.js          #   Node 端：GET /todo-tab/data 只读端点 + 约定注入
+│   ├── lib/memory.js         #   定位域：cwd → 工作区名 → TODO.md 路径 + 读盘
+│   ├── lib/convention.js     #   待办约定域：常驻文本 + SKILL.md 解析/加载
+│   ├── lib/client.js         #   浏览器端：右侧栏页签类型 + 引导胶囊 + 只读渲染
+│   ├── skill/todo-memory/    #   完整规范（注册成运行时技能，按需加载）
+│   ├── template/TODO.md      #   骨架文件（拷出来当起点）
+│   ├── cordis.patch.yml      #   bundle 补丁层（自插入 profile 组合树）
 │   └── package.json
-├── todo-tab/               # Todo 页签（右侧栏只读查看工作区 TODO.md）
-│   ├── lib/index.js        #   Node 端：GET /todo-tab/data 只读端点
-│   ├── lib/memory.js       #   定位域：cwd → 工作区名 → TODO.md 路径 + 读盘
-│   ├── lib/convention.js   #   待办约定域：常驻文本 + SKILL.md 解析/加载
-│   ├── lib/client.js       #   浏览器端：右侧栏页签类型 + 引导胶囊 + 只读渲染
-│   ├── skill/todo-memory/  #   完整规范（注册成运行时技能，按需加载）
-│   ├── template/TODO.md    #   骨架文件（拷出来当起点）
-│   ├── cordis.patch.yml    #   bundle 补丁层（自插入 profile 组合树）
+├── context-xray/             # 上下文 X 光（bundle 包）
+│   ├── lib/index.js          #   Node 端：注册 context_xray 工具
+│   ├── lib/mention.js        #   归因核心：拆块 + 分词 + df 加权 + 体积校准 + 两张排查清单
+│   ├── lib/render.js         #   markdown 渲染（tool 与 CLI 共用一份）
+│   ├── lib/stopwords.js      #   中英停用词表
+│   ├── tools/xray.mjs        #   离线入口：直读会话 jsonl（zstd）
+│   ├── cordis.patch.yml      #   bundle 补丁层（自插入 profile 组合树）
 │   └── package.json
-├── context-xray/           # 上下文 X 光（context_xray 工具 + 离线 CLI）
-│   ├── lib/index.js        #   Node 端：注册 context_xray 工具
-│   ├── lib/mention.js      #   归因核心：拆块 + 分词 + df 加权 + 体积校准 + 两张排查清单
-│   ├── lib/render.js       #   markdown 渲染（tool 与 CLI 共用一份）
-│   ├── lib/stopwords.js    #   中英停用词表
-│   ├── tools/xray.mjs      #   离线入口：直读会话 jsonl（zstd）
-│   ├── cordis.patch.yml    #   bundle 补丁层（自插入 profile 组合树）
+├── dsh-version-check/        # dsh 版本状态灯（bundle 包，原名 plugin-market）
+│   ├── lib/index.js          #   Node 端：检测编排 + 契约扫描 + LLM 分析路由（前缀 /dsh-version-check）
+│   ├── lib/dsh.js            #   dsh 发布版本检测与升级命令生成
+│   ├── lib/patch.js          #   profile 补丁/依赖检查
+│   ├── lib/routes.js lib/util.js
+│   ├── lib/client.js         #   浏览器端：侧边栏版本状态灯 + 判定弹窗
+│   ├── cordis.patch.yml      #   bundle 补丁层（自插入 profile 组合树）
 │   └── package.json
-├── node_modules            # 测试依赖解析（软链，已 gitignore）
+├── deprecated/               # 已弃用存档（README 顶部均带弃用横幅）
+│   ├── chat-rollback/        #   对话回滚：宿主端 lib 7 文件（快照/冲突/排除匹配/会话/路由）+ client.js + 3 个测试
+│   └── arena-v2/  model-arena/  session-export/  temperature-inject/  tool-both/
+├── tools/                    # 非插件：验证探针与调查脚本（见上一节）
+│   ├── temperature-p0/       #   temperature 是否生效（v1/v2 两轮）
+│   ├── temperature-nothink/  #   非 thinking 模式下的那一格
+│   └── thinking-voice/       #   思维链语态调查
+├── node_modules/             # 测试依赖解析（软链，已 gitignore）
 └── .gitignore
 ```
+
+各插件目录内的 README 写功能、原理、安装、配置与已知限制，历次改动见同目录的 `CHANGELOG.md`。
