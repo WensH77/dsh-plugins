@@ -22,9 +22,14 @@
     alpha → 精确版本、正式版 → `@latest`）、版本变更明细、变更要点、可能受影响的插件、
     本地插件契约扫描证据、详情。报告文本一律简体中文。
   - 尚未分析（黄灯待分析）→ 先跑 L1 本地插件契约扫描（机器判定，不依赖 LLM），再静默直连 LLM
-    （`ctx.llm.stream`，模型取宿主默认选择 `agentDefaultModel.currentSelection()`，120s 超时，
+    （`ctx.llm.stream`，模型取宿主默认选择 `agentDefaultModel.currentSelection()`，单次尝试 120s 超时，
     不建会话）逐版本分析「当前版本 → 最新版本」之间每一个版本，给出 `breakingChanges` 与逐版本
     `breaking` 标注。
+  - 上游抖动自动重试 → 可重试失败（`TRANSPORT` / `TIMEOUT` / `SERVER` / `RATE_LIMIT`）最多尝试 3 次
+    （1 首发 + 2 次重试）、退避 500ms / 1s，整条链总预算 360s（单次超时取「自身 120s」与「剩余预算」
+    的较小值）。宿主本身对 `TRANSPORT` 有重试，但执行者是 `dsh-llm-retry`、挂在 `agent/request-error`
+    上只覆盖会话里的 agent 步骤；这里直连 `ctx.llm.stream` 绕过了会话，所以自己重试，不再让一次网络
+    抖动直接变成失败弹窗。参数/配置类失败（`MODEL_OUTPUT`、`NO_ADAPTER` 等）不重试——重试也没用。
   - 分析失败 → 灯上文案显示「分析失败」，点击弹出失败弹窗：失败码（如 `TRANSPORT` / `TIMEOUT` /
     `MODEL_OUTPUT`）+ 原始错误 + 「重试」。失败原因同时写进状态文件与宿主日志（`ctx.logger.warn`），
     不再静默回落到「有新版本」。

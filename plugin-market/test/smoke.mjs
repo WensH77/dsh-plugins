@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { githubRepoInfo, compareVersions, makeQueue, readJsonFile, writeJsonFile } from '../lib/util.js'
 import { readPatchState } from '../lib/patch.js'
 import { ROUTES } from '../lib/routes.js'
-import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection } from '../lib/dsh.js'
+import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, __test } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
@@ -495,6 +495,138 @@ console.log('\n[消息 source 形态 ← lib/dsh.js]')
     '失败弹窗单独显示失败码（原文照旧）')
   assert(clientSrcForCode.includes('dshErrorCode: "失败码"') && clientSrcForCode.includes('dshErrorCode: "Failure code"'),
     '失败码文案中英双份（本地化表不得只加一边）')
+}
+
+// ── 直连 LLM 的自动重试：TRANSPORT 这类网络抖动自己退避重试，不再等用户手点 ──
+// 背景：宿主对 TRANSPORT 有重试，但执行者在 dsh-llm-retry，挂在 agent/request-error 上、
+// 只覆盖会话里的 agent 步骤；本插件直接调 ctx.llm.stream 绕过了会话，所以必须自己重试。
+// 这里驱动的是 lib/dsh.js 的真实实现（__test 出口），不是复制一份源码文本。
+console.log('\n[直连 LLM 自动重试 ← lib/dsh.js 真实实现]')
+{
+  const RETRYABLE = ['TRANSPORT', 'TIMEOUT', 'SERVER', 'RATE_LIMIT']
+  const NOT_RETRYABLE = ['MODEL_OUTPUT', 'NO_ADAPTER', 'ABORTED', 'UNSUPPORTED_REASONING_EFFORT']
+  for (const code of RETRYABLE) {
+    const err = new Error('boom')
+    err.code = code
+    assertEq(__test.isRetryableFailure(err), true, code + ' 可重试（上游抖动类）')
+  }
+  for (const code of NOT_RETRYABLE) {
+    const err = new Error('boom')
+    err.code = code
+    assertEq(__test.isRetryableFailure(err), false, code + ' 不可重试（重试也没用，只会拖时间）')
+  }
+  assertEq(__test.isRetryableFailure(new Error('宿主未提供 llm 服务')), false, '没有 code 的错误不重试')
+  assertEq(__test.isRetryableFailure(null), false, 'null 不重试（不能因为取不到对象就崩）')
+  assertEq([...__test.RETRYABLE_LLM_CODES], RETRYABLE, '可重试码集合与宿主 dsh-llm 的默认集合一致')
+  assertEq(__test.LLM_ATTEMPT_LIMIT, 3, '最多 3 次尝试（1 首发 + 2 重试）')
+  assertEq(__test.LLM_RETRY_BUDGET_MS, __test.LLM_ATTEMPT_TIMEOUT_MS * __test.LLM_ATTEMPT_LIMIT,
+    '总预算 = 单次超时 × 尝试次数（不设总预算会把「正在分析」无限拖住）')
+
+  // 假定时器：真实实现里退避是 500ms/1s，测试里换成手动推进，不真等（也不把测试拖慢 1.5s）
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const timers = []
+  let seq = 0
+  globalThis.setTimeout = (fn, ms) => {
+    seq += 1
+    timers.push({ id: seq, fn, ms })
+    return seq
+  }
+  globalThis.clearTimeout = () => {}
+
+  const makeCtx = (stream, logs) => ({
+    get: (name) => (name === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4' }) } : name === 'llm' ? { stream } : null),
+    logger: { warn: (m) => logs.push(m) },
+  })
+  const makeStream = (attempts) => async function* (options) {
+    attempts.calls += 1
+    const step = attempts.script[Math.min(attempts.calls - 1, attempts.script.length - 1)]
+    // throwNative = 迭代器直接抛（宿主口径：middleware/消费者异常，没有 code）；
+    // failFinish = 宿主 adapterStream 把 adapter 异常转成的终态 finish{ kind:'error', failure }。
+    if (step.throwNative !== undefined) throw new Error(step.throwNative)
+    if (step.fail !== undefined) {
+      const err = new Error(step.fail)
+      err.code = step.code
+      throw err
+    }
+    yield { type: 'text-delta', text: '{"breakingChanges":false}' }
+    yield step.failFinish === undefined
+      ? { type: 'finish', reason: { kind: 'stop' } }
+      : { type: 'finish', reason: { kind: 'error', failure: { message: step.failFinish, code: step.code } } }
+  }
+  const SETTLED = Symbol('settled')
+  const drive = async (script) => {
+    timers.length = 0
+    const attempts = { calls: 0, script }
+    const logs = []
+    let snapshot = SETTLED
+    const promise = __test.streamLlmText(makeCtx(makeStream(attempts), logs), 'prompt', null)
+      .then((v) => { snapshot = { ok: true, value: v } }, (e) => { snapshot = { ok: false, error: e } })
+    for (let guard = 0; guard < 500 && snapshot === SETTLED; guard += 1) {
+      await Promise.resolve()
+      if (timers.length > 0) {
+        const timer = timers.shift()
+        timer.fn()
+      }
+    }
+    await promise
+    return { attempts: attempts.calls, snapshot, logs }
+  }
+
+  try {
+    // 首发 TRANSPORT，第 2 次成功：用户不该再看到失败弹窗
+    const recovered = await drive([{ fail: 'DeepSeek Messages transport failed', code: 'TRANSPORT' }, {}])
+    assertEq(recovered.attempts, 2, 'TRANSPORT 失败后自动重试（不再一次失败就报到状态灯）')
+    assertEq(recovered.snapshot.ok, true, '重试成功则整条调用成功返回')
+    assertEq(recovered.snapshot.value, '{"breakingChanges":false}', '重试成功后返回后一次尝试的完整文本')
+    assertEq(recovered.logs.length, 1, '只在「要重试」时落一条日志，不刷屏')
+    assert(recovered.logs[0].includes('第 1 次尝试失败（TRANSPORT）'),
+      '日志写清第几次尝试、失败码与原文（事后能分辨「抖一下」还是「一直坏」）')
+
+    // 连续 TRANSPORT（finish 形态，即截图里那句「LLM 调用失败：DeepSeek Messages transport
+    // failed」的真实来路）：用完 3 次尝试才抛，最终仍保留宿主原文与失败码
+    const exhausted = await drive([
+      { failFinish: 'DeepSeek Messages transport failed', code: 'TRANSPORT' },
+      { failFinish: 'DeepSeek Messages transport failed', code: 'TRANSPORT' },
+      { failFinish: 'DeepSeek Messages transport failed', code: 'TRANSPORT' },
+    ])
+    assertEq(exhausted.attempts, 3, '连续可重试失败最多尝试 3 次就收手（不无限重试）')
+    assertEq(exhausted.snapshot.ok, false, '用尽重试后仍然是失败')
+    assertEq(exhausted.snapshot.error?.code, 'TRANSPORT', '用尽重试后仍带宿主给的失败码（状态文件照旧落盘）')
+    assertEq(exhausted.snapshot.error?.message, 'LLM 调用失败：DeepSeek Messages transport failed',
+      '最终还是那句原文（宿主 finish chunk 的 failure.message 原样透出），不改文案')
+    assertEq(exhausted.logs.length, 2, '两次重试各落一条日志（第 1、2 次尝试），最后一次失败由调用方记')
+
+    // 真实链路里 TRANSPORT 走的是 finish chunk（宿主 adapterStream 把 adapter 异常转成
+    // 终态 finish 错误），所以这里专门覆盖 finish 形态：拿得到 code 才谈得上重试。
+    const finishForm = await drive([
+      { failFinish: 'DeepSeek Messages transport failed', code: 'TRANSPORT' },
+      { failFinish: 'DeepSeek Messages transport failed', code: 'TRANSPORT' },
+      {},
+    ])
+    assertEq(finishForm.attempts, 3, 'finish 形态的 TRANSPORT 同样重试（这是截图那个报错的真实形态）')
+    assertEq(finishForm.snapshot.ok, true, '第 3 次成功后整条调用成功（用户看不到失败弹窗）')
+
+    // 宿主明确说过：middleware／消费者等异常仍是「抛出」形态、没有 code——
+    // 这类不重试（重试也未必有用，且无从判断是否可重试）。
+    const thrownForm = await drive([{ throwNative: 'socket hang up' }, {}])
+    assertEq(thrownForm.attempts, 1, '没有 code 的抛出异常不重试（宿主只在自身错误上给码）')
+    assertEq(thrownForm.snapshot.ok, false, '没有 code 的抛出异常原样上抛')
+
+    // 不可重试码：一次就抛，不浪费用户时间
+    const fatal = await drive([{ fail: 'model not found', code: 'NO_ADAPTER' }])
+    assertEq(fatal.attempts, 1, '不可重试码（NO_ADAPTER 等）一次即抛，不重试')
+    assertEq(fatal.snapshot.error?.code, 'NO_ADAPTER', '不可重试码原样抛出')
+    assertEq(fatal.logs.length, 0, '不可重试时不写「即将重试」的日志（免得让人以为会自动好）')
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+  }
+
+  // 重试的退避不能把「正在分析」拖过总预算：每次尝试的超时取剩余预算的较小值
+  const srcForRetry = readFileSync(LIB_DSH, 'utf8')
+  assert(srcForRetry.includes('Math.min(LLM_ATTEMPT_TIMEOUT_MS, deadline - Date.now())'),
+    '单次尝试超时 = min(自身 120s, 重试链剩余预算)，总时长有上限')
 }
 
 // ── 4) 路由表契约：routes.js 分发表 3 条固定 + client 引用 ⊆ 全集 ─────────────

@@ -41,10 +41,31 @@ function reviewLlmRoute(ctx, override) {
   return route
 }
 
+/** 直连 LLM 的自动重试口径：只重试「上游抖了一下」这类失败（与宿主 dsh-llm 的
+ *  DEFAULT_RETRYABLE_CODES 取同一集合）；参数/配置类错误重试也没用，只会拖时间。
+ *  背景：宿主本来就会重试 TRANSPORT，但执行重试的是 dsh-llm-retry，它挂在
+ *  `agent/request-error` 上、只对会话里的 agent 步骤生效；本插件直接调 ctx.llm.stream，
+ *  绕过了会话，所以不自己重试的话，上游抖一次就得用户手动点「重试」。 */
+const RETRYABLE_LLM_CODES = Object.freeze(['TRANSPORT', 'TIMEOUT', 'SERVER', 'RATE_LIMIT'])
+/** 最多尝试次数（不是「重试次数」）：1 次首发 + 2 次重试。 */
+const LLM_ATTEMPT_LIMIT = 3
+/** 单次尝试的自身超时。 */
+const LLM_ATTEMPT_TIMEOUT_MS = 120000
+/** 整条重试链的总时长预算：单次 120s × 3 次，别把状态灯的「正在分析」无限拖住。 */
+const LLM_RETRY_BUDGET_MS = LLM_ATTEMPT_TIMEOUT_MS * LLM_ATTEMPT_LIMIT
+
+/** 失败是否值得重试：拿不到 code（如「宿主未提供 llm 服务」）视为不可重试。 */
+function isRetryableFailure(error) {
+  const code = typeof error?.code === 'string' ? error.code : null
+  return code !== null && RETRYABLE_LLM_CODES.includes(code)
+}
+
 /**
  * 直连 LLM 流式取完整回复文本（ctx.llm.stream，路由取宿主默认模型或请求级 override，
- * 模型/推理程度 override，120s 自身超时；任何失败（无 llm 服务 / 中断 / 空文本 / finish 报错）
- * 都抛错并带上原因，由调用方记进状态）。
+ * 模型/推理程度 override，单次尝试 120s 自身超时；任何失败（无 llm 服务 / 中断 / 空文本 /
+ * finish 报错）都抛错并带上原因，由调用方记进状态）。
+ * 可重试失败（TRANSPORT / TIMEOUT / SERVER / RATE_LIMIT）自动退避重试：最多 3 次尝试、
+ * 总预算 360s；重试从头重新请求，上一次已收到的半截文本丢弃。
  * 消息文本与失败原因都保留原文；宿主给的 failure.code（TRANSPORT / TIMEOUT / SERVER /
  * RATE_LIMIT…）挂在 err.code 上，供调用方随原文一起持久化——只存 message 的话，用户和排查者
  * 无法区分「上游抖一下」和「配置坏了」，两种都得重试才知道。
@@ -54,6 +75,24 @@ function reviewLlmRoute(ctx, override) {
  * 但保持与其它插件同一形态，避免将来接持久化时踩坑）。
  */
 async function streamLlmText(ctx, promptText, signal, routeOverride) {
+  const deadline = Date.now() + LLM_RETRY_BUDGET_MS
+  let outcome = null
+  for (let attempt = 1; attempt <= LLM_ATTEMPT_LIMIT; attempt += 1) {
+    try {
+      return await streamLlmTextOnce(ctx, promptText, signal, routeOverride, deadline)
+    } catch (error) {
+      outcome = error
+      if (!isRetryableFailure(error) || signal?.aborted === true || attempt >= LLM_ATTEMPT_LIMIT) throw error
+      // 退避 500ms / 1s：日志留痕，便于事后分辨「抖一下」还是「一直坏」
+      try { ctx.logger?.warn?.('plugin-market: dsh 升级分析第 ' + attempt + ' 次尝试失败（' + error.code + '），即将重试：' + errMsg(error)) } catch {}
+      await new Promise((resolve) => { setTimeout(resolve, 500 * attempt) })
+    }
+  }
+  throw outcome
+}
+
+/** 单次直连 LLM 尝试（重试的最小单位）；deadline 是整条重试链的总预算上限。 */
+async function streamLlmTextOnce(ctx, promptText, signal, routeOverride, deadline) {
   let llm = null
   try { llm = ctx.get('llm') } catch (error) { throw new Error('读取 llm 服务失败：' + errMsg(error)) }
   if (!llm || typeof llm.stream !== 'function') throw new Error('宿主未提供 llm 服务（ctx.get("llm") 为空或没有 stream 方法）')
@@ -64,7 +103,10 @@ async function streamLlmText(ctx, promptText, signal, routeOverride) {
     content: Object.freeze([Object.freeze({ type: 'text', text: promptText })]),
     source: Object.freeze({ kind: 'plugin:dsh-plugin-market' }),
   })
-  const ownTimeout = AbortSignal.timeout(120000)
+  // 单次尝试的超时取「自身 120s」与「整条重试链剩余预算」的较小值：
+  // 否则第 3 次尝试还能再跑 120s，总时长会超出预算。
+  const attemptTimeoutMs = Math.max(1, Math.min(LLM_ATTEMPT_TIMEOUT_MS, deadline - Date.now()))
+  const ownTimeout = AbortSignal.timeout(attemptTimeoutMs)
   const effectiveSignal = signal !== undefined && signal !== null ? AbortSignal.any([signal, ownTimeout]) : ownTimeout
   const options = {
     provider: route.provider,
@@ -89,7 +131,7 @@ async function streamLlmText(ctx, promptText, signal, routeOverride) {
     if (signal?.aborted || ownTimeout.aborted) aborted = true
     else throw error
   }
-  if (aborted) throw analysisFailure('LLM 调用被中断（120 秒超时或主动取消）')
+  if (aborted) throw analysisFailure('LLM 调用被中断（' + Math.round(attemptTimeoutMs / 1000) + ' 秒超时或主动取消）')
   if (finishFailure !== null) {
     throw analysisFailure('LLM 调用失败：' + String(finishFailure?.message ?? '未知错误'), failureCodeOf(finishFailure))
   }
@@ -1019,3 +1061,7 @@ async function analyzeDshUpdate(ctx) {
 }
 
 export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection }
+
+/** 仅供 test/smoke.mjs 抽取真实实现驱动：重试链是模块私有函数，测试要么整段复制源码
+ *  （会在重构时悄悄失去守护力），要么拿这组出口直接跑真实实现——后者才是有效护栏。 */
+export const __test = { streamLlmText, isRetryableFailure, RETRYABLE_LLM_CODES, LLM_ATTEMPT_LIMIT, LLM_ATTEMPT_TIMEOUT_MS, LLM_RETRY_BUDGET_MS }

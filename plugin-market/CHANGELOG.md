@@ -2,6 +2,11 @@
 
 本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
 
+## 0.16.4
+
+- **fix：直连 LLM 自己重试可重试失败（`TRANSPORT` / `TIMEOUT` / `SERVER` / `RATE_LIMIT`），不再一次网络抖动就弹「分析失败」。** 报错原文是 `失败码：TRANSPORT` + `LLM 调用失败：DeepSeek Messages transport failed`：宿主 `dsh-llm-deepseek` 的 `generate` 在消费流时捕获到任何非 `LlmError` 异常，统一包成 `LlmError("DeepSeek Messages transport failed", "TRANSPORT")`（`lib/index.js:2127`，原始 cause 不往外带），再由 `dsh-llm` 的 `adapterFailureChunk` 转成终态 `finish{kind:'error', failure:{message, code}}`——所以它是「网络层在传输/接流时断了」，不是参数或配置问题（那些走 `SERVER` / `RATE_LIMIT` / `EMPTY_RESPONSE`）。宿主对 `TRANSPORT` 本来有重试（`dsh-llm` 默认 `retryableCodes` 含 `TRANSPORT`，最多 5 次退避），但执行者是 `dsh-llm-retry`，挂在 `agent/request-error` 上、只覆盖会话里的 agent 步骤；本插件直接调 `ctx.llm.stream` 绕过了会话，于是一次抖动就等于一次失败、要用户手点「重试」。现在 `streamLlmText` 拆成「重试链 + 单次尝试」，最多尝试 3 次（1 首发 + 2 重试）、退避 500ms / 1s，单次超时取「自身 120s」与「整条链剩余预算」的较小值（总预算 360s，避免把状态灯的「正在分析」无限拖住）；每次重试前落一条 `ctx.logger.warn`（写清第几次尝试、失败码与原文），用尽重试后仍抛宿主原文与失败码，状态文件与失败弹窗的口径不变。不可重试码（`MODEL_OUTPUT`、`NO_ADAPTER`、`ABORTED` 等）与没有 code 的抛出异常不重试。
+- **test**：smoke 新增「直连 LLM 自动重试」一节，直接驱动 `lib/dsh.js` 的真实实现（新增 `__test` 出口，避免复制源码文本导致重构后悄悄失去守护力）：可重试/不可重试码判定、`null` 与无 code 不重试、`TRANSPORT` 一败一成即成功返回、连续三败在 3 次尝试后收手且原文与失败码不变、`finish` 形态（截图那句的真实来路）同样重试、没有 code 的抛出异常不重试、日志条数与内容、单次超时受剩余预算约束。测试内用假定时器推进退避，不真等 1.5s。
+
 ## 0.16.3
 
 - **fix：宿主模块闭包只比直接依赖，把「拆包」误判成「模块消失」。** 0.1.7-rc.2 把 `@deepseek-ai/dsh-llm-deepseek` 从 `dsh-base` 的直接依赖挪成了新包 `@deepseek-ai/dsh-llm-deepseek-api-key`／`-account` 的 `peerDependency`（两个新包仍默认挂载在 `dsh-base/cordis.patch.yml` 的 `llm-deepseek` 行上），包本身在 rc.2 照常发布、版本号同为 `0.1.7-rc.2`。旧实现只看 `dsh-web-app`/`dsh-base` 的 `dependencies`，于是把它判成 `removed-module`，弹窗跟着写出「宿主模块在目标版本闭包中消失」这种读起来像适配器被拿掉的结论。更实际的危害在护栏：`dshBreakingGuard` 要求 `removedModules` 为空才肯把模型的 `breakingChanges=true` 降级为兼容，非空即恒不降级——这次没变红灯只是因为模型自己回了 `false`。现在闭包口径改为 `dependencies` + `peerDependencies`，并沿 `@deepseek-ai/*` 走一层传递依赖（两侧口径一致），疑似消失的模块再过一次 registry 复核：目标版本仍在发布该包 → 记入新增的 `demotedModules`（降为间接依赖），只有确认不再发布的才进 `removedModules`；`dshBreakingGuard` 随之只看真正的移除。实测 rc.1 → rc.2：目标闭包 246 个模块、`removedModules` 为空、`dsh-llm-deepseek` 在闭包内。
