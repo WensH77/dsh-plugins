@@ -1,4 +1,4 @@
-// dsh-plugin-market 契约快照 smoke 测试
+// dsh-version-check 契约快照 smoke 测试
 //
 // 运行：npm test（= node test/smoke.mjs）
 //
@@ -10,7 +10,7 @@
 //  3) client.js 渲染契约：扫描报告按插件折叠、升级命令推导、状态灯 paint 与
 //     「正在分析」轮询时间线（从源码抽真实实现 + 假 DOM/假定时器执行）。
 //  4) 路由表契约：服务端分发表 == 固定 3 条（dsh 版本检测）；client.js 引用的
-//     /plugin-market/* 路径必须是该全集的子集。
+//     /dsh-version-check/* 路径必须是该全集的子集。
 import { readFileSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -57,7 +57,7 @@ console.log('\n[githubRepoInfo ← util.js]')
 assertEq(githubRepoInfo('owner/repo'), { owner: 'owner', name: 'repo', path: null }, "owner/name → {owner,name,path:null}")
 assertEq(githubRepoInfo('  https://github.com/a/b.git  '), { owner: 'a', name: 'b', path: null }, '完整 URL + 空白 + .git 后缀')
 assertEq(githubRepoInfo('https://github.com/a/b.git#path:sub/dir'), { owner: 'a', name: 'b', path: 'sub/dir' }, '#path: 子目录')
-assertEq(githubRepoInfo('WensH77/dsh-plugins#path:plugin-market'), { owner: 'WensH77', name: 'dsh-plugins', path: 'plugin-market' }, 'owner/name#path:')
+assertEq(githubRepoInfo('WensH77/dsh-plugins#path:dsh-version-check'), { owner: 'WensH77', name: 'dsh-plugins', path: 'dsh-version-check' }, 'owner/name#path:')
 for (const bad of ['', '   ', 'not a repo', 'a/b/c', 'github.com/x#tag:y']) {
   let threw = false
   try { githubRepoInfo(bad) } catch { threw = true }
@@ -70,11 +70,11 @@ console.log('\n[readPatchState ← patch.js]')
     '# dsh patch layer',
     '- id: chat-rollback',
     '  disabled: true',
-    '- id: plugin-market',
-    '  name: dsh-plugin-market',
+    '- id: dsh-version-check',
+    '  name: dsh-version-check',
     '- insert:',
-    '    - id: plugin-market',
-    '      name: dsh-plugin-market',
+    '    - id: dsh-version-check',
+    '      name: dsh-version-check',
     '- id: some-plugin',
     '  disabled: false',
     '',
@@ -84,8 +84,8 @@ console.log('\n[readPatchState ← patch.js]')
   const state = await readPatchState(patchFile)
   assertEq(state.disables, ['chat-rollback'], 'disables 解析')
   assertEq(state.forced, ['some-plugin'], 'forced 解析')
-  assertEq(state.inserts, ['plugin-market'], 'inserts 解析')
-  assertEq(state.insertNames, { 'plugin-market': 'dsh-plugin-market' }, 'insertNames 解析')
+  assertEq(state.inserts, ['dsh-version-check'], 'inserts 解析')
+  assertEq(state.insertNames, { 'dsh-version-check': 'dsh-version-check' }, 'insertNames 解析')
   rmSync(patchFile, { force: true })
 }
 
@@ -302,7 +302,7 @@ console.log('\n[扫描报告按插件折叠 ← client.js 渲染块 @ 假 DOM]')
       errors: [],
       plugins: [
         { moduleName: '@yuxianglin/dsh-bridge-browser', version: '0.0.3', machine: 'notice', findings: devFindings, evidence: {} },
-        { moduleName: 'dsh-plugin-market', version: '0.14.4', machine: 'clean', findings: [], evidence: {} },
+        { moduleName: 'dsh-version-check', version: '0.14.4', machine: 'clean', findings: [], evidence: {} },
       ],
     })
     const groups = groupOf(body)
@@ -470,7 +470,7 @@ console.log('\n[状态灯「正在分析」← client.js 抽取]')
 console.log('\n[消息 source 形态 ← lib/dsh.js]')
 {
   const dshSrc = readFileSync(LIB_DSH, 'utf8')
-  assert(dshSrc.includes("source: Object.freeze({ kind: 'plugin:dsh-plugin-market' })"),
+  assert(dshSrc.includes("source: Object.freeze({ kind: 'plugin:dsh-version-check' })"),
     '直连 LLM 的消息 source 用 v4 口径 plugin:<包名>')
   assert(!/source: Object\.freeze\(\{ kind: 'plugin',/.test(dshSrc),
     "不再出现退役的 { kind: 'plugin', plugin } 包装（v4 准入会拒收，其它插件已统一）")
@@ -488,7 +488,7 @@ console.log('\n[消息 source 形态 ← lib/dsh.js]')
     'finish 失败时把宿主给的 failure.code 挂在错误上（原文不改）')
   assert(dshSrc.includes('errorCode = failureCodeOf(failure)') && /^\s+errorCode,$/mu.test(dshSrc),
     '失败码随 error 一起持久化进状态文件')
-  assert(/ctx\.logger\?\.warn\?\.\('plugin-market: dsh 升级分析失败：' \+ \(errorCode !== null/u.test(dshSrc),
+  assert(/ctx\.logger\?\.warn\?\.\('dsh-version-check: dsh 升级分析失败：' \+ \(errorCode !== null/u.test(dshSrc),
     '宿主日志把失败码打在原文前面，便于直接分辨失败类别')
   const clientSrcForCode = readFileSync(LIB_CLIENT, 'utf8')
   assert(clientSrcForCode.includes('const analysisErrorCode = ') && clientSrcForCode.includes('t("dshErrorCode") + "：" + analysisErrorCode'),
@@ -643,10 +643,10 @@ console.log('\n[路由表契约]')
 }
 {
   const clientSrc = readFileSync(LIB_CLIENT, 'utf8')
-  const refs = [...new Set([...clientSrc.matchAll(/["'](\/plugin-market\/[a-z0-9/-]+)["']/gu)].map((m) => m[1]))]
+  const refs = [...new Set([...clientSrc.matchAll(/["'](\/dsh-version-check\/[a-z0-9/-]+)["']/gu)].map((m) => m[1]))]
   const serverSet = new Set(SERVER_PATHS)
-  // client 侧引用为完整路径（/plugin-market/xxx），服务端全集为相对 ROUTE_PREFIX 的后缀（/xxx）
-  const orphans = refs.map((p) => p.replace(/^\/plugin-market/u, '')).filter((p) => !serverSet.has(p))
+  // client 侧引用为完整路径（/dsh-version-check/xxx），服务端全集为相对 ROUTE_PREFIX 的后缀（/xxx）
+  const orphans = refs.map((p) => p.replace(/^\/dsh-version-check/u, '')).filter((p) => !serverSet.has(p))
   assertEq(orphans, [], 'client.js 引用的路径 ⊆ 服务端全集（孤儿：' + JSON.stringify(orphans) + '）')
   console.log('      共 ' + refs.length + ' 个去重引用路径')
 }

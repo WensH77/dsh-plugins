@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "dsh-plugin-market",
+	id: "dsh-version-check",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -54,7 +54,7 @@ window.__ModuleLoader__.load({
 			".pm-dshself[data-collapsed=true] .pm-dshselfVersion{display:none}",
 		];
 
-		const tagId = "dsh-plugin-market/dsh-version-light.css";
+		const tagId = "dsh-version-check/dsh-version-light.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.pluginCss = tagId;
@@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
 		}
 
 		// ── dictionaries ──────────────────────────────────────────────────────
-		const NS = "settings.pluginMarket";
+		const NS = "settings.dshVersionCheck";
 		const zh = {
 			ok: "知道了",
 			dshHasUpdate: "有新版本 v{version}",
@@ -197,7 +197,7 @@ window.__ModuleLoader__.load({
 		const inject = ["locale"];
 
 		function apply(ctx) {
-			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "plugin-market: dictionaries");
+			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-version-check: dictionaries");
 			const t = ctx.locale.bind(NS);
 
 			// ── 侧边栏 dsh 版本状态灯（品牌名下方，DOM 注入） ────────────────
@@ -529,7 +529,7 @@ window.__ModuleLoader__.load({
 				};
 
 				const fetchState = () => {
-					call("/plugin-market/dsh-version")
+					call("/dsh-version-check/dsh-version")
 						.then((d) => {
 							// 分析守卫期内（材料拉取 + L1 扫描阶段，服务端 status 仍是 idle）：不画、不降速
 							if (Date.now() < analyzeUntil && (!d || d.status !== "analyzing")) return;
@@ -549,7 +549,7 @@ window.__ModuleLoader__.load({
 					analyzeUntil = Date.now() + ANALYZE_GUARD_MS;
 					paint({ ...(lastState ?? {}), ok: true, status: "analyzing", error: null });
 					startPoll(true);
-					call("/plugin-market/dsh-version/analyze", {})
+					call("/dsh-version-check/dsh-version/analyze", {})
 						.then((d2) => { analyzeUntil = 0; if (!d2 || d2.ok !== true) fetchState(); })
 						.catch(() => { analyzeUntil = 0; fetchState(); })
 						.finally(() => { analyzeBusy = false; });
@@ -561,7 +561,7 @@ window.__ModuleLoader__.load({
 					if (state === "analyzing") return; // 分析进行中：忽略重复点击（服务端同样不并发起第二次分析）
 					if (state === "update" || state === "breaking") {
 						// 已有判定 → 弹判定弹窗；上次分析失败 → 弹失败原因 + 重试；待分析 → 直接分析
-						call("/plugin-market/dsh-version")
+						call("/dsh-version-check/dsh-version")
 							.then((d) => {
 								if (d && d.hasUpdate === true && (d.verdict === "safe" || d.verdict === "breaking")) {
 									showDshReport(d);
@@ -576,7 +576,7 @@ window.__ModuleLoader__.load({
 							.catch(() => fetchState());
 					} else {
 						// 绿/灰：手动重检
-						call("/plugin-market/dsh-version/check", {})
+						call("/dsh-version-check/dsh-version/check", {})
 							.then((d) => paint(d))
 							.catch(() => fetchState());
 					}
@@ -632,7 +632,7 @@ window.__ModuleLoader__.load({
 					if (statusEl && statusEl.parentElement) statusEl.parentElement.removeChild(statusEl);
 					statusEl = null;
 				};
-			}, "plugin-market: dsh version light");
+			}, "dsh-version-check: dsh version light");
 		}
 
 		exports.NS = NS;

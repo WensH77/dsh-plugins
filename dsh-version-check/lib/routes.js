@@ -1,7 +1,7 @@
 import { collectBody, errMsg, isLoopback, sendError, sendJson } from './util.js'
 import { analyzeDshUpdate, checkDshUpdate, dshStateCache } from './dsh.js'
 
-const ROUTE_PREFIX = '/plugin-market'
+const ROUTE_PREFIX = '/dsh-version-check'
 
 // ── dsh 版本检测路由 ────────────────────────────────────────────────────────
 
@@ -72,7 +72,7 @@ export function registerRoutes(ctx) {
       },
     }
     return ctx.webServer.register(route)
-  }, 'plugin-market: routes')
+  }, 'dsh-version-check: routes')
 }
 
 export { ROUTE_PREFIX, ROUTES, handle }

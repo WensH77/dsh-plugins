@@ -70,7 +70,7 @@ const DEFAULT_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
 /**
  * 判断是否为用户安装的插件：
  *  - 用户 patch 层 insert 的额外条目（extra）
- *  - 非默认的 bundle 包（用户通过 dsh plugin add 安装的 bundle，如 dsh-plugin-market）
+ *  - 非默认的 bundle 包（用户通过 dsh plugin add 安装的 bundle，如 dsh-version-check）
  *  dsh 自带的官方 bundle 与基础设施（@deepseek-ai/dsh-*）不算。
  */
 function isUserInstalled(moduleName, rowId, extra, bundles) {
@@ -176,7 +176,7 @@ function listEntries(ctx) {
       enabled: !entry.disabled,
       fiberPhase: entry.fiber === undefined ? null : FIBER_PHASE[entry.fiber.state],
       protected: protectedRow,
-      toggleable: rowId !== 'plugin-market'
+      toggleable: rowId !== 'dsh-version-check'
         && !protectedRow
         && typeof moduleName === 'string'
         && !moduleName.startsWith('cordis:'),

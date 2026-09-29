@@ -1,6 +1,14 @@
 # Changelog
 
-本文件记录 `dsh-plugin-market` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
+本文件记录 `dsh-version-check` 的历次改动（由 git 提交历史整理）。安装、使用、端点、配置见 [README.md](./README.md)。
+
+> 0.17.0 之前的条目沿用当时的旧名 `dsh-plugin-market` / `plugin-market`（历史事实原样保留）。
+
+## 0.17.0
+
+- **改名：`dsh-plugin-market` → `dsh-version-check`，目录 `plugin-market/` → `dsh-version-check/`。** 名字与现在的功能对齐（0.16.0 起只剩 dsh 本体版本检测）。一并更换的对外标识：bundle 补丁行的 `id`/`name`（profile 组合树里的行标识）、客户端模块 id 与样式标签、locale 命名空间（`settings.pluginMarket` → `settings.dshVersionCheck`）、宿主 HTTP 路由前缀（`/plugin-market` → `/dsh-version-check`）、直连 LLM 消息的 `source.kind`（`plugin:dsh-plugin-market` → `plugin:dsh-version-check`）、GitHub 请求的 user-agent、判定缓存文件（`~/.dsh/plugin-market-dsh.json` → `~/.dsh/dsh-version-check.json`）。
+- **旧缓存不迁移**：`~/.dsh/plugin-market-dsh.json` 不再读写，可自行删除；路径变了，首次点击状态灯会按新路径重新分析一次。
+- **本机安装要同步改**：profile 的 `dependencies` 键与 `dsh.profile.bundles` 条目改为 `dsh-version-check`，`pnpm install` 重建软链，重启 `dsh web` 生效。
 
 ## 0.16.4
 

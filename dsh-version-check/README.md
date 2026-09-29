@@ -1,4 +1,9 @@
-# dsh-plugin-market（dsh 版本状态灯）
+# dsh-version-check（dsh 版本状态灯）
+
+> 0.17.0 由 `plugin-market`（包名 `dsh-plugin-market`）更名为 `dsh-version-check`：路由前缀
+> `/plugin-market` → `/dsh-version-check`，判定缓存文件 `~/.dsh/plugin-market-dsh.json` →
+> `~/.dsh/dsh-version-check.json`（旧文件不再读写，可自行删除；首次点击状态灯会按新路径重新
+> 分析一次），profile 里的依赖名与 bundle 名同步更换。
 
 0.16.0 起本插件只做一件事：在侧边栏品牌名（DeepSeek Harness）下方注入一个 **dsh 版本状态灯**，
 检测 dsh 本体（`deepseek-ai/deepseek-harness`）有没有新版本，并支持点击分析新版本会不会影响
@@ -47,7 +52,7 @@
   失真，两者都不作为破坏性更新的判据。registry 不可达时降级 `local-only`（仅指纹），不阻塞分析。
 - **点击幂等**：分析进行中重复点击不并发起第二次；远端版本未变且判定口径一致时直接复用已有判定。
   判定口径版本 `verdictSchema` 升级后旧缓存作废、点击即按当前口径重新分析。
-- **持久化**：判定写在 `~/.dsh/plugin-market-dsh.json`，重启后仍生效；远端版本变化后重置为待分析。
+- **持久化**：判定写在 `~/.dsh/dsh-version-check.json`，重启后仍生效；远端版本变化后重置为待分析。
   其中 `error` 是上一次直连 LLM 分析的失败原因原文、`errorCode` 是宿主给的失败码（无失败均为
   `null`），两者随判定一起复用、目标版本变化时作废。
 
@@ -55,18 +60,18 @@
 
 | 端点 | 方法 | 用途 |
 |---|---|---|
-| `/plugin-market/dsh-version` | GET | dsh 自更新状态（已装/远端版本 + 破坏性判定），供侧边栏状态灯 |
-| `/plugin-market/dsh-version/check` | POST | 强制重新检测 dsh 更新 |
-| `/plugin-market/dsh-version/analyze` | POST | 跑 L1 本地插件契约扫描 + 直连 LLM 逐版本分析，返回并持久化判定 |
+| `/dsh-version-check/dsh-version` | GET | dsh 自更新状态（已装/远端版本 + 破坏性判定），供侧边栏状态灯 |
+| `/dsh-version-check/dsh-version/check` | POST | 强制重新检测 dsh 更新 |
+| `/dsh-version-check/dsh-version/analyze` | POST | 跑 L1 本地插件契约扫描 + 直连 LLM 逐版本分析，返回并持久化判定 |
 
 ## 配置
 
-无强制配置。判定状态在 `~/.dsh/plugin-market-dsh.json`。
+无强制配置。判定状态在 `~/.dsh/dsh-version-check.json`。
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add ./plugin-market
+dsh plugin --profile web add ./dsh-version-check
 ```
 
 host 端代码改动（`lib/index.js`、`lib/dsh.js`、`lib/patch.js`、`lib/routes.js`）需重启 `dsh web`
