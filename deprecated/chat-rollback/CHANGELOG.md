@@ -2,6 +2,13 @@
 
 本文件记录 `dsh-plugin-chat-rollback` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 已弃用（2026-09-29，无版本 bump）
+
+- **归档**：目录由 `chat-rollback/` 移入 `deprecated/chat-rollback/`，README 顶部加弃用横幅；根 README 的清单 / 安装指引 / 测试命令 / 仓库结构同步到 `deprecated/` 路径。
+- **本机卸载（2026-09-15，早于归档）**：`~/.dsh/profiles/web/cordis.patch.yml` 的 `chat-rollback` insert 段与 profile 依赖移除，`node_modules/dsh-plugin-chat-rollback` 删除，快照目录 `~/.dsh/chat-rollback-snapshots`（7.6 GB / 13 个会话）一并删除。
+- **未改行为、无版本 bump**：本次只有目录归档与文档改动，按 MEMORY「纯文档改动不 bump 版本」保留 `0.3.1`；`repository` 字段改为 `#path:deprecated/chat-rollback`。
+- 代价（已确认接受）：卸载后新的会话不再产生轮次快照，也没有代码回滚与冲突门；工作区文件的恢复保护随之停用。仓库里的实现与测试保留原样，仅供查阅，不再提供安装指引。
+
 ## 0.3.1
 
 - **补齐 client 侧短 id inject 的 peer 声明**：`client.js` 用 `['locale','sessions']` 注入，但 `peerDependencies` 里只有 `cordis` + `schemastery`——短 id 不进机器依赖判定，宿主改名或移除时扫描不会报错，只能靠人发现。现按 plugin-market 的口径补上 `@deepseek-ai/dsh-client-locale`（提供 `locale`）与 `@deepseek-ai/dsh-client-ui-session`（提供 `sessions`），范围 `*`，并在 `peerDependenciesMeta` 里全部标 `optional`（与 plugin-market 一致，避免已发布包强制拉取宿主客户端包）。同时把原有的 `cordis` / `schemastery` 也补进 `peerDependenciesMeta`，此前漏了。

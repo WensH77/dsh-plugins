@@ -24,7 +24,7 @@
       ]
     }
   },
-  "repository": "WensH77/dsh-plugins#path:chat-rollback",
+  "repository": "WensH77/dsh-plugins#path:deprecated/chat-rollback",
   "scripts": {
     "test": "node --test test/fork-rollback.mjs"
   },

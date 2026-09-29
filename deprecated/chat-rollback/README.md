@@ -1,5 +1,7 @@
 # dsh-plugin-chat-rollback
 
+> **⚠️ 已弃用（归档，2026-09-29）**：对话回滚插件已停止维护，移入 `deprecated/` 仅作存档，不再提供安装/更新指引。本机副本已于 2026-09-15 卸载——`~/.dsh/profiles/web/cordis.patch.yml` 的 insert 段与 profile 依赖移除、`node_modules/dsh-plugin-chat-rollback` 删除，快照目录 `~/.dsh/chat-rollback-snapshots`（7.6 GB / 13 个会话）同时删除。以下内容保留原状，仅作历史参考。
+
 对话页扩展：在每条**用户消息**的操作条里（与复制按钮同行）加一个「回滚」图标按钮，
 点击后**回滚到这条消息之前** —— 截断历史、创建继承相同 cwd / agent 预设的新会话、
 把这条消息的文本**预填进新会话输入框**，原会话自动归档。
