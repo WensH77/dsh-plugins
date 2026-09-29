@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-todo-tab",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Todo 页签 + 待办约定：右侧栏新增「Todo」页签只读展示当前工作区的 ~/.dsh/memory/<工作区>/TODO.md，并把待办约定常驻注入 prompt、以 todo-memory 技能提供完整规范",
   "type": "module",
   "main": "lib/index.js",
@@ -36,7 +36,7 @@
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-home-paths": "^0.1.5-alpha.1",
+    "@deepseek-ai/dsh-home-paths": ">=0.1.7-rc.1 <0.3.0",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-ui-sidebar-right": "*"
   },
