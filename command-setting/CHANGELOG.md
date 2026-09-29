@@ -2,6 +2,10 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.9.1
+
+- 宿主 peer 声明由 `^0.1.5-alpha.1` 改为 `>=0.1.7-rc.1 <0.3.0`（`@deepseek-ai/dsh-llm`）。dsh 0.2.0-rc.1 启动时按 `semver.satisfies(宿主版本, peer 范围, { includePrerelease: true })` 逐条判 `@deepseek-ai/dsh*` peer，`^0.1.5-alpha.1` 不覆盖 0.2.0-rc.1，插件会被整包跳过（`dsh: skipping profile bundle`），功能完全不加载。下限提到 0.1.7-rc.1、上界开在 0.3.0 后，0.1.7-rc.1 / 0.1.7-rc.2 / 0.2.0-rc.1 三档均通过（宿主自带的 `evaluatePluginCompatibility` 实测），0.1.5-alpha.1 及更早不再声明支持。本次只改声明，无代码改动。
+
 ## 0.9.0
 
 - **移除「命令隐藏」功能**：不再从 “+” / “/” 命令菜单隐藏或过滤任何 slash 命令，设置页的「命令设置」区一并删除。原因：用户报告该功能已不可靠（隐藏不生效），决定不再维护这条通路，整体删掉而不是继续修。根因未深究（未做菜单侧复现实验）；0.8.6 那条针对该功能的修复记录随之从本文件移出（见下方「随之作废」）。
