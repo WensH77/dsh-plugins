@@ -1,5 +1,9 @@
 # 变更日志
 
+## 0.2.1
+
+- 宿主 peer 声明由 `^0.1.5-alpha.1` 改为 `>=0.1.7-rc.1 <0.3.0`（`@deepseek-ai/dsh-tools`）。dsh 0.2.0-rc.1 启动时逐条判 `@deepseek-ai/dsh*` peer，`^0.1.5-alpha.1` 不覆盖 0.2.0-rc.1，插件会被整包跳过（`dsh: skipping profile bundle`），`context_xray` 工具不注册；改后 0.1.7-rc.1 / 0.1.7-rc.2 / 0.2.0-rc.1 均通过（宿主自带的 `evaluatePluginCompatibility` 实测）。本次只改声明，无代码改动。
+
 ## 0.2.0
 
 - **强度榜改名并收窄为「词汇重叠榜」**，两处修正：
