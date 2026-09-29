@@ -4,7 +4,8 @@
 //
 // 覆盖：
 //  1) 定位域纯函数（workspaceNameOf / todoPathOf / readTodo）；
-//  2) 端点行为（http 状态与 code：bad-session / no-session / no-workspace / 读到 / 缺失）；
+//  2) 端点行为（http 状态与 code：bad-session / no-session / no-workspace / 读到 / 缺失；
+//     活跃会话与冷会话（只在持久化落盘记录里）两条取 cwd 的路径）；
 //  3) 只读约定与路径不可注入（只注册一条路由；调用方只能给会话 id，给不了路径）；
 //  4) 待办约定的常驻注入与技能注册（agent scope 挂载 / 释放 / 幂等）。
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -77,13 +78,24 @@ assert(found.content.includes('一件小事'), '内容读到了中文正文');
 assert(found.bytes > 0 && typeof found.mtimeMs === 'number', '带 bytes 与 mtimeMs', JSON.stringify({ bytes: found.bytes, mtimeMs: found.mtimeMs }));
 
 // ── 3. 端点 ─────────────────────────────────────────────────────────────────
+// 内存里只有活跃会话；另有两个只存在于「落盘记录」里（冷会话：宿主进程重启后界面还留着的
+// 旧会话、或侧栏翻出来的历史会话），模拟持久化服务的 stat()。
 const sessions = new Map([
   ['sess-good', { header: { cwd: join(home, 'Documents', workspace) } }],
-  ['sess-nocwd', { header: {} }]
+  ['sess-nocwd', { header: {} }],
+  // 活跃会话与落盘记录冲突时，以内存为准（内存里的 cwd 指向别的工作区）。
+  ['sess-both', { header: { cwd: join(home, 'Documents', 'live-ws') } }]
 ]);
+const stored = new Map([
+  ['sess-cold', { header: { cwd: join(home, 'Documents', workspace) } }],
+  ['sess-cold-nocwd', { header: {} }],
+  ['sess-both', { header: { cwd: join(home, 'Documents', 'stored-ws') } }]
+]);
+const services = new Map([['sessionPersistence', { stat: async (id) => stored.get(id) }]]);
 const ctx = {
   effect: (fn) => fn(),
   logger: { info() {}, warn() {} },
+  get: (name) => services.get(name),
   sessions: { get: (id) => sessions.get(id) },
   webServer: { register: (route) => { ctx.routes.push(route); } },
   // apply 里还会接约定注入；这里给一个不做事的 inject，只为让 apply 跑通。
@@ -110,6 +122,30 @@ const ok = await call(handler, '/todo-tab/data?session=sess-good');
 assertEq(ok.status, 200, '正常会话 → 200');
 assertEq(ok.body.workspace, workspace, '按 cwd 末段定位工作区');
 assert(ok.body.exists === true && ok.body.content.includes('一件小事'), '返回 TODO.md 内容');
+
+// 冷会话（不在内存、只在落盘记录里）也要能读出工作区，而不是报 no-session。
+const cold = await call(handler, '/todo-tab/data?session=sess-cold');
+assertEq(cold.status, 200, '冷会话 → 200（不再误报 no-session）');
+assertEq(cold.body.workspace, workspace, '冷会话按落盘 header 的 cwd 定位工作区');
+assert(cold.body.exists === true && cold.body.content.includes('一件小事'), '冷会话同样读到 TODO.md 内容');
+
+assertEq((await call(handler, '/todo-tab/data?session=sess-cold-nocwd')).status, 409, '落盘 header 没 cwd 的冷会话 → 409');
+assertEq((await call(handler, '/todo-tab/data?session=sess-cold-nocwd')).body.code, 'no-workspace', '落盘 header 没 cwd → no-workspace');
+assertEq((await call(handler, '/todo-tab/data?session=sess-both')).body.workspace, 'live-ws', '活跃会话优先于落盘记录');
+
+// 持久化服务没挂载时退回旧行为：只看内存会话。
+const noPersistence = { ...ctx, get: () => undefined };
+const bare = createHandler(noPersistence);
+assertEq((await call(bare, '/todo-tab/data?session=sess-good')).status, 200, '没有持久化服务时活跃会话照常');
+assertEq((await call(bare, '/todo-tab/data?session=sess-cold')).body.code, 'no-session', '没有持久化服务时冷会话仍是 no-session');
+
+// 落盘读取本身出错（日志损坏等）不许吞掉：活跃会话照常，冷会话回 internal。
+const broken = createHandler({
+  ...ctx,
+  get: (name) => (name === 'sessionPersistence' ? { stat: async () => { throw new Error('corrupt log'); } } : undefined)
+});
+assertEq((await call(broken, '/todo-tab/data?session=sess-good')).status, 200, 'stat 抛错不影响活跃会话');
+assertEq((await call(broken, '/todo-tab/data?session=sess-cold')).body.code, 'internal', 'stat 抛错 → internal');
 
 // 调用方给路径参数无效：只认会话 cwd 推出的路径（无任意文件读取面）。
 const injected = await call(handler, '/todo-tab/data?session=sess-good&path=' + encodeURIComponent('/etc/passwd'));

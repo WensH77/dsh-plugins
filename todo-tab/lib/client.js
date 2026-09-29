@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
 			"loading": "读取中…",
 			"empty": "这个工作区还没有 TODO.md。",
 			"noSession": "没有选中会话，无法确定工作区。",
+			"staleSession": "找不到这个会话（可能已结束，或来自上一次 dsh 进程），无法确定工作区。",
 			"error": "读取失败："
 		};
 		const en = {
@@ -102,12 +103,22 @@ window.__ModuleLoader__.load({
 			"loading": "Loading…",
 			"empty": "This workspace has no TODO.md yet.",
 			"noSession": "No session selected, so the workspace is unknown.",
+			"staleSession": "This session can't be found (it may have ended, or come from an earlier dsh process), so the workspace is unknown.",
 			"error": "Read failed: "
 		};
 
 		/** 端点地址（会话 id 走 query，与宿主 handler 对应）。 */
 		function todoDataUrl(sessionId) {
 			return ENDPOINT + "?session=" + encodeURIComponent(sessionId);
+		}
+
+		/**
+		 * 宿主失败响应 → 展示文案。`no-session`（会话既不在内存也不在落盘记录里）换成
+		 * 本地化说明，其余用宿主给的 message，连它都没有才回落到 HTTP 状态。
+		 */
+		function failureText(t, body, status) {
+			if (body !== null && body !== undefined && body.code === "no-session") return t("staleSession");
+			return (body && body.message) || "HTTP " + status;
 		}
 
 		/**
@@ -333,7 +344,7 @@ window.__ModuleLoader__.load({
 					const res = await fetch(todoDataUrl(sessionId), { cache: "no-store" });
 					const body = await res.json().catch(() => null);
 					if (body === null || body.ok !== true) {
-						setState({ status: "error", message: (body && body.message) || "HTTP " + res.status });
+						setState({ status: "error", message: failureText(t, body, res.status) });
 						return;
 					}
 					setState(body.exists === true ? { status: "ready", body } : { status: "empty", body });
@@ -428,7 +439,7 @@ window.__ModuleLoader__.load({
 					}
 					ctx.sidebarRight.openTab(KIND);
 					if (body !== null && body.ok === true) return "";
-					return t("error") + ((body && body.message) || "HTTP " + res.status);
+					return t("error") + failureText(t, body, res.status);
 				} catch (error) {
 					const message = String((error && error.message) || error);
 					console.warn("todo-tab: open failed: " + message);

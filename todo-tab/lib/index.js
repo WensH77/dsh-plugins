@@ -6,7 +6,7 @@
 //   2) 待办约定常驻注入 + 运行时技能（见 lib/convention.js）：把原先写在
 //      ~/.dsh/AGENTS.md 的约定改成插件携带，随安装分发。
 //
-// 会话 id 只用于查宿主自己的会话表（ctx.sessions.get），不接受调用方给路径，
+// 会话 id 只用于查宿主自己的会话（内存表 + 落盘记录），不接受调用方给路径，
 // 因此不存在任意文件读取面。
 import { CONTEXT_NAME, CONTEXT_ORDER, conventionText, loadSkill } from './convention.js';
 import { readTodo, workspaceNameOf } from './memory.js';
@@ -25,8 +25,31 @@ function sendJson(res, status, body) {
 }
 
 /**
+ * 会话 id → 该会话的工作目录。
+ *
+ * 会话不一定在内存里：宿主进程重启后界面还留着旧会话、或在侧栏翻到更早的历史会话，
+ * 这时内存表里查不到，只读端点会误报「no live session with id …」。这类**冷会话**改从
+ * 持久化服务取落盘的 header：`stat()` 只读元数据，不读事件日志，也不把会话恢复成活的
+ * （宿主自己的文件 RPC 就是这么解析会话作用域的，见 dsh-api-workspace-files 的
+ * `workspaceFileScope`）。`ctx.get` 是不要求 inject 的服务读取，持久化没挂载时退回
+ * 「只看内存会话」的旧行为。
+ *
+ * @param ctx - 宿主上下文。
+ * @param sessionId - 调用方给的会话 id。
+ * @returns 会话的 cwd（会话存在但没记 cwd 时是 undefined）；内存与落盘记录里都没有时返回 null。
+ */
+async function sessionCwd(ctx, sessionId) {
+  const live = ctx.sessions.get(sessionId);
+  if (live !== undefined) return live.header?.cwd;
+  const persistence = ctx.get('sessionPersistence');
+  if (persistence === undefined) return null;
+  const stored = await persistence.stat(sessionId);
+  return stored === undefined ? null : stored.header?.cwd;
+}
+
+/**
  * 构建端点处理器。导出以便测试直接注入假 ctx 调用，不必起 HTTP 服务。
- * @param ctx - 携带 `sessions` 服务的宿主上下文。
+ * @param ctx - 携带 `sessions` 服务的宿主上下文（冷会话另经 `ctx.get('sessionPersistence')` 取落盘 header）。
  * @returns webServer 的 handler。
  */
 function createHandler(ctx) {
@@ -38,12 +61,12 @@ function createHandler(ctx) {
         sendJson(res, 400, { ok: false, code: 'bad-session', message: 'missing or malformed session id' });
         return;
       }
-      const session = ctx.sessions.get(sessionId);
-      if (session === undefined) {
-        sendJson(res, 404, { ok: false, code: 'no-session', message: 'no live session with id ' + sessionId });
+      const cwd = await sessionCwd(ctx, sessionId);
+      if (cwd === null) {
+        sendJson(res, 404, { ok: false, code: 'no-session', message: 'unknown session id ' + sessionId });
         return;
       }
-      const workspace = workspaceNameOf(session.header?.cwd);
+      const workspace = workspaceNameOf(cwd);
       if (workspace === null) {
         sendJson(res, 409, { ok: false, code: 'no-workspace', message: 'session has no cwd to derive a workspace from' });
         return;
@@ -187,5 +210,5 @@ function apply(ctx) {
   applyConvention(ctx);
 }
 
-export { apply, applyConvention, createHandler, inject, name };
+export { apply, applyConvention, createHandler, inject, name, sessionCwd };
 export default { apply, inject, name };

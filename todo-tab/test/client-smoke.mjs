@@ -6,7 +6,8 @@
 //  1) 注册面：页签类型（id/kind/引导胶囊）、槽位挂载（key 与类型 id 对齐）、双语文案键集一致；
 //  2) 端点地址构造；
 //  3) 只读：源码里没有写请求与可编辑控件；
-//  4) 本体在 loading 态能渲染不抛错。
+//  4) 本体在 loading 态能渲染不抛错；
+//  5) 标题栏入口的失败分支（有/无文件、端点报错、会话查不到时的本地化文案）。
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
@@ -176,6 +177,11 @@ assertEq(captured.opened, ['todo'], '没有文件时退回自带页签');
 // 端点坏了：退回自带页签，并把原因带回来。
 sandbox.fetch = async () => ({ json: async () => ({ ok: false, code: 'internal', message: 'boom' }) });
 assert(/boom/.test(await headProps.openTodo()), '端点报错时把原因带回来');
+
+// 会话查不到（no-session）：换成可读文案，不把宿主那句英文原样抛给用户。
+sandbox.fetch = async () => ({ json: async () => ({ ok: false, code: 'no-session', message: 'unknown session id session-x' }) });
+assertEq(await headProps.openTodo(), '[error][staleSession]', 'no-session 走本地化文案');
+assert(captured.dicts.zh.staleSession !== undefined && captured.dicts.en.staleSession !== undefined, '中英文都给了 no-session 的说明');
 
 // openTab 抛错（例如没有挂载座位）时也必须带回原因，否则「点了没反应」没法排查。
 const failing = {

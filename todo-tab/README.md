@@ -28,8 +28,13 @@
 
 ## 工作原理
 
-- **宿主端**（`lib/index.js`）注册一个端点 `GET /todo-tab/data?session=<id>`：按会话 id 查
-  宿主自己的会话表拿到 `header.cwd`，推出工作区名与 TODO.md 路径后读文件返回。调用方只能
+- **宿主端**（`lib/index.js`）注册一个端点 `GET /todo-tab/data?session=<id>`：按会话 id 取
+  `header.cwd`，推出工作区名与 TODO.md 路径后读文件返回。取 cwd 分两步：先在内存会话表
+  （`ctx.sessions.get`）里找**活跃会话**；找不到再问持久化服务
+  （`ctx.get('sessionPersistence')?.stat(id)`）要落盘的 header——`stat()` 只读元数据，不读事件
+  日志、也不把会话恢复成活的，所以宿主进程重启后界面上还留着的旧会话、侧栏翻出来的历史会话
+  （**冷会话**）同样能定位工作区（宿主自己的文件 RPC 就是这么解析会话作用域的，见
+  `dsh-api-workspace-files` 的 `workspaceFileScope`）。两处都没有这个 id 才回 404。调用方只能
   给会话 id，给不了路径，所以没有任意文件读取面；端点只有这一条，且是纯读。
 - **浏览器端**（`lib/client.js`）走 DSH 右侧栏页签的两段式注册：类型注册进
   `ctx.sidebarRightTabs`（`kind: "todo"`，页面型，带一个引导页胶囊），本体注册进
@@ -118,10 +123,9 @@ node test/client-smoke.mjs                      # 浏览器端：注册面 + 只
 - **入口只在引导页**：页签类型不会常驻在标签条上，必须从引导页胶囊打开；打开后与其它页签
   一样可停靠、浮动、分屏（由右侧栏本身提供）。
 - **无变更监听**：不看文件 mtime，也不会自动刷新，需要手动点「刷新」。
-- **端点只认活会话**：`/todo-tab/data` 走宿主的 `ctx.sessions.get(id)`（与 command-setting 等
-  插件同一套做法），进程里没有这个活会话时回 404。GUI 里选中的会话是活的，正常使用无感；
-  但若在服务重启后用一个尚未恢复的会话打开页签，会先看到 `no session with id …`，选中该会话
-  后点「刷新」即可。
+- **两处都查不到会话就回 404**：`/todo-tab/data` 先查内存会话表，再查持久化服务落盘的 header
+  （只读元数据，不把会话恢复成活的）。会话日志被删、或该 profile 没挂持久化服务时才会回 404，
+  页签显示「找不到这个会话（可能已结束，或来自上一次 dsh 进程），无法确定工作区」。
 - **约定只在本插件加载的 profile 生效**：约定改为插件携带后，`~/.dsh/AGENTS.md` 不再是载体；
   没装本插件（或没把它加进 `dsh.profile.bundles`）的 profile / 机器上，这条约定不存在。
   跨 profile 复用请把插件加进对应 profile 的 bundles。

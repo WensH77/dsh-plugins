@@ -1,5 +1,20 @@
 # 变更日志
 
+## 0.2.3
+
+- 修：页签与标题栏入口在**冷会话**上报「读取失败：no live session with id session-…」。
+  端点原先把 `ctx.sessions.get(id)` 当作唯一来源，只有**进程内存里的活跃会话**能定位工作区；
+  而界面里能打开的会话不止这些——宿主进程重启后仍留在界面上的旧会话、侧栏翻出来的历史会话，
+  都只存在于落盘记录里，于是 404。改为两步解析会话 cwd：先查内存会话表，找不到再问持久化服务
+  `ctx.get('sessionPersistence')?.stat(id)`。`stat()` 只读落盘 header，不读事件日志、也不把
+  会话恢复成活的（宿主自己的文件 RPC 就是这套解析，见 `dsh-api-workspace-files` 的
+  `workspaceFileScope`）；没挂持久化服务时退回旧行为。两处都没有该 id 才回 404
+  （`code: no-session`；文案由 `no live session with id …` 改成 `unknown session id …`）。
+  顺带把页签的报错文案本地化：`no-session` 不再原样抛宿主那句英文，改为
+  「找不到这个会话（可能已结束，或来自上一次 dsh 进程），无法确定工作区」。
+- 测试：宿主端 smoke 补冷会话命中 / 冷会话无 cwd / 活跃会话优先 / 无持久化服务 / `stat` 抛错
+  五组断言；客户端 smoke 补 `no-session` 的本地化文案断言。
+
 ## 0.2.2
 
 - 宿主 peer 声明由 `^0.1.5-alpha.1` 改为 `>=0.1.7-rc.1 <0.3.0`（`@deepseek-ai/dsh-home-paths`）。dsh 0.2.0-rc.1 启动时逐条判 `@deepseek-ai/dsh*` peer，`^0.1.5-alpha.1` 不覆盖 0.2.0-rc.1，插件被整包跳过（`dsh: skipping profile bundle "dsh-plugin-todo-tab"`），页签与待办约定注入都不加载；改后 0.1.7-rc.1 / 0.1.7-rc.2 / 0.2.0-rc.1 均通过（宿主自带的 `evaluatePluginCompatibility` 实测）。本次只改声明，无代码改动。
