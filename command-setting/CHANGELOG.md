@@ -2,6 +2,18 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 0.9.2
+
+- **修复划词引用之后光标位置不对**：点击「引用」后引用块插进了草稿末尾，光标却不在引用块下方——实测（真实页面，Chromium）`document.activeElement` 是 composer 编辑器，但 `window.getSelection().rangeCount === 0`，DOM 里根本没有光标，用户接着输入时光标落回开头。
+  - 根因：原实现先 `removeAllRanges()` 清掉消息区选区，再对 `[data-composer-seat] [data-lexical-editor]` 做**裸 DOM focus**。宿主 `SessionInput.focus()` 的注释写明这条路不行——「Lexical 自己的 focus 会恢复它保存的选区；对 contenteditable 的裸 DOM focus 会让光标落在开头」。
+  - 现在写入收尾统一走 `shell.focus()`（内部先 `rootElement.focus()`、再调 Lexical `editor.focus()`）：`setDraft` 里的 `root.selectEnd()` 保存的选区被 Lexical 恢复，光标落在引用块下方。同一场景复测：`rangeCount === 1`、光标偏移 == 草稿末尾（24/24），编辑器保持焦点。
+  - 点击路径的顺序改为 **hide 浮标 → 清消息区选区 → 写入 → `shell.focus()`**：用键盘激活浮标（Tab 到「引用」后回车）时按钮自己持有焦点，隐藏它会先把焦点甩给 `body`；把它排在写入之前，收尾的 `focus()` 才是终态。
+  - 宿主没有 `focus()`（老版本）时只写入、不抢焦点，不再退化成裸 DOM focus。
+  - 测试：client-smoke 新增 `insertQuote` 收尾顺序用例（`setDraft,focus`、`paste,focus`、无 `focus()` 仍写入、无写入动词返回 false）、`quoteShell` 解析用例、点击路径顺序断言（`hide,removeAllRanges,setDraft,focus`，伪 `hidden` setter 记录 hide）与护栏（`lib/client.js` 不得再出现 `querySelector("[data-composer-seat] [data-lexical-editor]")`，且必须保留 `shell.focus()` 调用）；client-smoke 用例数 95 → 103。
+- **修复引用块下方多出一个空行**：引用追加成功后，`> 引用` 与光标之间空着一行。根因是收尾分隔符写了 `\n\n`——宿主 `setDraft` 按 `\n` 切段落，`"> a\n\n"` 会切出**两个**空段落（光标停在第二个，于是引用块与光标之间多一行），`"> a\n"` 才是紧贴引用块下方的一个空段落。现在 `appendQuoteToDraft` 与 chip 路径（`paste`）的收尾都改成一个 `\n`；草稿非空时引用块**前**仍保留一个空行（那是刻意的分隔）。
+  - 实测（真实页面，Chromium）：空草稿引用后 composer 的 DOM 由 3 个 `<p>`（引用 + 两个空段落）变为 2 个（`<p>> …</p><p><br></p>`），光标偏移 == 草稿末尾（14/14）。
+  - 测试：client-smoke 的 `quote draft` / `insertQuote` / 点击写入四条断言改为钉新字符串（`"> a\n"`、`"hi\n\n> a\n"`、`"hi\n\n> a\n> b\n"`、`"\n\n> a\n"`、`"hi\n\n> hello\n"`）。
+
 ## 0.9.1
 
 - 宿主 peer 声明由 `^0.1.5-alpha.1` 改为 `>=0.1.7-rc.1 <0.3.0`（`@deepseek-ai/dsh-llm`）。dsh 0.2.0-rc.1 启动时按 `semver.satisfies(宿主版本, peer 范围, { includePrerelease: true })` 逐条判 `@deepseek-ai/dsh*` peer，`^0.1.5-alpha.1` 不覆盖 0.2.0-rc.1，插件会被整包跳过（`dsh: skipping profile bundle`），功能完全不加载。下限提到 0.1.7-rc.1、上界开在 0.3.0 后，0.1.7-rc.1 / 0.1.7-rc.2 / 0.2.0-rc.1 三档均通过（宿主自带的 `evaluatePluginCompatibility` 实测），0.1.5-alpha.1 及更早不再声明支持。本次只改声明，无代码改动。

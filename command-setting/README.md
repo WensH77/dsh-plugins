@@ -43,9 +43,9 @@ dsh web 输入区增强插件。名字保留历史 id（`command-setting`），�
 ### 划词引用（消息文本 → composer）
 
 1. **触发**：`pointerup` 后读取 `window.getSelection()`——选区非折叠、文本非空、落在消息滚动区 `[data-conversation-scroll]` 内，且不在 `[data-composer-seat]` / 输入控件里，就在选区上方浮出「引用」胶囊（`position:fixed`，随滚动/空白点击/Escape 消失）。`pointerdown` 到浮标上会 `preventDefault` 保住选区，`selectionchange` 在按住期间忽略。
-2. **写入**：点击后把选中文本逐行加 `> `（空行保留裸 `>`）成 Markdown 引用块，追加到当前会话草稿末尾：草稿非空时先空一行，引用块后再留一空行，光标停在下方；随后清空选区并聚焦 composer。
+2. **写入**：点击后先撤浮标、清掉消息区选区，再把选中文本逐行加 `> `（空行保留裸 `>`）成 Markdown 引用块，追加到当前会话草稿末尾（草稿非空时先空一行，引用块后只换一行——`setDraft` 按 `\n` 切段落，收尾 `\n` 恰好得到紧贴引用块下方的一个空段落）；最后调 shell 的 `focus()`，光标停在那里。
 3. **保 chip**：草稿里已有 `@`/`#` 原子引用 chip 时走 shell 的 `paste`（追加），避免 `setDraft` 把 chip 压成纯文本；没有 chip 时用 `setDraft`（保证按段落换行）。两者都是宿主 `conversation.input.shell(id)` 的既有能力。
-4. **依赖的宿主契约**：`[data-conversation-scroll]` / `[data-composer-seat]` DOM 标记、`ctx.get("conversation").input.shell(id)`（`SessionInput` 的 `state`/`setDraft`/`paste`）。任一缺失时该特性静默不启用，其余功能不受影响。
+4. **依赖的宿主契约**：`[data-conversation-scroll]` / `[data-composer-seat]` DOM 标记、`ctx.get("conversation").input.shell(id)`（`SessionInput` 的 `state`/`setDraft`/`paste`/`focus`）。任一缺失时该特性静默不启用，其余功能不受影响。写入收尾必须用 shell 的 `focus()`（它先 DOM focus、再让 Lexical 恢复自己保存的选区）；对 contenteditable 裸 DOM focus 不会带回光标，只会把光标丢在开头——0.9.2 修的就是这个。
 
 ### Ask 只问答模式（会话级）
 
@@ -134,7 +134,6 @@ dsh web
 ```
 > 之前的这段结论
 > 第二行
-
 （在这里继续问）
 ```
 

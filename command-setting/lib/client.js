@@ -475,11 +475,16 @@ window.__ModuleLoader__.load({
 			return trimmed.split(/\r?\n/u).map((line) => (line.trim() === "" ? ">" : "> " + line)).join("\n");
 		}
 
-		/** 把引用块追加到草稿末尾：草稿非空时先空一行，引用块后也留一空行供继续输入。 */
+		/**
+		 * 把引用块追加到草稿末尾：草稿非空时先空一行，引用块后只换一行——
+		 * `setDraft` 按 `\n` 切段落，收尾用 `\n` 恰好得到一个空段落（光标落在
+		 * 它上面，紧贴引用块下方）；写 `\n\n` 会切出两个空段落，光标停在第二个，
+		 * 用户看到的就是引用块与光标之间多出一个空行。
+		 */
 		function appendQuoteToDraft(draft, quote) {
 			const base = typeof draft === "string" ? draft.replace(/\s+$/u, "") : "";
 			if (quote === "") return base;
-			return (base === "" ? "" : base + "\n\n") + quote + "\n\n";
+			return (base === "" ? "" : base + "\n\n") + quote + "\n";
 		}
 
 		/**
@@ -525,31 +530,47 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 解析「当前会话」的 composer shell（划词引用的写入目标）。
+		 * 会话尚未 materialize（没有 composer shell）时返回 undefined。
+		 * @param ctx - 插件 root ctx。
+		 */
+		function quoteShell(ctx) {
+			const sessionId = quoteSessionId(ctx.get("sessions")?.list.getSnapshot());
+			if (typeof sessionId !== "string" || sessionId === "") return void 0;
+			try {
+				return ctx.get("conversation")?.input?.shell?.(sessionId) ?? void 0;
+			} catch (_quoteShellFailure) {
+				return void 0;
+			}
+		}
+
+		/**
 		 * 把选中文本追加到当前会话 composer（草稿末尾，光标停在引用块下方）。
 		 * 草稿里已有原子引用 chip 时走 `paste`（`setDraft` 会把 chip 压成纯文本）。
+		 *
+		 * 收尾必须走 shell 自己的 `focus()`：它先 DOM focus、再调 Lexical 的
+		 * `editor.focus()`，由 Lexical 恢复它保存的选区（`setDraft` 之后即文末）。
+		 * 直接对 `[data-lexical-editor]` 裸 DOM focus 时 Lexical 不知道要恢复，
+		 * 实测焦点虽进了编辑器，DOM 选区却是空的（`window.getSelection().rangeCount === 0`），
+		 * 用户接着输入时光标落回开头——引用插在末尾、光标却在开头。
 		 * @returns 是否写入成功。
 		 */
 		function insertQuote(ctx, text) {
 			const quote = quoteSelectionText(text);
 			if (quote === "") return false;
-			const sessionId = quoteSessionId(ctx.get("sessions")?.list.getSnapshot());
-			if (typeof sessionId !== "string" || sessionId === "") return false;
-			let shell;
-			try {
-				shell = ctx.get("conversation")?.input?.shell?.(sessionId);
-			} catch (_quoteShellFailure) {
-				return false; // 会话还没有 composer shell（未 materialize）
-			}
-			if (shell === null || shell === void 0) return false;
+			const shell = quoteShell(ctx);
+			if (shell === void 0) return false;
 			const snapshot = typeof shell.state?.getSnapshot === "function" ? shell.state.getSnapshot() : void 0;
 			const draft = typeof snapshot?.draft === "string" ? snapshot.draft : "";
 			const hasReferences = Array.isArray(snapshot?.occurrences) && snapshot.occurrences.length > 0;
 			if (hasReferences && typeof shell.paste === "function") {
-				shell.paste((draft.replace(/\s+$/u, "") === "" ? "" : "\n\n") + quote + "\n\n");
-				return true;
+				shell.paste((draft.replace(/\s+$/u, "") === "" ? "" : "\n\n") + quote + "\n");
+			} else if (typeof shell.setDraft === "function") {
+				shell.setDraft(appendQuoteToDraft(draft, quote));
+			} else {
+				return false;
 			}
-			if (typeof shell.setDraft !== "function") return false;
-			shell.setDraft(appendQuoteToDraft(draft, quote));
+			if (typeof shell.focus === "function") shell.focus();
 			return true;
 		}
 
@@ -608,12 +629,15 @@ window.__ModuleLoader__.load({
 			};
 			const onButtonClick = () => {
 				pressing = false;
-				if (text !== "" && insertQuote(ctx, text)) {
-					window.getSelection()?.removeAllRanges?.();
-					const editor = document.querySelector("[data-composer-seat] [data-lexical-editor]");
-					if (editor !== null && editor !== void 0 && typeof editor.focus === "function") editor.focus();
-				}
+				const picked = text;
+				// 先撤浮标再写入：用键盘激活浮标（Tab 停留后回车）时按钮自己持有焦点，
+				// 隐藏它会先把焦点甩给 body；把它排在 shell.focus() 之前，写入收尾的
+				// focus 才是最后一步，光标稳稳落在 composer 里。
 				hide();
+				if (picked !== "") {
+					window.getSelection()?.removeAllRanges?.();
+					insertQuote(ctx, picked);
+				}
 			};
 			document.body.appendChild(button);
 			button.addEventListener("pointerdown", onButtonDown);
@@ -701,6 +725,7 @@ window.__ModuleLoader__.load({
 		exports.appendQuoteToDraft = appendQuoteToDraft;
 		exports.installQuoteSelection = installQuoteSelection;
 		exports.insertQuote = insertQuote;
+		exports.quoteShell = quoteShell;
 		exports.quoteSessionId = quoteSessionId;
 		exports.quoteAnchor = quoteAnchor;
 		exports.quoteSelectionText = quoteSelectionText;

@@ -303,14 +303,14 @@ check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(
 
 // ── 划词引用：纯函数 + 伪 DOM 交互 ─────────────────────────────────────────
 {
-  const { quoteSelectionText, appendQuoteToDraft, quoteAnchor, insertQuote, quoteSessionId } = loaded;
+  const { quoteSelectionText, appendQuoteToDraft, quoteAnchor, insertQuote, quoteSessionId, quoteShell } = loaded;
 
   check("quote text: blockquote per line", quoteSelectionText("a\nb") === "> a\n> b", quoteSelectionText("a\nb"));
   check("quote text: blank line kept as bare >", quoteSelectionText("a\n\nb") === "> a\n>\n> b", quoteSelectionText("a\n\nb"));
   check("quote text: trims + CRLF", quoteSelectionText("  a\r\nb  ") === "> a\n> b", JSON.stringify(quoteSelectionText("  a\r\nb  ")));
   check("quote text: empty input", quoteSelectionText("   ") === "" && quoteSelectionText(null) === "");
-  check("quote draft: empty draft", appendQuoteToDraft("", "> a") === "> a\n\n", JSON.stringify(appendQuoteToDraft("", "> a")));
-  check("quote draft: appends after existing", appendQuoteToDraft("hi\n", "> a") === "hi\n\n> a\n\n", JSON.stringify(appendQuoteToDraft("hi\n", "> a")));
+  check("quote draft: empty draft ends on the next line, no blank line", appendQuoteToDraft("", "> a") === "> a\n", JSON.stringify(appendQuoteToDraft("", "> a")));
+  check("quote draft: one blank line before, next line after", appendQuoteToDraft("hi\n", "> a") === "hi\n\n> a\n", JSON.stringify(appendQuoteToDraft("hi\n", "> a")));
   check("quote draft: empty quote keeps draft", appendQuoteToDraft("hi", "") === "hi");
 
   // quoteAnchor：伪选区（closest 按选择器回答）
@@ -326,6 +326,7 @@ check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(
     isCollapsed: collapsed,
     rangeCount: 1,
     toString: () => text,
+    removeAllRanges: () => quoteOps.push("removeAllRanges"),
     getRangeAt: () => ({ commonAncestorContainer: element, getBoundingClientRect: () => rect })
   });
   check("quoteAnchor: message selection", JSON.stringify(quoteAnchor(fakeSelection())?.text) === JSON.stringify("hello") && quoteAnchor(fakeSelection()).rect.left === 10);
@@ -354,17 +355,40 @@ check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(
   check("quoteSessionId: legacy current honoured", quoteSessionId({ ids: [], byId: {}, current: "legacy" }) === "legacy");
   check("quoteSessionId: last-resort first id", quoteSessionId({ ids: ["only"], byId: {}, phase: "ready" }) === "only");
   check("quoteSessionId: empty / missing list", quoteSessionId({ ids: [], byId: {}, phase: "pending" }) === void 0 && quoteSessionId(void 0) === void 0 && quoteSessionId(null) === void 0);
-  check("insertQuote: setDraft appends the quote", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "a\nb") === true && drafts[0] === "hi\n\n> a\n> b\n\n", JSON.stringify(drafts));
+  check("insertQuote: setDraft appends the quote", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "a\nb") === true && drafts[0] === "hi\n\n> a\n> b\n", JSON.stringify(drafts));
   check("insertQuote: empty selection is a no-op", insertQuote(makeCtx({ draft: "hi", occurrences: [] }), "   ") === false);
-  check("insertQuote: existing chips go through paste", insertQuote(makeCtx({ draft: "@file", occurrences: [{}] }, { paste: (value) => pasted.push(value) }), "a") === true && pasted[0] === "\n\n> a\n\n", JSON.stringify(pasted));
+  check("insertQuote: existing chips go through paste", insertQuote(makeCtx({ draft: "@file", occurrences: [{}] }, { paste: (value) => pasted.push(value) }), "a") === true && pasted[0] === "\n\n> a\n", JSON.stringify(pasted));
   check("insertQuote: no current session", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => ({ ids: [], byId: {}, phase: "ready" }) } } : void 0 }, "a") === false);
   check("insertQuote: no shell", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => hostList("s1") } } : { input: { shell: () => void 0 } } }, "a") === false);
+
+  // 光标收尾：写入后必须走 shell.focus()——Lexical 靠它恢复自己保存的选区
+  // （setDraft 之后即文末）；裸 DOM focus 只会让光标消失/落回开头。
+  const ops = [];
+  const focusCtx = (snapshot, shellExtras = {}) => ({
+    get: (name) => {
+      if (name === "sessions") return { list: { getSnapshot: () => hostList("s1") } };
+      if (name === "conversation") return { input: { shell: () => ({ state: { getSnapshot: () => snapshot }, setDraft: () => ops.push("setDraft"), paste: () => ops.push("paste"), focus: () => ops.push("focus"), ...shellExtras }) } };
+      return void 0;
+    }
+  });
+  check("insertQuote: shell.focus() runs after the draft write", insertQuote(focusCtx({ draft: "hi", occurrences: [] }), "a") === true && ops.join(",") === "setDraft,focus", ops.join(","));
+  ops.length = 0;
+  check("insertQuote: chip path focuses after paste", insertQuote(focusCtx({ draft: "@file", occurrences: [{}] }), "a") === true && ops.join(",") === "paste,focus", ops.join(","));
+  ops.length = 0;
+  check("insertQuote: host without focus() still writes", insertQuote(focusCtx({ draft: "hi", occurrences: [] }, { focus: void 0 }), "a") === true && ops.join(",") === "setDraft", ops.join(","));
+  check("insertQuote: no writing verb leaves the draft alone", insertQuote({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => hostList("s1") } } : { input: { shell: () => ({ state: { getSnapshot: () => ({ draft: "hi", occurrences: [] }) } }) } } }, "a") === false);
+  check("quoteShell: resolves the current session shell", quoteShell(makeCtx({ draft: "hi", occurrences: [] })) !== void 0);
+  check("quoteShell: missing conversation service", quoteShell({ get: (name) => name === "sessions" ? { list: { getSnapshot: () => hostList("s1") } } : void 0 }) === void 0);
+  const clientSource = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
+  check("quote guard: composer focus goes through shell.focus(), never a bare DOM focus", !clientSource.includes('querySelector("[data-composer-seat] [data-lexical-editor]")') && clientSource.includes("if (typeof shell.focus === \"function\") shell.focus();"));
 
   // installQuoteSelection：伪 DOM 下浮标显示/点击/卸载
   const originalDocument = sandbox.document;
   const originalWindow = sandbox.window;
   const listeners = [];
   const buttonHandlers = new Map();
+  // 点击路径的顺序日志：hide → 清消息区选区 → 写入草稿 → shell.focus()。
+  const quoteOps = [];
   const button = {
     dataset: {},
     style: {},
@@ -374,6 +398,11 @@ check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(
     removeEventListener: (type) => buttonHandlers.delete(type),
     remove: () => { button.removed = true; }
   };
+  let buttonHidden = true;
+  Object.defineProperty(button, "hidden", {
+    get: () => buttonHidden,
+    set: (value) => { buttonHidden = value; if (value) quoteOps.push("hide"); }
+  });
   const fakeTarget = (kind) => ({
     addEventListener: (type, fn, capture) => listeners.push({ kind, type, fn, capture }),
     removeEventListener: (type, fn) => {
@@ -391,7 +420,20 @@ check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(
   let currentSelection = null;
   sandbox.window = { ...fakeTarget("win"), innerWidth: 1000, getSelection: () => currentSelection };
 
-  const disposeQuote = loaded.installQuoteSelection(makeCtx({ draft: "hi", occurrences: [] }), (key) => "L:" + key);
+  // 点击路径的顺序断言：hide → 清消息区选区 → 写入草稿 → shell.focus()（光标放回文末）。
+  const trackedShell = {
+    state: { getSnapshot: () => ({ draft: "hi", occurrences: [] }) },
+    setDraft: (value) => { drafts.push(value); quoteOps.push("setDraft"); },
+    focus: () => quoteOps.push("focus")
+  };
+  const trackedCtx = {
+    get: (name) => {
+      if (name === "sessions") return { list: { getSnapshot: () => hostList("s1") } };
+      if (name === "conversation") return { input: { shell: () => trackedShell } };
+      return void 0;
+    }
+  };
+  const disposeQuote = loaded.installQuoteSelection(trackedCtx, (key) => "L:" + key);
   check("quote: button appended to body", typeof disposeQuote === "function" && button.parent === "body" && button.hidden === true);
   check("quote: listeners installed", listeners.some((l) => l.kind === "doc" && l.type === "pointerup" && l.capture === true) && listeners.some((l) => l.kind === "doc" && l.type === "selectionchange") && listeners.some((l) => l.kind === "win" && l.type === "scroll"));
   currentSelection = fakeSelection();
@@ -400,9 +442,11 @@ check("no key drift", zhOnly.length === 0 && enOnly.length === 0, zhOnly.concat(
   check("quote: button shown and labelled", button.hidden === false && button.textContent === "L:quote", JSON.stringify({ hidden: button.hidden, text: button.textContent }));
   check("quote: positioned above the selection", button.style.left === "60px" && button.style.top === "12px", JSON.stringify(button.style));
   drafts.length = 0;
+  quoteOps.length = 0;
   buttonHandlers.get("pointerdown")({ preventDefault: () => {} });
   buttonHandlers.get("click")();
-  check("quote: click writes the quote into the draft", drafts[0] === "hi\n\n> hello\n\n", JSON.stringify(drafts));
+  check("quote: click writes the quote into the draft", drafts[0] === "hi\n\n> hello\n", JSON.stringify(drafts));
+  check("quote: click hides the pill, clears the selection, writes, then focuses the composer", quoteOps.join(",") === "hide,removeAllRanges,setDraft,focus", quoteOps.join(","));
   check("quote: button hidden after click", button.hidden === true);
   currentSelection = fakeSelection({ collapsed: true });
   listeners.find((l) => l.kind === "doc" && l.type === "pointerup").fn({ target: {} });
