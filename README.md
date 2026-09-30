@@ -95,7 +95,7 @@ ln -s "$(npm root -g)/@deepseek-ai/dsh/node_modules" node_modules
 
 ```bash
 node command-setting/test/smoke.mjs                  # command-setting node 端（47 项）
-node command-setting/test/client-smoke.mjs           # command-setting 浏览器端（95 项）
+node command-setting/test/client-smoke.mjs           # command-setting 浏览器端（103 项）
 node todo-tab/test/smoke.mjs                         # todo-tab 宿主端（69 项：约定注入/技能注册/端点/只读）
 node todo-tab/test/client-smoke.mjs                  # todo-tab 浏览器端（49 项：注册面/渲染/打开失败文案）
 node --test context-xray/test/smoke.mjs              # context-xray（22 项：拆块/归因折扣/体积校准/两张清单/工具注册）
