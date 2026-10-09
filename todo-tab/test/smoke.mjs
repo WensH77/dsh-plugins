@@ -7,8 +7,8 @@
 //  2) 端点行为（http 状态与 code：bad-session / no-session / no-workspace / 读到 / 缺失；
 //     活跃会话与冷会话（只在持久化落盘记录里）两条取 cwd 的路径）；
 //  3) 只读约定与路径不可注入（只注册一条路由；调用方只能给会话 id，给不了路径）；
-//  4) 待办约定的常驻注入与技能注册（agent scope 挂载 / 释放 / 幂等）。
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+//  4) 待办约定的常驻注入与技能注册（agent scope 挂载 / 释放 / 幂等；提问约定与跨文本一致性）。
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -153,9 +153,37 @@ assertEq(injected.body.path, join(dir, 'TODO.md'), 'path 参数被忽略，仍�
 
 // ── 4. 常驻注入 + 技能 ──────────────────────────────────────────────────────
 const text = conventionText();
-for (const needle of ['<DSH_HOME>/memory/<工作区>/TODO.md', '只记**未完成**待办', '永不复用', '插入式 `edit` 追加', 'todo-memory` 技能']) {
+for (const needle of [
+  '<DSH_HOME>/memory/<工作区>/TODO.md',
+  '只记**未完成**待办',
+  '永不复用',
+  '插入式 `edit` 改单条',
+  'todo-memory` 技能',
+  // 常驻文本必须带「先问用户」这个触发器：技能只在模型主动加载时才生效，
+  // 而「发现值得记的事就提问」要在每一轮都成立。
+  '先用 `ask_user_question` 问用户',
+  '用户跳过某一问或没答都按「不记、不删」处理'
+]) {
   assert(text.includes(needle), '常驻文本含「' + needle + '」');
 }
+// 删除要把关。这句话常驻文本与技能各写一份，必须逐字相同：只改一处会静默不一致。
+const deleteRule = '办结的条目经用户确认后删除整条';
+assert(text.includes(deleteRule), '常驻文本里删除也要用户点头');
+// 常驻文本里必须自己闭环：免问授权要就地等于已点头，否则与上面那条删除铁律打架。
+assert(text.includes('这种授权即视为已经点头'), '常驻文本的免问授权就地等于已点头（不留给技能解释）');
+assert(text.includes('一轮最多问一次'), '常驻文本带防唠叨的次数上限');
+assert(text.includes('答过「不记」「先留着」或跳过不答的同一件事不再问'), '常驻文本带防唠叨的不重复提议');
+assert(text.includes('下一次向用户开口时讲清'), '常驻文本要求回报被跳过/未答的条目');
+// 跳过与答过一样要防重复提议，否则被跳过的事会被每轮重问；明确拒过的条目不许被后来的概括授权翻案。
+assert(text.includes('或跳过不答的同一件事不再问'), '常驻文本把「跳过的」也纳入防重复提议');
+assert(text.includes('已经被明确拒过的条目不在此列'), '常驻文本写明概括授权不能翻案已拒过的条目');
+assert(text.includes('已获授权自办的照授权办'), '常驻文本写明授权与无工具同时成立时以授权为准');
+assert(text.includes('把候选与待删条目交给上层代理'), '常驻文本给出子代理的替代动作（提问走不通就不增删）');
+assert(text.includes('自己就是根代理时写进回复正文'), '常驻文本给出无上层代理时的出口');
+assert(text.includes('说过「别问了」「你自己看着办」之后本会话不再提问'), '常驻文本带免问出口（用户授权后不再逐条问）');
+// 分组标题要照抄进 TODO.md，三份文本（常驻 / 技能 / 骨架）必须一样，否则照抄出来的小节名各不相同。
+const sections = ['### A. 待裁决（需用户点头）', '### B. 需真实会话/重启验证', '### C. 小债与清理'];
+assert(sections.every((section) => text.includes(section.replace('### ', ''))), '常驻文本里的三类分组名与骨架一致');
 assert(!text.includes('## 骨架'), '常驻文本不塞长规范（骨架留给技能）');
 
 const parsed = parseSkillFile('---\nname: demo\ndescription: "带引号的描述"\nwhenToUse: x\n---\n\n# 正文\n');
@@ -169,6 +197,18 @@ assertEq(skill.name, 'todo-memory', '技能名来自 SKILL.md');
 assert(skill.description.length > 20, '技能带路由描述');
 assert(typeof skill.whenToUse === 'string' && skill.whenToUse !== '', '技能带 whenToUse');
 assert(skill.content.includes('## 骨架'), '技能正文含骨架');
+assert(skill.content.includes('## 先问再动'), '技能含「先问再动」一节');
+assert(skill.content.includes('ask_user_question'), '技能写明用 ask_user_question 提问');
+assert(skill.content.includes('`先留着`'), '技能给出「先留着」选项：删除要用户点头');
+assert(skill.content.includes('没有得到肯定答复，不写也不删'), '技能写明跳过/未答都不落盘');
+assert(skill.content.includes(deleteRule), '技能里的删除铁律与常驻文本逐字相同');
+assert(skill.content.includes('todo_record_<工作区>-1'), '技能给出一条 ask 里记多条的问题 id 槽位');
+const template = readFileSync(templateFilePath(), 'utf8');
+assert(
+  sections.every((section) => skill.content.includes(section) && template.includes(section)),
+  '技能与骨架文件的三类小节名逐字一致'
+);
+assert(skill.whenToUse.includes('已办结'), '技能路由描述覆盖「已办结 → 问是否删除」');
 assert(skill.content.includes(templateFilePath()), '技能正文附上骨架文件路径');
 assert(skill.path.endsWith('skill/todo-memory/SKILL.md'), '技能来自插件目录');
 

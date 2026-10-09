@@ -10,7 +10,7 @@
 | 插件 | 目录 | 功能 |
 |---|---|---|
 | **command-setting** | [`command-setting/`](command-setting/README.md) | 输入区增强：外置 Plan / Ask 切换按钮（`/plan`、`/ask`——ask 为会话级只问答模式，禁改/禁建文件）、`#` 引用历史会话（跨工作区/未归档/主代理）、划词引用。**0.9.0 起移除原「命令隐藏」功能**，不再过滤命令菜单 |
-| **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发 |
+| **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发；记录与删除待办前先用 `ask_user_question` 征询用户（`记录`/`不记录`、`删除`/`先留着`） |
 | **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做归因代理——输出三口径来源占比（提及 / 体积 / 累计）、词汇重叠榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
 | **dsh-version-check** | [`dsh-version-check/`](dsh-version-check/README.md) | dsh 版本状态灯：侧边栏品牌名下方显示已装 dsh 版本与更新状态（启动 + 每小时检测 `deepseek-harness` 最新发布），点击跑本地插件契约扫描 + 直连 LLM 逐版本分析——判断新版本会不会影响本机已装插件的运行期兼容性，给出可复制的升级命令、版本变更明细与扫描证据。**原名 plugin-market**：0.16.0 移除原「插件市场」的设置页 tab 与安装/更新/卸载功能，0.17.0 更名为 dsh-version-check |
 
@@ -96,7 +96,7 @@ ln -s "$(npm root -g)/@deepseek-ai/dsh/node_modules" node_modules
 ```bash
 node command-setting/test/smoke.mjs                  # command-setting node 端（47 项）
 node command-setting/test/client-smoke.mjs           # command-setting 浏览器端（103 项）
-node todo-tab/test/smoke.mjs                         # todo-tab 宿主端（69 项：约定注入/技能注册/端点/只读）
+node todo-tab/test/smoke.mjs                         # todo-tab 宿主端（91 项：提问约定/约定注入/技能注册/端点/只读）
 node todo-tab/test/client-smoke.mjs                  # todo-tab 浏览器端（49 项：注册面/渲染/打开失败文案）
 node --test context-xray/test/smoke.mjs              # context-xray（22 项：拆块/归因折扣/体积校准/两张清单/工具注册）
 node dsh-version-check/test/smoke.mjs                # dsh-version-check 契约快照 + client 渲染（157 项）
@@ -149,7 +149,7 @@ dsh-plugins/
 ├── todo-tab/                 # Todo 页签 + 待办约定（bundle 包）
 │   ├── lib/index.js          #   Node 端：GET /todo-tab/data 只读端点 + 约定注入
 │   ├── lib/memory.js         #   定位域：cwd → 工作区名 → TODO.md 路径 + 读盘
-│   ├── lib/convention.js     #   待办约定域：常驻文本 + SKILL.md 解析/加载
+│   ├── lib/convention.js     #   待办约定域：常驻文本（含记录/删除前先提问的触发器）+ SKILL.md 解析/加载
 │   ├── lib/client.js         #   浏览器端：右侧栏页签类型 + 引导胶囊 + 只读渲染
 │   ├── skill/todo-memory/    #   完整规范（注册成运行时技能，按需加载）
 │   ├── template/TODO.md      #   骨架文件（拷出来当起点）
