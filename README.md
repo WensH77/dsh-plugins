@@ -99,7 +99,7 @@ node command-setting/test/client-smoke.mjs           # command-setting 浏览器
 node todo-tab/test/smoke.mjs                         # todo-tab 宿主端（91 项：提问约定/约定注入/技能注册/端点/只读）
 node todo-tab/test/client-smoke.mjs                  # todo-tab 浏览器端（49 项：注册面/渲染/打开失败文案）
 node --test context-xray/test/smoke.mjs              # context-xray（22 项：拆块/归因折扣/体积校准/两张清单/工具注册）
-node dsh-version-check/test/smoke.mjs                # dsh-version-check 契约快照 + client 渲染（157 项）
+node dsh-version-check/test/smoke.mjs                # dsh-version-check 契约快照 + client 渲染（189 项）
 node --check dsh-version-check/lib/index.js dsh-version-check/lib/client.js
 ```
 

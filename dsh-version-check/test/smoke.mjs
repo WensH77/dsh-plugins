@@ -11,15 +11,15 @@
 //     「正在分析」轮询时间线（从源码抽真实实现 + 假 DOM/假定时器执行）。
 //  4) 路由表契约：服务端分发表 == 固定 3 条（dsh 版本检测）；client.js 引用的
 //     /dsh-version-check/* 路径必须是该全集的子集。
-import { readFileSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { githubRepoInfo, compareVersions, makeQueue, readJsonFile, writeJsonFile } from '../lib/util.js'
 import { readPatchState } from '../lib/patch.js'
 import { ROUTES } from '../lib/routes.js'
-import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, __test } from '../lib/dsh.js'
+import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, dshTargetVersion, dshSameTarget, dshVerdictReusable, __test } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
@@ -193,8 +193,109 @@ console.log('\n[pluginMachineLevel / dshBreakingGuard ← dsh.js]')
   assert(dshText.includes('**与是否影响本机已装插件无关**'), 'versions[].breaking = 上游口径，明确与本机影响解耦')
   assert(dshText.includes('devDependencies 越界属开发期提示、peer 声明失真属声明层问题'), '判断指引显式排除 devDeps / peer 作为 breaking 依据')
   assert(dshText.includes('**勿**据此判定 breakingChanges'), '扫描提示区显式要求模型不得据 devDeps 判 breakingChanges')
-  assert(dshText.includes('const DSH_VERDICT_SCHEMA = 2') && dshText.includes('prev.verdictSchema === DSH_VERDICT_SCHEMA'),
+  assert(dshText.includes('const DSH_VERDICT_SCHEMA = 2') && dshText.includes('prev.verdictSchema !== DSH_VERDICT_SCHEMA'),
     '判定口径版本：口径升级后旧缓存作废（回到待分析），修复不必等远端再发新版')
+}
+
+// ── 判定复用：版本号没变就不重新生成报告 ─────────────────────────────────────
+// 线上症状：状态文件里 versions 为空（拉 release 列表被 GitHub 限流），旧实现只在「逐版本明细非空」
+// 或「10 分钟内」才复用判定，超窗后同版本再点就重跑一次 LLM；检测抖动（latest 变 null）还会把
+// 整份判定清掉。现在：目标版本/口径没变就复用，检测失败沿用上次目标版本。
+console.log('\n[判定复用 ← dsh.js]')
+{
+  const dshText = readFileSync(LIB_DSH, 'utf8')
+  const report = { verdict: 'safe', analyzedAt: 1, verdictSchema: 2, versions: [] }
+  assertEq(dshVerdictReusable(report), true, '逐版本明细为空（release 列表限流）也复用：版本号没变不重跑')
+  assertEq(dshVerdictReusable({ ...report, verdict: 'breaking' }), true, 'breaking 同样是已有结论：复用')
+  assertEq(dshVerdictReusable({ ...report, versions: [{ version: '0.2.0', changes: [], breaking: false }] }), true, '有逐版本明细：复用')
+  assertEq(dshVerdictReusable({ ...report, verdict: null }), false, '还没分析出结论（含上次失败）：重新分析')
+  assertEq(dshVerdictReusable({ ...report, analyzedAt: null }), false, '没有分析时间：重新分析')
+  assertEq(dshVerdictReusable({ ...report, verdictSchema: 1 }), false, '旧口径：重新分析')
+  assertEq(dshVerdictReusable({ ...report, versions: null }), false, '旧格式（无逐版本明细数组，如旧版英文报告）：重新分析')
+  assertEq(dshVerdictReusable(null), false, '没有缓存：重新分析')
+
+  const prev = { latest: '0.2.1-alpha.2', installed: '0.2.0-rc.2', verdictSchema: 2, versions: [], verdict: 'safe', analyzedAt: 1 }
+  assertEq(dshTargetVersion(prev, null), '0.2.1-alpha.2', '本次检测失败（latest 为 null）：沿用上次目标版本，判定不清')
+  assertEq(dshTargetVersion(prev, '0.2.1-alpha.3'), '0.2.1-alpha.3', '本次检测成功：用本次拿到的目标版本')
+  assertEq(dshTargetVersion(null, null), null, '首次检测就失败：没有可沿用的目标版本')
+  assertEq(dshSameTarget(prev, '0.2.0-rc.2', '0.2.1-alpha.2'), true, '目标版本 + 已装版本 + 口径全一致：复用')
+  assertEq(dshSameTarget(prev, '0.2.1-alpha.1', '0.2.1-alpha.2'), false, '本机只升了一部分（已装版本变了）：作废重分析')
+  assertEq(dshSameTarget(prev, null, '0.2.1-alpha.2'), true, '本机版本这次读不到：不算变了，仍复用')
+  assertEq(dshSameTarget(prev, '0.2.0-rc.2', '0.2.1-alpha.3'), false, '远端目标变了：作废重分析')
+  assertEq(dshSameTarget({ ...prev, verdictSchema: 1 }, '0.2.0-rc.2', '0.2.1-alpha.2'), false, '旧口径：作废重分析')
+  assertEq(dshSameTarget({ ...prev, versions: null }, '0.2.0-rc.2', '0.2.1-alpha.2'), false, '旧格式判定：作废重分析')
+  assertEq(dshSameTarget(null, '0.2.0-rc.2', '0.2.1-alpha.2'), false, '没有上一条缓存：不复用')
+
+  assert(dshText.includes('if (dshVerdictReusable(state)) {'), 'analyzeDshUpdate 走统一复用判定')
+  assert(!dshText.includes('Date.now() - state.analyzedAt < 10 * 60 * 1000'), '删掉「10 分钟内才复用」的时间窗')
+  assert(!dshText.includes('const hasPerVersion'), '删掉「逐版本明细必须非空」的复用前提')
+}
+
+// ── 检测编排：真实 checkDshUpdate 的字段组装（上一节只驱动纯函数，钉不住「字段被漏搬」的回归）──
+// 变异测试反例：把 state 里的 `latest: target` 改回 `latest: latest`、或把 sameTarget 写死 false，
+// 只跑纯函数那一节照样全绿。这里用临时 HOME（状态文件、已装包版本都在里面）+ 假 GitHub API +
+// 假 git 跑真实实现：检测成功时报告字段原样搬过来，检测失败时沿用上次目标版本、判定不清空。
+console.log('\n[检测编排 ← checkDshUpdate 真实实现]')
+{
+  const home = mkdtempSync(join(tmpdir(), 'dvc-check-'))
+  const pkgDir = join(home, 'node_modules', '@deepseek-ai', 'dsh-web-app')
+  mkdirSync(pkgDir, { recursive: true })
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-web-app', version: '0.2.0-rc.2' }))
+  mkdirSync(join(home, '.dsh'), { recursive: true })
+  const stateFile = join(home, '.dsh', 'dsh-version-check.json')
+  // 假 git（直接退出 1）：把「Releases API 挂了 + git 回退也挂了」这条路径钉成确定性的，不真去打 GitHub
+  const bin = join(home, 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'git'), '#!/bin/sh\nexit 1\n')
+  chmodSync(join(bin, 'git'), 0o755)
+
+  const oldHome = process.env.HOME
+  const oldPath = process.env.PATH
+  const oldFetch = globalThis.fetch
+  process.env.HOME = home
+  process.env.PATH = bin + ':' + (oldPath ?? '')
+  const ctx = { baseUrl: pathToFileURL(join(home, 'index.js')).href }
+  const prev = {
+    installed: '0.2.0-rc.2', latest: '0.2.1-alpha.2', hasUpdate: true, checked: true,
+    verdict: 'safe', summary: '上一版结论', changes: ['变更 A'], affectedPlugins: [],
+    versions: [{ version: '0.2.1-alpha.2', changes: ['逐版本：某 API 调整'], breaking: false }],
+    details: '详情', sessionId: null, analyzedAt: 1791859467541,
+    error: null, errorCode: null, scan: { method: 'registry-closure', target: '0.2.1-alpha.2' },
+    verdictSchema: 2, checkedAt: 1791944500184, status: 'idle',
+  }
+  try {
+    // 每次取一份新模块实例：状态文件路径在 import 时按当时的 HOME 定下
+    const load = () => import(pathToFileURL(join(__dirname, '..', 'lib', 'dsh.js')).href + '?home=' + Math.random())
+    const releases = (versions) => async () => ({ ok: true, json: async () => versions.map((v) => ({ tag_name: 'dsh-v' + v, published_at: null, body: '说明' })) })
+    const seed = () => writeFileSync(stateFile, JSON.stringify(prev, null, 2))
+
+    seed()
+    globalThis.fetch = releases(['0.2.1-alpha.2', '0.2.0-rc.2'])
+    const s1 = await (await load()).checkDshUpdate(ctx)
+    assertEq([s1.installed, s1.latest, s1.checked, s1.hasUpdate], ['0.2.0-rc.2', '0.2.1-alpha.2', true, true], '检测成功且目标未变：版本字段照常')
+    assertEq([s1.verdict, s1.summary, s1.details, s1.analyzedAt], ['safe', '上一版结论', '详情', 1791859467541], '报告字段原样搬过来（检测不重新生成报告）')
+    assertEq(s1.versions, prev.versions, '逐版本明细保留（不再要求非空才复用）')
+    assertEq(s1.scan?.target, '0.2.1-alpha.2', 'L1 扫描证据一并保留')
+
+    seed()
+    globalThis.fetch = async () => { throw new Error('rate limited') }
+    const s2 = await (await load()).checkDshUpdate(ctx)
+    assertEq([s2.latest, s2.checked], ['0.2.1-alpha.2', false], '检测失败（API + git 都失败）：latest 沿用上次目标，checked = false')
+    assertEq([s2.verdict, s2.summary, s2.analyzedAt], ['safe', '上一版结论', 1791859467541], '检测失败：判定与报告不清空（旧实现整份清回待分析）')
+    assertEq(s2.hasUpdate, true, '检测失败：hasUpdate 沿用上次结论（灯不会误判成已是最新）')
+
+    seed()
+    globalThis.fetch = releases(['0.2.1-alpha.3', '0.2.1-alpha.2'])
+    const dsh3 = await load()
+    const s3 = await dsh3.checkDshUpdate(ctx)
+    assertEq([s3.latest, s3.verdict, s3.summary, s3.analyzedAt], ['0.2.1-alpha.3', null, null, null], '远端发新版：报告作废、回到待分析')
+    assertEq(dsh3.dshVerdictReusable(s3), false, '目标变了：不复用，点击重新分析')
+  } finally {
+    globalThis.fetch = oldFetch
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath
+    rmSync(home, { recursive: true, force: true })
+  }
 }
 
 // ── 宿主闭包核对：dependencies + peerDependencies + 一层传递，疑似消失的包过 registry 复核 ──
@@ -403,6 +504,12 @@ console.log('\n[状态灯「正在分析」← client.js 抽取]')
     assertEq(shot({ ok: true, hasUpdate: true, verdict: 'breaking', installed: '0.1.5-rc.1' }), 'breaking | v0.1.5-rc.1 · 兼容性问题', 'breaking 文案/档位')
     assertEq(shot({ ok: true, hasUpdate: true, installed: '0.1.5-rc.1' }), 'update | v0.1.5-rc.1 · 有新版本', 'update 文案/档位')
     assertEq(shot({ ok: true, checked: true, hasUpdate: false, installed: '0.1.5-rc.1' }), 'ok | v0.1.5-rc.1', '已是最新文案/档位')
+    // 检测失败（checked=false）时的两种组合：上次说「有新版本」就继续按上次显示（判定/报告都还在），
+    // 上次也没发现更新才转灰——灰灯分支必须排在 hasUpdate 之后，否则一次限流会把已有报告藏起来
+    assertEq(shot({ ok: true, checked: false, hasUpdate: true, installed: '0.1.5-rc.1' }), 'update | v0.1.5-rc.1 · 有新版本',
+      '检测失败但上次发现有更新：保持黄（沿用上次结论），不降成灰')
+    assertEq(shot({ ok: true, checked: false, hasUpdate: false, installed: '0.1.5-rc.1' }), 'unknown | v0.1.5-rc.1',
+      '检测失败且上次也没发现有更新：灰（真·无法检查）')
   }
 
   // 2) 轮询时间线：抽真实的 startPoll / fetchState，用假定时器跑「点击 → 材料/扫描 → LLM → 判定」

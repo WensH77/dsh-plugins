@@ -318,6 +318,37 @@ let dshCheckInflight = null
 /** 进行中升级分析标记：直连 LLM 分析完成前重复点击状态灯不并发起第二次分析。 */
 let dshAnalyzeInflight = false
 
+/** 本次检测的目标远端版本：检测失败（latest 为 null，GitHub 限流且 git 回退也失败）时沿用
+ *  上一次的目标版本——一次检测抖动不等于「版本变了」，不该把已分析好的报告清掉。 */
+function dshTargetVersion(prev, latest) {
+  if (typeof latest === 'string' && latest !== '') return latest
+  if (prev !== null && typeof prev === 'object' && typeof prev.latest === 'string' && prev.latest !== '') return prev.latest
+  return null
+}
+
+/** 上一条缓存是否仍对应同一个分析目标：远端目标版本、本机已装版本、判定口径都没变，
+ *  且是带逐版本明细数组的新格式（旧格式判定一律作废、点击即按当前口径重分析）。
+ *  本机已装版本这次读不到（installed 为 null）时跳过这一项——读不到不等于变了。 */
+function dshSameTarget(prev, installed, target) {
+  if (prev === null || typeof prev !== 'object') return false
+  if (typeof target !== 'string' || target === '') return false
+  if (prev.latest !== target) return false
+  if (installed !== null && prev.installed !== installed) return false
+  if (prev.verdictSchema !== DSH_VERDICT_SCHEMA) return false
+  return Array.isArray(prev.versions)
+}
+
+/** 已有判定能不能直接复用（false = 要重新生成报告）：结论在、有分析时间、口径一致、新格式。
+ *  版本号没变就不重新生成报告——逐版本明细为空（如拉 release 列表被限流）也不重跑，
+ *  报告只在「目标版本 / 判定口径变化」或「上次没分析出结论」时作废。 */
+function dshVerdictReusable(state) {
+  if (state === null || typeof state !== 'object') return false
+  if (state.verdict !== 'safe' && state.verdict !== 'breaking') return false
+  if (typeof state.analyzedAt !== 'number') return false
+  if (state.verdictSchema !== DSH_VERDICT_SCHEMA) return false
+  return Array.isArray(state.versions)
+}
+
 /** 检测 dsh 是否有新版本（git tag 对比已装版本），并发合并、结果写缓存 + 磁盘。 */
 function checkDshUpdate(ctx) {
   if (dshCheckInflight !== null) return dshCheckInflight
@@ -326,13 +357,15 @@ function checkDshUpdate(ctx) {
     // 按 GitHub Releases 取最新发布版本（release 语义，非 git commit hash）
     const latest = await latestDshRelease(DSH_REPO.owner, DSH_REPO.name)
     const prev = await readDshState()
-    const hasUpdate = installed !== null && latest !== null && compareVersions(latest, installed) > 0
-    // 远端版本变化时重置判定（回到黄灯待分析）；判定口径升级（verdictSchema 不一致）同样作废，
-    // 否则旧口径写下的错误结论会被一直复用、修复对用户不可见（直到远端再发新版）
-    const sameTarget = prev !== null && prev.latest === latest && prev.verdictSchema === DSH_VERDICT_SCHEMA
+    // 本次没拿到远端版本时沿用上次的目标版本：报告按目标版本复用，一次检测失败不该让它作废
+    const target = dshTargetVersion(prev, latest)
+    const hasUpdate = installed !== null && target !== null && compareVersions(target, installed) > 0
+    // 目标没变（远端版本 + 已装版本 + 判定口径）才复用上一条判定；口径升级（verdictSchema 不一致）
+    // 同样作废，否则旧口径写下的错误结论会被一直复用、修复对用户不可见（直到远端再发新版）
+    const sameTarget = dshSameTarget(prev, installed, target)
     const state = {
       installed,
-      latest,
+      latest: target,
       hasUpdate,
       checked: latest !== null,
       verdict: sameTarget ? (prev.verdict ?? null) : null,
@@ -1005,19 +1038,11 @@ async function analyzeDshUpdate(ctx) {
   if (state === null || state.hasUpdate !== true || !state.installed || !state.latest) {
     return { ...state, ok: false, skipped: true, error: '当前已是最新版本或未能检测到更新' }
   }
-  // 已分析且远端版本未变：直接复用已有判定，不重复分析。
-  // 仅当判定是「新格式」（versions 数组非空）且口径版本一致时复用——旧格式（无逐版本明细，
-  // 如旧版英文聚合报告）与旧口径（verdictSchema 不同，如 devDeps 曾被算作 breaking）都不复用，
-  // 点击即强制重新分析，让用户拿到当前口径的结论。
-  const sameSchema = state.verdictSchema === DSH_VERDICT_SCHEMA
-  const analyzedFresh = (state.verdict === 'safe' || state.verdict === 'breaking') && typeof state.analyzedAt === 'number'
-  const hasPerVersion = Array.isArray(state.versions) && state.versions.length > 0
-  if (analyzedFresh && hasPerVersion && sameSchema) {
-    return { ok: true, reopened: true, ...state }
-  }
-  // 新格式但版本明细为空（如拉取 release 列表失败）：短窗口内复用避免限流时反复重分析，超窗后重试；
-  // 旧格式（versions 不是数组）与旧口径不在此列——直接落入下方重新分析
-  if (Array.isArray(state.versions) && analyzedFresh && sameSchema && Date.now() - state.analyzedAt < 10 * 60 * 1000) {
+  // 版本号没变（远端目标版本与本机已装版本都没变）且判定口径一致：直接复用已有判定，
+  // 不再生成新报告。逐版本明细为空（拉 release 列表被限流）也复用——报告属于这个目标版本，
+  // 重跑只会再花一次 LLM 调用换来同一结论；要拿新结论得等远端发新版。
+  // 旧格式（无逐版本明细数组，如旧版英文聚合报告）、旧口径与「上次没分析出结论」都不复用。
+  if (dshVerdictReusable(state)) {
     return { ok: true, reopened: true, ...state }
   }
   // 分析进行中：不并发起第二次分析（尽早置位，覆盖材料拉取/扫描/LLM 全程）
@@ -1060,7 +1085,7 @@ async function analyzeDshUpdate(ctx) {
   }
 }
 
-export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection }
+export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, dshTargetVersion, dshSameTarget, dshVerdictReusable }
 
 /** 仅供 test/smoke.mjs 抽取真实实现驱动：重试链是模块私有函数，测试要么整段复制源码
  *  （会在重构时悄悄失去守护力），要么拿这组出口直接跑真实实现——后者才是有效护栏。 */

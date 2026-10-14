@@ -4,6 +4,14 @@
 
 > 0.17.0 之前的条目沿用当时的旧名 `dsh-plugin-market` / `plugin-market`（历史事实原样保留）。
 
+## 0.17.1
+
+- **fix：版本号没变时不再重新生成报告。** 旧实现的两条复用判据都留了口子。一是要求逐版本明细数组非空（`hasPerVersion`），线上状态文件恰好是 `versions: []`（那次拉 release 列表被 GitHub 限流，摘要里写明了），于是同版本再走一次 analyze 就会重跑一遍 LLM；二是给「明细为空」补了 `Date.now() - state.analyzedAt < 10 * 60 * 1000` 的短窗口，超窗即重跑。更常见的是第一条之外的那类：每小时检测一旦拿不到远端版本（GitHub 限流且 `git ls-remote` 回退也失败），`latest` 变 `null`，`sameTarget` 判假，`verdict / summary / changes / affectedPlugins / versions / details / sessionId / analyzedAt / scan / error / errorCode` 被整份清空回「待分析」，下次点击就重新分析——版本号根本没变。现在拆成三个纯函数（从 `lib/dsh.js` 导出，smoke 直接驱动真实实现）：`dshSameTarget(prev, installed, target)` 决定缓存能否原样复用（远端目标版本 + 本机已装版本 + 判定口径都没变，且是带逐版本明细数组的新格式），`dshVerdictReusable(state)` 决定要不要重新跑 LLM（有结论 + 有分析时间 + 口径一致 + 新格式），`dshTargetVersion(prev, latest)` 在本次检测失败时沿用上一次的目标版本。逐版本明细为空不再触发重跑；检测失败时判定原样保留，只把 `checked` 置 `false`。
+- **fix：复用判据补上「本机已装版本」。** 旧判据只比 `latest`，不比自己这一端：只升级到中间版本（如 `0.2.0-rc.2` → `0.2.1-alpha.1`，远端已是 `0.2.1-alpha.2`）时会继续复用按旧已装版本算出来的报告。本机版本这次读不到（`installed` 为 `null`）时跳过这一项——读不到不等于变了。
+- **语义变化**：报告只在「远端发新版 / 本机已装版本变 / 判定口径升级 / 上次没分析出结论（含分析失败后重试）」时重新生成。同版本下没有强制重跑的界面入口（旧实现那个 10 分钟窗口只有直接调 analyze 接口才会碰到）；要强制重跑可删 `~/.dsh/dsh-version-check.json`。
+- **test**：smoke 新增两节。`[判定复用]` 21 条直接 import 三个纯函数驱动真实实现——空明细复用、breaking 复用、缺结论 / 缺分析时间 / 旧口径 / 旧格式（`versions` 非数组）/ 无缓存不复用、检测失败沿用上次目标版本、首次失败没有可沿用目标、已装版本变了作废、本机版本读不到仍复用；另加三条源码断言（analyze 走 `dshVerdictReusable`、10 分钟窗口与 `hasPerVersion` 已删）。`[检测编排]` 9 条用临时 HOME（状态文件与已装包版本都在里面）+ 假 GitHub API + 假 git 跑真实的 `checkDshUpdate`——只驱动纯函数钉不住「字段被漏搬」：实测把 `latest: target` 改回 `latest: latest`、或把 `sameTarget` 写死 `false`，纯函数那节照样全绿，加了这节才报红。状态灯 paint 另补 2 条：`checked: false` + 上次发现有更新 → 保持黄，`checked: false` + 上次也没发现 → 灰（把灰灯分支钉在 `hasUpdate` 之后）。断言总数 157 → 189。
+- **docs**：README 的颜色语义补上「某次检测失败时灯按上次结论显示」的具体口径（此前只写了「灰 = 无法检查」，与 `checked: false` + `hasUpdate: true` 时实际显示黄/红对不上）。
+
 ## 0.17.0
 
 - **改名：`dsh-plugin-market` → `dsh-version-check`，目录 `plugin-market/` → `dsh-version-check/`。** 名字与现在的功能对齐（0.16.0 起只剩 dsh 本体版本检测）。一并更换的对外标识：bundle 补丁行的 `id`/`name`（profile 组合树里的行标识）、客户端模块 id 与样式标签、locale 命名空间（`settings.pluginMarket` → `settings.dshVersionCheck`）、宿主 HTTP 路由前缀（`/plugin-market` → `/dsh-version-check`）、直连 LLM 消息的 `source.kind`（`plugin:dsh-plugin-market` → `plugin:dsh-version-check`）、GitHub 请求的 user-agent、判定缓存文件（`~/.dsh/plugin-market-dsh.json` → `~/.dsh/dsh-version-check.json`）。
