@@ -1,0 +1,13 @@
+{
+  "schema": "dsh-eval-pending/1",
+  "entries": [
+    {
+      "qid": "783e3c9695ce8ab46a99a85aa7e2930392933601",
+      "query": "zzz不存在的主题qqq",
+      "addedAt": "2026-10-19T07:42:03.808Z",
+      "source": "miss-log",
+      "targets": [],
+      "status": "unlabeled"
+    }
+  ]
+}

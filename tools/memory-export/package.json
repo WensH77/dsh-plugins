@@ -1,0 +1,11 @@
+{
+  "name": "memory-export",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 历史会话导出、蒸馏与记忆向量化工具",
+  "dependencies": {
+    "@huggingface/transformers": "4.3.1",
+    "sqlite-vec": "0.1.9"
+  }
+}
