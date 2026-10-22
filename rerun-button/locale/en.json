@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Rerun Auto-resume",
+    "description": "After DSH exits mid-turn (crash, kill, or shutdown timeout), the interrupted session resumes automatically when restored: the host delivers a marked \"continue\" message."
+  }
+}

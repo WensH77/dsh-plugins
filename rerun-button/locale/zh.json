@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Rerun 自动续跑",
+    "description": "DSH 崩溃/被强杀/关闭超时后，本轮被补记为 interrupted 的会话在恢复时自动续跑：宿主投递一条带来源标记的「继续」。"
+  }
+}
