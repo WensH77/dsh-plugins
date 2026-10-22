@@ -1,5 +1,5 @@
 /**
- * dsh-plugin-rerun-button — 宿主端。
+ * dsh-plugin-auto-resume — 宿主端。
  *
  * 没有按钮，没有端点。它做一件事：**DSH 因崩溃/被强杀/关闭超时退出后，本轮被补记为
  * `interrupted` 的那个会话，在恢复时自动接着跑**。
@@ -13,14 +13,14 @@
  * Agent 循环从不现场发它——所以这个判断天然幂等：续跑本身会开出新的一轮，把「最后一条
  * turn/end」推进到 completed，下次恢复就不会再触发。
  *
- * 续跑方式：`agent.followup(createUserMessage({ content: ['继续'], source: { kind: 'rerun-button' } }))`。
+ * 续跑方式：`agent.followup(createUserMessage({ content: ['继续'], source: { kind: 'auto-resume' } }))`。
  * 消息带自定义来源，聊天里显示成「收到执行请求」的触发条目，不是一条用户发言；模型收到
  * 的仍然是一句「继续」。会话的每一轮都必须有输入（Agent 的入口只有 send/followup/steer/
  * inject，没有「空轮」），所以能改的是这条输入的身份，不是取消输入。
  */
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 
-const name = 'rerun-button';
+const name = 'auto-resume';
 const inject = ['agents', 'sessions', 'timer'];
 /** 自动投递的文本。模型两种都懂，这里跟 UI 默认语言走中文。 */
 const TEXT = '继续';
@@ -33,7 +33,7 @@ function continueMessage(text = TEXT) {
   return createUserMessage({
     content: [{ type: 'text', text }],
     // 自定义来源：Chat 据此渲染成触发条目，而不是用户气泡。
-    source: { kind: 'rerun-button', form: 'notice', summary: boundContextSummary(text) }
+    source: { kind: 'auto-resume', form: 'notice', summary: boundContextSummary(text) }
   });
 }
 
@@ -78,10 +78,10 @@ function createAutoResume(ctx) {
     try {
       agent.followup(continueMessage(text));
       await ctx.sessions.flush(agent.session);
-      ctx.logger.info('rerun-button: 已为中断的会话 ' + sessionId + ' 自动投递「' + text + '」');
+      ctx.logger.info('auto-resume: 已为中断的会话 ' + sessionId + ' 自动投递「' + text + '」');
     } catch (error) {
       // 保持 fired：一次失败不重试，避免和崩溃循环互相喂饭。
-      ctx.logger.warn('rerun-button: 自动续跑失败 ' + sessionId + ': ' + String(error?.message ?? error));
+      ctx.logger.warn('auto-resume: 自动续跑失败 ' + sessionId + ': ' + String(error?.message ?? error));
     }
   };
 
@@ -94,7 +94,7 @@ function createAutoResume(ctx) {
       if (agent === undefined) {
         attempts += 1;
         if (attempts > RETRY_LIMIT) {
-          ctx.logger.warn('rerun-button: 会话 ' + sessionId + ' 的 Agent 迟迟没有就绪，放弃自动续跑');
+          ctx.logger.warn('auto-resume: 会话 ' + sessionId + ' 的 Agent 迟迟没有就绪，放弃自动续跑');
           return;
         }
         ctx.timeout(tick, RETRY_MS);
@@ -146,7 +146,7 @@ function apply(ctx) {
   ctx.on('agent/created', ({ agent }) => {
     controller.onCreated(agent);
   });
-  ctx.logger.info('rerun-button: 恢复中断轮次后自动续跑（' + TEXT + '）');
+  ctx.logger.info('auto-resume: 恢复中断轮次后自动续跑（' + TEXT + '）');
 }
 
 export { apply, continueMessage, createAutoResume, inject, lastTurnEndReason, name, TEXT };

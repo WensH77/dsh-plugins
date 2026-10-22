@@ -1,4 +1,4 @@
-// rerun-button 宿主端 smoke：用假 ctx 驱动自动续跑控制器，不起宿主进程。
+// auto-resume 宿主端 smoke：用假 ctx 驱动自动续跑控制器，不起宿主进程。
 // 覆盖：最后一条 turn/end 的读取、恢复时的判定、运行中跳过、去重、超时放弃。
 import { continueMessage, createAutoResume, lastTurnEndReason } from '../lib/index.js';
 
@@ -81,7 +81,7 @@ function makeAgent({ events = [], header = {}, status = 'idle', seen } = {}) {
 {
   const message = continueMessage();
   check('消息正文是「继续」', message?.content?.[0]?.text === '继续', JSON.stringify(message?.content));
-  check('来源是 rerun-button 而不是 user', message?.source?.kind === 'rerun-button', JSON.stringify(message?.source));
+  check('来源是 auto-resume 而不是 user', message?.source?.kind === 'auto-resume', JSON.stringify(message?.source));
   check('带 notice 摘要', message?.source?.form === 'notice' && typeof message?.source?.summary === 'string');
 }
 
@@ -95,7 +95,7 @@ function makeAgent({ events = [], header = {}, status = 'idle', seen } = {}) {
   await Promise.resolve();
   await Promise.resolve();
   check('interrupted 会话续跑', seen.messages.length === 1, String(seen.messages.length));
-  check('消息来源是 rerun-button', seen.messages[0]?.source?.kind === 'rerun-button');
+  check('消息来源是 auto-resume', seen.messages[0]?.source?.kind === 'auto-resume');
   check('投递后 flush', seen.flushes === 1, String(seen.flushes));
 }
 {

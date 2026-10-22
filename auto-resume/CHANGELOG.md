@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- 插件改名：`dsh-plugin-rerun-button` → `dsh-plugin-auto-resume`，目录 `rerun-button/` →
+  `auto-resume/`。它早就不再是按钮，改回与行为相符的名字。
+- 投递消息的来源标记随之改为 `source.kind = 'auto-resume'`。
+
 ## 0.5.0
 
 - 去掉按钮与两个 HTTP 端点，改为**自动续跑**：在 `agent/created` 时读会话内存日志，只有
@@ -13,13 +19,13 @@
 - 按钮从标题栏工具区（`conversation.session.header.utilities`）移到聊天流里：
   `conversation.chat.turnTail`，即异常结束那一轮的折叠行之后、动作行之前。
 - 显示判断改为浏览器端直接读 `turn.end.reason`，不再需要宿主状态端点
-  （`GET /rerun-button/state` 已移除）。
+  （`GET /auto-resume/state` 已移除）。
 - 只对最后一轮显示；子代理会话不显示。
 - 样式改成左对齐的 28px 描边胶囊，跟随宿主主题 token。
 
 ## 0.3.0
 
-- 按钮改为条件出现：新增只读端点 `GET /rerun-button/state?session=<id>`，读会话日志最后一条
+- 按钮改为条件出现：新增只读端点 `GET /auto-resume/state?session=<id>`，读会话日志最后一条
   `turn/end` 的 reason；只有 `interrupted`（进程退出）、`error`（请求失败/断网）、`blocked`、
   `max-tokens` 才显示。`completed`（跑完）、`forked`、`aborted`（人为停止）不显示。
 - 最后一轮尚未结束（运行中）时不显示，也不发状态查询。
@@ -32,8 +38,8 @@
 
 ## 0.2.0
 
-- 改为宿主端投递：`POST /rerun-button/continue` → `agent.followup(...)`，消息带
-  `source.kind = 'rerun-button'`，聊天里显示为「收到执行请求」的触发卡片，不再是用户气泡。
+- 改为宿主端投递：`POST /auto-resume/continue` → `agent.followup(...)`，消息带
+  `source.kind = 'auto-resume'`，聊天里显示为「收到执行请求」的触发卡片，不再是用户气泡。
 - 客户端不再走 `session.prompt()`，不再依赖 `sessions` 服务。
 - 端点限制：POST only、会话 id 形状校验、请求体 4 KiB、文本 500 字符。
 

@@ -1,4 +1,4 @@
-# dsh-plugin-rerun-button
+# dsh-plugin-auto-resume
 
 没有按钮，没有端点。DSH 因为崩溃、被强杀或关闭超时退出后，**本轮被补记为
 `interrupted` 的那个会话，在恢复时自动接着跑**：宿主投递一条带来源标记的「继续」，
@@ -24,7 +24,7 @@
    ```js
    agent.followup(createUserMessage({
      content: [{ type: 'text', text: '继续' }],
-     source: { kind: 'rerun-button', form: 'notice', summary: '继续' },
+     source: { kind: 'auto-resume', form: 'notice', summary: '继续' },
    }))
    ```
 
@@ -56,7 +56,7 @@
 ## 安装
 
 ```bash
-plugin_manager install_bundle target=/绝对路径/dsh-plugins/rerun-button
+plugin_manager install_bundle target=/绝对路径/dsh-plugins/auto-resume
 ```
 
 **宿主插件，改完需要重启 `dsh web` 才生效**（进程内加载）。浏览器端没有代码，刷新页面即可
