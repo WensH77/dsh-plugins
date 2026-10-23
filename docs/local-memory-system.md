@@ -23,7 +23,7 @@
 关键词 ∪ 向量 → RRF → top-k 记忆 + session/seq 溯源
 ```
 
-代码都在 `tools/memory-export/`，数据都在 `~/.dsh/memory-export/`（仓库外）。
+代码都在 `~/Documents/dsh-memory/`，数据都在 `~/.dsh/memory-export/`（仓库外）。
 
 ## 二、实测数据
 
@@ -43,6 +43,7 @@
 | 记忆条数 | 14,704 条（1,615 个会话，含 648 个子代理会话）；9.1 条/会话 |
 | 五类分布 | fact 7,485 / pitfall 3,378 / decision 1,959 / open_question 1,465 / preference 417 |
 | 无效条目 | 333 条（3.63%，全量首轮）：证据找不到 219、证据超长 112、kind 非法 2 |
+| 上下文约束 | 蒸馏提示词要求每条记忆自带适用范围（项目/文件/版本/前提）；「只摘规范原文、没写适用对象」的直接丢弃，计 `context-free` |
 | token | 输入 9.40 M、输出 1.12 M |
 | 成本 | 估算 $3.20（按全价冷跑 $4.16），13 分 24 秒 |
 | 模型 | `deepseek-flash`；`deepseek-v4-pro` 在同样 10 个会话上成本 4.25 倍、无效 37.7%，已弃用 |
@@ -68,13 +69,13 @@
 | 默认策略 | `s6`：纯 token 查询走关键词优先，混合/自然语言查询走向量优先。关键词模式为 `tokens`（抽精确 token 单独检索，不再是整句 bigram 短语） |
 | 重排 | `--rerank` 默认开，深度 100：把 top-100 候选打乱顺序交给 `deepseek-flash` 按 1–5 分判相关性，再取前 k。只对 natural / mixed 触发，纯 token 查询跳过 |
 | 过滤 | 带 `--project`/`--kind` 时候选深度 500 → 2000 → 4096 自适应放大，到顶仍不足则全表精确过滤回退 |
-| 45 条评测 | 总 hit@5 **0.689**、MRR@5 **0.626**（默认 depth 100；depth 50 为 0.667 / 0.619；无重排 0.489 / 0.400） |
+| 45 条评测 | 总 hit@5 **0.711**、MRR@5 **0.659**（默认 depth 100；depth 50 为 0.667 / 0.633；无重排 0.489 / 0.397） |
 
 ## 三、45 条评测的细分结果
 
 | 子集 | 条数 | hit@5 | MRR@5 | 说明 |
 |---|---|---|---|---|
-| paraphrase（改写问法） | 30 | **0.533** | 0.456 | 重排前 0.267；depth 50 时 0.500 |
+| paraphrase（改写问法） | 30 | **0.567** | 0.506 | 重排前 0.267；depth 50 时 0.500 |
 | keyword（精确 token） | 10 | 1.00 | 1.00 | 关键词路全中，重排不会触发 |
 | mixed（自然语言 + token） | 5 | 1.00 | 1.00 | token 抽取后有 5–200 条关键词候选 |
 
@@ -133,27 +134,27 @@
 ```
 
 - **唯一键是 `<session_id>-<eventCount>`**，同一会话只保留 eventCount 最大的一行。`createdAt` 不进键（会话身份用 id 就够），`lastEventTime` 也不进键（它会随会话增长而变）。
-- **只蒸馏已归档的会话。** header 里只有 `createdAt`、没有 `updatedAt`；`availability` 只有 `live` / `persisted`。归档判据是 `now - lastEventTime >= 30 分钟`；未归档记为 `pending`，静默后再处理。
+- **只蒸馏已归档的会话。** header 里只有 `createdAt`、没有 `updatedAt`；`availability` 只有 `live` / `persisted`。归档判据是 `now - lastEventTime >= 240 分钟`（4 小时，可用 `--min-idle-minutes` 改）；未归档记为 `pending`，静默后再处理。
 - **变更检测用 `(eventCount, lastEventTime)`，不要用 bytes/mtime。** 而且 `eventCount` 必须是**日志总事件数**，不是消息数——否则只追加成功的工具输出时计数不变，会永久漏检（已实测：只加一条成功 `tool/result`，`eventCount 6→7`、`messageCount` 不变，正确判为 `version-changed`）。
 - **两阶段决策在首次蒸馏时一次做完**：先 `disabled/8000`；算密度；若 `chars >= 10000`、密度 `< 0.22`、`chars < 100000`，立刻用 `enabled/32000` 重跑并采用它的结果。这样存储是**追加式**的。
-- **变更会话**：版本变了就重蒸。注意**新会话会按文件名字典序插到记忆序列中间**，所以向量不能只追加、也不能续跑；refresh 每次检测到条数或顺序不一致就全量重编码（约 6 分钟）。等记忆上万再考虑稳定 id（`hash(session_id, seq, evidence)` 做主键）。
-- **`--status`**：输出 exported / archivedOk / archivedFailed / pending / changed / orphans，并列出 pending 与 changed 的最近条目。
-- **首次接入**：`node distill.mjs --backfill-state` 把已有产物补记进状态表（只读产物、不调 API），避免全量重蒸。
-- **一键刷新 `refresh.mjs`**：export → 增量蒸馏 → 对齐检查（不齐则全量重编码）→ build-db → status；带文件锁与 `refresh.log`。空跑约 1.4 秒（导出只 stat 未变文件），有新会话时约 6–7 分钟（编码占大头），API 成本只来自新会话蒸馏。
+- **变更会话**：版本变了就重蒸。记忆用稳定主键 `mem_id = sha256(session_id + seq + 归一化 evidence)[:16]`，向量按 `mem_id + text_sha256` 增量，新会话插到中间不再触发全量重编码（新增 2 条约 1.4 秒）。
+- **一键刷新 `refresh.mjs`**：export → distill → embed（增量）→ dedupe（0.90）→ conflict-scan → build-db → status；带文件锁与 `refresh.log`。空跑约 2 秒，有新会话时约 2 分钟（编码与去重占大头），API 成本只来自新会话蒸馏和冲突判定。
+- **记忆状态**：`memory-status.jsonl` 追加事件，取最后一条，状态为 `active / superseded / conflict / duplicate`。检索默认只出 active，`--include-superseded` 查历史。
+- **冲突判定**：候选 = 「共享对象锚点（ticket / 文件名 / `--flag` / 版本号 / 低频技术词）且余弦 ≥0.60」∪「余弦 ≥0.85」，交给 `deepseek-flash` 判 supersede / conflict / complement / unrelated。方向由时间强制：只有更晚的记忆能取代更早的；时间相同只能 conflict，且两条都标 conflict；时间不同时较晚一条保持 active 并记 `conflict_with`。成本约 $0.0001/对，随 refresh 每天跑。
 
 ## 八、复现
 
 ```bash
-cd tools/memory-export
+cd ~/Documents/dsh-memory
 
 node export-sessions.mjs            # 导出，约 19 秒（未变文件只 stat，0.3 秒）
 node distill.mjs --backfill-state   # 首次接入：补记已有产物，不调 API
 node distill.mjs --status           # 看 pending / changed / orphans
 node distill.mjs                    # 增量蒸馏，只处理已归档且版本变化的会话
-node embed.mjs                      # 向量化（默认 batch 1），9,044 条约 6 分钟
+node embed.mjs                      # 向量化（增量：按 mem_id 复用旧向量，只编码新增/变更）
 node build-db.mjs --rebuild         # 建库，约 0.6 秒
 node mem-search.mjs "<query>" --k 5 # 检索（默认带 LLM 重排）
-node refresh.mjs                    # 一键刷新：上面四步 + 对齐检查 + status
+node refresh.mjs                    # 一键刷新：export → distill → embed → dedupe → conflict-scan → build-db → status
 
 node eval-memory-search.mjs --validate-only   # 校验评测集（稳定标识解析）
 node eval-memory-search.mjs --repeat 20       # 策略对比
