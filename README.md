@@ -9,7 +9,6 @@
 
 | 插件 | 目录 | 功能 |
 |---|---|---|
-| **command-setting** | [`command-setting/`](command-setting/README.md) | 输入区增强：外置 Plan / Ask 切换按钮（`/plan`、`/ask`——ask 为会话级只问答模式，禁改/禁建文件）、`#` 引用历史会话（跨工作区/未归档/主代理）、划词引用。**0.9.0 起移除原「命令隐藏」功能**，不再过滤命令菜单 |
 | **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发；记录与删除待办前先用 `ask_user_question` 征询用户（`记录`/`不记录`、`删除`/`先留着`） |
 | **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做归因代理——输出三口径来源占比（提及 / 体积 / 累计）、词汇重叠榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
 | **dsh-version-check** | [`dsh-version-check/`](dsh-version-check/README.md) | dsh 版本状态灯：侧边栏品牌名下方显示已装 dsh 版本与更新状态（启动 + 每小时检测 `deepseek-harness` 最新发布），点击跑本地插件契约扫描 + 直连 LLM 逐版本分析——判断新版本会不会影响本机已装插件的运行期兼容性，给出可复制的升级命令、版本变更明细与扫描证据。**原名 plugin-market**：0.16.0 移除原「插件市场」的设置页 tab 与安装/更新/卸载功能，0.17.0 更名为 dsh-version-check |
@@ -22,6 +21,7 @@
 |---|---|---|
 | **arena-v2** | [`deprecated/arena-v2/`](deprecated/arena-v2/README.md) | 类 plan 的 chip/hero 双入口 + `/arena` 开启竞技场，主代理自动创建可接续子代理作为挑战者。后续方案为 Theseus Crew |
 | **chat-rollback** | [`deprecated/chat-rollback/`](deprecated/chat-rollback/README.md) | 对话回滚：用户消息操作条里的回滚按钮，创建新会话并预填该消息文本，附带轮次快照的代码回滚、fork 快照继承、原会话自动归档。已停止维护；本机副本早在 2026-09-15 卸载（insert 段、profile 依赖、node_modules 与 7.6 GB 快照目录一并删除），2026-09-29 归档 |
+| **command-setting** | [`deprecated/command-setting/`](deprecated/command-setting/README.md) | 输入区增强：外置 Plan / Ask 切换按钮（`/plan`、`/ask`——ask 为会话级只问答模式，禁改/禁建文件）、`#` 引用历史会话（跨工作区/未归档/主代理）、划词引用；0.9.0 起已移除「命令隐藏」。2026-10-28 本机卸载并归档（insert 段、profile 依赖、node_modules 链接一并移除），插件本身未见故障，归档是按使用者决定 |
 | **model-arena** | [`deprecated/model-arena/`](deprecated/model-arena/README.md) | 模型竞技场 v1（挑战模式）：hero 视图选场景/模型后一次提问，自动跑「模型1 回答 → 模型2 质疑 → 模型1 修正 → 模型2 终评」。曾由 arena-v2 取代 |
 | **session-export** | [`deprecated/session-export/`](deprecated/session-export/README.md) | 会话导出长图：会话标题栏按钮把当前会话导成 PNG，只含用户输入与模型输出（剔除思考与工具调用），长会话自动拆多张 |
 | **temperature-inject** | [`deprecated/temperature-inject/`](deprecated/temperature-inject/README.md) | 温度注入：会话页开关 + 滑杆，经 `agent/request` waterfall 改写子代理的 `LlmCallConfig`。弃用原因是它无效——同 prompt 下 T0/T1 的组内相似度 0.470 vs 0.359，视觉方向仍雷同，真正拉开差异的是 prompt 里的设计约束；而且它要生效必须关掉 thinking，后续实测确认 thinking 模式下 temperature 被屏蔽（见 `tools/`），等于用方案质量换多样性 |
@@ -47,19 +47,7 @@ dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#pat
 dsh plugin --profile web add ./todo-tab
 ```
 
-**普通插件**（要在 `~/.dsh/profiles/web/cordis.patch.yml` 顶层数组里手写 insert）：
-`command-setting`
-
-```bash
-dsh plugin --profile web add 'git+https://github.com/WensH77/dsh-plugins.git#path:command-setting'
-```
-
-```yaml
-# ~/.dsh/profiles/web/cordis.patch.yml 顶层数组追加
-- insert:
-    - id: command-setting
-      name: dsh-plugin-command-setting
-```
+仓库当前的活跃插件都是 **bundle 包**，不再有需要手写 insert 的普通插件（原 `command-setting` 已归档，见上）。
 
 装完重启 dsh web：
 
@@ -70,12 +58,12 @@ dsh web
 更新 / 卸载（包名见上面各插件的 `package.json`；`dsh-version-check` 没有 `dsh-plugin-` 前缀）：
 
 ```bash
-dsh plugin --profile web update dsh-plugin-command-setting   # 更新（git 依赖锁定在 lockfile 的提交）
-dsh plugin --profile web remove dsh-plugin-command-setting   # 卸载（并移除 patch.yml 条目）
+dsh plugin --profile web update dsh-plugin-todo-tab          # 更新（git 依赖锁定在 lockfile 的提交）
+dsh plugin --profile web remove dsh-plugin-todo-tab          # 卸载（并移除 bundle 行）
 ```
 
 > - 装了 GitHub SSH key 的机器可用简写（等价，走 SSH）：
->   `dsh plugin --profile web add 'github:WensH77/dsh-plugins#path:command-setting'`
+>   `dsh plugin --profile web add 'github:WensH77/dsh-plugins#path:todo-tab'`
 > - 纯 JS 插件、没有 prepare 构建脚本 → 安装无需 allowBuilds；普通插件安装时打印的
 >   `declares no dsh.bundle` 是预期提示（普通插件不在 bundle 层，忽略即可）。
 > - pnpm v9 不支持「分支 + 子目录」组合写法（`#分支#path:` 会解析失败）；要锁版本就 clone 后走上面的本地路径写法。
@@ -94,8 +82,6 @@ ln -s "$(npm root -g)/@deepseek-ai/dsh/node_modules" node_modules
 各插件目录（含归档的）都可直接 `npm test`（= 该目录 `package.json` 里的 `scripts.test`）。等价的直接命令与当前断言数：
 
 ```bash
-node command-setting/test/smoke.mjs                  # command-setting node 端（47 项）
-node command-setting/test/client-smoke.mjs           # command-setting 浏览器端（103 项）
 node todo-tab/test/smoke.mjs                         # todo-tab 宿主端（91 项：提问约定/约定注入/技能注册/端点/只读）
 node todo-tab/test/client-smoke.mjs                  # todo-tab 浏览器端（49 项：注册面/渲染/打开失败文案）
 node --test context-xray/test/smoke.mjs              # context-xray（22 项：拆块/归因折扣/体积校准/两张清单/工具注册）
@@ -117,6 +103,8 @@ node deprecated/session-export/test/client-smoke.mjs
 node deprecated/temperature-inject/test/smoke.mjs
 node deprecated/temperature-inject/test/client-smoke.mjs
 node deprecated/tool-both/test/smoke.mjs
+node deprecated/command-setting/test/smoke.mjs       # 47 项：ask 判定/拦截/路由/命令注册
+node deprecated/command-setting/test/client-smoke.mjs # 103 项：浏览器端注册/渲染
 ```
 
 > 宿主端（Node 半段）改动要**重启 dsh web** 才生效（`dsh-version-check` 的 `lib/index.js`、`lib/dsh.js`、
@@ -139,13 +127,6 @@ node deprecated/tool-both/test/smoke.mjs
 
 ```
 dsh-plugins/
-├── command-setting/          # 输入区增强（Plan/Ask 按钮、# 会话引用、划词引用）
-│   ├── lib/index.js          #   Node 端：ask 装配 + ask-state 端点
-│   ├── lib/ask.js            #   ask（只问答）域：判定/提示段/切换通知/会话控制器
-│   ├── lib/routes.js
-│   ├── lib/client.js         #   浏览器端：Plan/Ask 按钮 + # 会话引用 + 划词引用
-│   ├── test/                 #   smoke / client-smoke
-│   └── package.json
 ├── todo-tab/                 # Todo 页签 + 待办约定（bundle 包）
 │   ├── lib/index.js          #   Node 端：GET /todo-tab/data 只读端点 + 约定注入
 │   ├── lib/memory.js         #   定位域：cwd → 工作区名 → TODO.md 路径 + 读盘
@@ -173,6 +154,7 @@ dsh-plugins/
 │   └── package.json
 ├── deprecated/               # 已弃用存档（README 顶部均带弃用横幅）
 │   ├── chat-rollback/        #   对话回滚：宿主端 lib 7 文件（快照/冲突/排除匹配/会话/路由）+ client.js + 3 个测试
+│   ├── command-setting/      #   输入区增强（Plan/Ask 按钮、# 会话引用、划词引用）
 │   └── arena-v2/  model-arena/  session-export/  temperature-inject/  tool-both/
 ├── tools/                    # 非插件：验证探针与调查脚本（见上一节）
 │   ├── temperature-p0/       #   temperature 是否生效（v1/v2 两轮）

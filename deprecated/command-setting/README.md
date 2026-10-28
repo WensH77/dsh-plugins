@@ -1,4 +1,6 @@
-# dsh-plugin-command-setting
+# dsh-plugin-command-setting（已弃用）
+
+> **⚠️ 已弃用（归档）**：本机已于 2026-10-28 卸载——`~/.dsh/profiles/web/cordis.patch.yml` 的 `command-setting` insert 段改为注释保留，profile 依赖经 `pnpm remove` 清理，node_modules 软链一并删除；源码移入 `deprecated/` 仅作存档，不再提供安装/更新指引。插件本身未见故障，归档是按使用者决定。以下内容保留原状，仅作历史参考。
 
 dsh web 输入区增强插件。名字保留历史 id（`command-setting`），但**0.9.0 起不再提供「命令隐藏」**——原「从 “+” / “/” 菜单隐藏指定命令」的功能已整体移除，原因见 [CHANGELOG.md](./CHANGELOG.md)。
 

@@ -2,6 +2,13 @@
 
 本文件记录 `dsh-plugin-command-setting` 的历次改动（由 git 提交历史整理）。安装、使用、原理、配置见 [README.md](./README.md)。
 
+## 已弃用（2026-10-28，无版本 bump）
+
+- **归档**：目录由 `command-setting/` 移入 `deprecated/command-setting/`，README 顶部加弃用横幅；根 README 的在用清单 / 安装指引 / 测试清单 / 仓库结构同步更新，`repository` 字段改为 `#path:deprecated/command-setting`。
+- **本机卸载**：`~/.dsh/profiles/web/cordis.patch.yml` 的 `command-setting` insert 段改为注释保留；profile 依赖经 `pnpm remove dsh-plugin-command-setting` 清理，node_modules 里残留的软链单独删除。HMR 即时生效，运行时条目数 217 → 216。
+- **未改行为、无版本 bump**：本次只有归档与配置改动，按 MEMORY「纯文档改动不 bump 版本」保留 `0.9.2`。
+- 残留（未清理）：`~/.dsh/command-setting-ask.json`、`~/.dsh/command-setting-hidden.json`。
+
 ## 0.9.2
 
 - **修复划词引用之后光标位置不对**：点击「引用」后引用块插进了草稿末尾，光标却不在引用块下方——实测（真实页面，Chromium）`document.activeElement` 是 composer 编辑器，但 `window.getSelection().rangeCount === 0`，DOM 里根本没有光标，用户接着输入时光标落回开头。
