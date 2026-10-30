@@ -1,0 +1,57 @@
+{
+  "name": "dsh-plugin-graceful-inject",
+  "version": "0.7.0",
+  "description": "优雅注入：两个可插拔的注入功能，各自有开关——resume（崩溃/被强杀后本轮被补记为 interrupted 的会话，恢复时自动投递「继续」）与 supervise（会话标题栏的秒表按钮，点击注入「不要停止你现在手头的事情，汇报当前任务进度」）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "license": "MIT",
+  "repository": "WensH77/dsh-plugins#path:graceful-inject",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.6-alpha.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-client-locale": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client-smoke.mjs"
+  }
+}
