@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0
+
+- **续跑不再需要先点开会话**：上次进程崩溃 / 被强杀 / 关闭超时退出时正在跑的那一轮，会在宿主启动后
+  被自动接管并续跑。插件在 `turn/start` 写运行标记 `<DSH_HOME>/graceful-inject/running/<sessionId>`、
+  `turn/end` 删除；进程正常退出也不清标记（留给下一次启动看）。启动约 2.5 秒后扫描标记，读磁盘日志
+  确认确实停在一轮中间（`hasOpenTurn`）后，用 `sessionController.resolveAgent(id)` 后台恢复 Agent，
+  再由既有的 `agent/created` 监听投递续跑消息——和用户点开会话走同一条入口，模型 / preset 组装不用
+  插件重做。
+- 启动扫描会跳过：已收尾（删标记）、已归档（删标记）、子代理会话（删标记）、本进程已有 Agent、
+  本进程写的标记（热重载）、以及标记里 pid 还活着（同一份 DSH_HOME 下另一个 dsh 进程正在跑）。
+  读日志失败保留标记、下次启动再试；会话已删除 / 格式迁移要求 / 日志损坏这类确定性失败删标记。
+  接管失败同样只对 `session/not-found` 删标记，`gateway/internal`、`agent-busy`、`writer-held`
+  等瞬态失败保留标记下次重试；删标记前比对 pid + at，避免扫描期间用户点开、新轮改写标记被误删。
+- 启动扫描挂在 `ctx.inject(['sessionController', 'sessionPersistence'])` 上（等宿主服务就绪再跑）；
+  子 Fiber 随插件卸载，cleanup 不再把 `ctx.inject` 的返回值当 disposer（真实返回 Fiber，不是函数）。
+- **续跑注入正文与监工共用来源前缀**：模型现在看到的是
+  `这条通知来自插件「优雅注入」（dsh-plugin-graceful-inject），继续`，而不是裸的「继续」；
+  两个功能共用一个 `NOTICE_PREFIX`，模型能把插件注入和用户手打区分开。
+- 插件在会话运行中被加载 / 热重载时，装配阶段会补记当前未收尾的会话（否则这一轮没有新的
+  `turn/start`，下一次重启会漏掉）。
+- 测试：宿主端新增运行标记读写、`hasOpenTurn` / `isProcessAlive` / `dshHomePath`、启动扫描的
+  接管与跳过面、热重载补记；`DSH_HOME` 指向临时目录，跑完清理。
+
 ## 0.7.0
 
 - 插件改名并扩为两个功能：`dsh-plugin-auto-resume` → `dsh-plugin-graceful-inject`，目录

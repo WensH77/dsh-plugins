@@ -12,7 +12,7 @@
 | **todo-tab** | [`todo-tab/`](todo-tab/README.md) | Todo 页签 + 待办约定：右侧栏新增只读「Todo」页签展示当前工作区的 `~/.dsh/memory/<工作区>/TODO.md`（路径按会话 cwd 末段推出，无写端点），标题栏入口优先用 DSH 原生文件预览打开；并把待办约定改成插件携带——每个 agent 的 prompt 上常驻「触发器 + 铁律」，完整规范做成 `todo-memory` 技能按需加载，骨架作为 `template/TODO.md` 随插件分发；记录与删除待办前先用 `ask_user_question` 征询用户（`记录`/`不记录`、`删除`/`先留着`） |
 | **context-xray** | [`context-xray/`](context-xray/README.md) | 上下文 X 光：注册 `context_xray` 工具，把会话上下文拆成块（系统提示词 / 各类注入 / 用户消息 / 工具结果 / 自己写进上下文的工具入参与回复正文），用各块关键词在 reasoning 里被提及的次数做归因代理——输出三口径来源占比（提及 / 体积 / 累计）、词汇重叠榜、时间分布、关键词归因力表，外加两张排查清单（未闭合的用户输入、回复里无出处的标识符）；另有离线入口 `tools/xray.mjs` 可直接读任意历史会话，`--json` 喂给别的程序 |
 | **dsh-version-check** | [`dsh-version-check/`](dsh-version-check/README.md) | dsh 版本状态灯：侧边栏品牌名下方显示已装 dsh 版本与更新状态（启动 + 每小时检测 `deepseek-harness` 最新发布），点击跑本地插件契约扫描 + 直连 LLM 逐版本分析——判断新版本会不会影响本机已装插件的运行期兼容性，给出可复制的升级命令、版本变更明细与扫描证据。**原名 plugin-market**：0.16.0 移除原「插件市场」的设置页 tab 与安装/更新/卸载功能，0.17.0 更名为 dsh-version-check |
-| **graceful-inject** | [`graceful-inject/`](graceful-inject/README.md) | 优雅注入：一个插件、两个可插拔的注入功能，各自有开关——**续跑**（`resume`，崩溃/被强杀/关闭超时后本轮被补记为 `interrupted` 的会话，恢复时自动投递「继续」）与**监工**（`supervise`，会话标题栏的秒表按钮，点击经 `agent.steer` 注入「不要停止你现在手头的事情，汇报当前任务进度」）。开关写在 profile 的 `cordis.patch.yml`；关掉 `supervise` 时宿主不注册端点、浏览器端不画按钮。**原 auto-resume**：0.7.0 改名并扩为两功能 |
+| **graceful-inject** | [`graceful-inject/`](graceful-inject/README.md) | 优雅注入：一个插件、两个可插拔的注入功能，各自有开关——**续跑**（`resume`，崩溃/被强杀/关闭超时后本轮被补记为 `interrupted` 的会话自动投递「这条通知来自插件…，继续」；宿主启动时扫描上次运行中的会话并后台接管，不需要先点开）与**监工**（`supervise`，会话标题栏的秒表按钮，点击经 `agent.steer` 注入「不要停止你现在手头的事情，汇报当前任务进度」）。开关写在 profile 的 `cordis.patch.yml`；关掉 `supervise` 时宿主不注册端点、浏览器端不画按钮。**原 auto-resume**：0.7.0 改名并扩为两功能，0.8.0 支持启动时自动接管 |
 
 ## 已弃用存档（`deprecated/`）
 

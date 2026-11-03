@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Graceful inject",
-    "description": "Two pluggable injection features, each with its own switch: resume (after DSH exits mid-turn — crash, kill, or shutdown timeout — the interrupted session resumes automatically with a marked \"continue\") and supervise (a stopwatch button in the session header that injects \"don't stop what you're doing; report the current progress\")."
+    "description": "Two pluggable injection features, each with its own switch: resume (after DSH exits mid-turn — crash, kill, or shutdown timeout — the interrupted session resumes automatically with a marked \"continue\"; on host startup the plugin also scans sessions that were running when the previous process exited and takes them over in the background, no click required) and supervise (a stopwatch button in the session header that injects \"don't stop what you're doing; report the current progress\")."
   }
 }

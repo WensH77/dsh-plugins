@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-graceful-inject",
-  "version": "0.7.0",
-  "description": "优雅注入：两个可插拔的注入功能，各自有开关——resume（崩溃/被强杀后本轮被补记为 interrupted 的会话，恢复时自动投递「继续」）与 supervise（会话标题栏的秒表按钮，点击注入「不要停止你现在手头的事情，汇报当前任务进度」）",
+  "version": "0.8.0",
+  "description": "优雅注入：两个可插拔的注入功能，各自有开关——resume（崩溃/被强杀/关闭超时后本轮被补记为 interrupted 的会话自动续跑；宿主启动时扫描上次运行中的会话并后台接管，不需要先点开）与 supervise（会话标题栏的秒表按钮，点击注入「不要停止你现在手头的事情，汇报当前任务进度」）",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

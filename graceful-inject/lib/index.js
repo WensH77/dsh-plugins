@@ -4,14 +4,16 @@
  * 「优雅注入」是一个插件、两个**可插拔**的注入功能，各自有独立开关：
  *
  *   - `resume`（续跑）：DSH 因崩溃/被强杀/关闭超时退出后，本轮被补记为 `interrupted`
- *     的会话在恢复时自动投递一条带来源标记的「继续」。默认开。
+ *     的会话自动投递一条带来源标记的「继续」。默认开。触发面两个：会话被打开时，
+ *     以及宿主启动时扫描上次运行中的会话并在后台接管（不需要先点开它）。
  *   - `supervise`（监工）：会话标题栏的秒表按钮，点击后往当前会话注入
  *     「不要停止你现在手头的事情，汇报当前任务进度」。默认开。
  *
  * 开关写在 profile 的 `cordis.patch.yml` 里（见 README「配置」），关掉的模块既不注册
  * 监听也不注册端点；浏览器端按钮读 `GET /graceful-inject/state` 决定画不画。
  *
- * 两个功能都只做「投递一条带来源的消息」这一件事，不碰会话内容、不写文件。
+ * 两个功能都只做「投递一条带来源的消息」这一件事，不碰会话内容；续跑例外地在
+ * `<DSH_HOME>/graceful-inject/running/` 里维护运行标记（见 lib/resume.js）。
  * 具体实现见 lib/resume.js 与 lib/supervise.js。
  */
 import z from '@deepseek-ai/schemastery';
@@ -73,7 +75,7 @@ function apply(ctx, config) {
   if (options.resume) {
     ctx.effect(() => mountResume(ctx), 'graceful-inject: resume listener');
   } else {
-    ctx.logger.info('graceful-inject: 功能一 resume 已关闭（不监听 agent/created）');
+    ctx.logger.info('graceful-inject: 功能一 resume 已关闭（不监听 agent/created / session/event，不维护运行标记）');
   }
 }
 

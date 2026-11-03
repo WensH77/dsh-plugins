@@ -4,7 +4,7 @@
 
 | 功能 | 开关 | 做什么 |
 |---|---|---|
-| **续跑**（resume） | `resume` | DSH 因崩溃、被强杀或关闭超时退出后，本轮被补记为 `interrupted` 的会话在恢复时自动投递一条「继续」 |
+| **续跑**（resume） | `resume` | DSH 因崩溃、被强杀或关闭超时退出后，本轮被补记为 `interrupted` 的会话自动投递一条「这条通知来自插件「优雅注入」…，继续」；宿主启动时还会扫描上次运行中的会话并在后台接管，**不需要先点开那个会话** |
 | **监工**（supervise） | `supervise` | 会话标题栏出现一个秒表图标，点一下往当前会话注入「这条通知来自插件「优雅注入」…，不要停止你现在手头的事情，汇报当前任务进度」 |
 
 两者共用一条通道：宿主往会话里投递一条**带自定义来源**的消息，聊天里能看出它不是用户
@@ -63,9 +63,11 @@
 
 ### 触发条件
 
-只认一种情况：`turn/end` 的 reason 是 `interrupted`。
+- **会话被打开/恢复时**：只认 `turn/end` 的 reason 是 `interrupted`。
+- **宿主启动时**：插件自己的运行标记显示上次进程退出时这个会话正在跑一轮，且磁盘日志里确实有
+  `turn/start` 没有配对的 `turn/end`。
 
-这个 reason 只在两种时候出现——恢复一个未闭合的轮次（agent-loop resume 补记），或冷读
+`interrupted` 这个 reason 只在两种时候出现——恢复一个未闭合的轮次（agent-loop resume 补记），或冷读
 日志时由 session-query 合成。运行中的 Agent 循环永远不会现场发它。所以抓到一条
 `interrupted` 就等于抓到了「刚被修复的中断轮次」，历史里早已修复过的中断不会重复触发。
 
@@ -74,24 +76,37 @@
 
 ### 工作方式
 
-1. 插件监听 `agent/created`（每次打开/恢复会话都会触发）。
-2. 直接读该会话在内存里的事件（`session.ownEvents()`），取最后一条 `turn/end` 的 reason。
-3. 只有 reason 是 `interrupted` 时才投递一条消息：
+1. 插件在每一轮开始/结束时维护一份运行标记：`<DSH_HOME>/graceful-inject/running/<sessionId>`，
+   `turn/start` 写，`turn/end` 删。内容 `{ pid, at }`，写入用「临时文件 + rename」，崩溃时不会留下半个 JSON。
+2. **宿主启动**约 2.5 秒后（等 `sessionController` / `sessionPersistence` 装配完）扫描这些标记：
+   - 读该会话的磁盘日志，只有确实停在一轮中间（有 `turn/start` 没有 `turn/end`）才接管；
+   - 用 `sessionController.resolveAgent(id)` 后台恢复 Agent——和用户点开会话走同一条入口，
+     模型 / preset 的组装不用插件重做；随后 `agent/created` 监听投递续跑消息；
+   - 已收尾的标记直接删掉；删之前会比对标记内容（pid + at），避免扫描读日志的间隙里用户
+     刚好点开、新轮把标记改写了却被误删。已归档、子代理、以及标记里的 pid 还活着（同一份
+     DSH_HOME 下另一个 dsh 进程正在跑它）的会话跳过——前者防误叫醒，后者防跨进程抢会话。
+3. **会话被打开/恢复时**（`agent/created`）：直接读该会话在内存里的事件（`session.ownEvents()`），
+   取最后一条 `turn/end` 的 reason。
+4. 只有 reason 是 `interrupted` 时才投递一条消息，正文和监工共用同一句来源说明：
 
    ```js
    agent.followup(createUserMessage({
-     content: [{ type: 'text', text: '继续' }],
-     source: { kind: 'graceful-inject', form: 'notice', summary: '继续' },
+     content: [{ type: 'text', text: '这条通知来自插件「优雅注入」（dsh-plugin-graceful-inject），继续' }],
+     source: { kind: 'graceful-inject', form: 'notice', summary: '…' },
    }))
    ```
 
-4. 投递后 flush 落盘。Agent 已经在跑就跳过；同一条会话在一个进程里只投递一次。
+5. 投递后 flush 落盘。Agent 已经在跑就跳过；同一条会话在一个进程里只投递一次。
 
-### 为什么不用 session/event
+标记在进程正常退出时**也不清**——它本来就是写给下一次启动看的；轮次正常收尾（`turn/end`）才会删。
+插件在会话运行中被加载 / 热重载时没有新的 `turn/start`，所以装配时会补记当前未收尾的会话。
 
-崩溃遗留轮次的收尾不走 `Session.append`：agent-loop 在 resume 时直接把 `turn/end` 写进
-持久化文件，再以 seed 形式建进 Session；seed 不发 `session/event`。所以在事件流上永远抓不到
-这条 `interrupted`。反过来在 `agent/created` 时读内存日志才是可靠的。
+### 为什么续跑判定不放在 session/event 里
+
+`session/event` 只用来维护运行标记（`turn/start` / `turn/end`）。崩溃遗留轮次的收尾不走
+`Session.append`：agent-loop 在 resume 时直接把 `turn/end` 写进持久化文件，再以 seed 形式建进
+Session；seed 不发 `session/event`。所以在事件流上永远抓不到 `interrupted`，续跑判定得反过来在
+`agent/created` 时读内存日志。
 
 判定是幂等的：续跑本身会开出新的一轮，把「最后一条 `turn/end`」推进到 `completed`，下次
 恢复就不会再触发。
@@ -155,7 +170,17 @@ dsh plugin --profile web add ./graceful-inject
 
 ## 边界
 
-- **续跑不会后台批量拉起历史会话**。只有被恢复（打开）的那个会话会续跑；没打开的不动。
+- **启动时只接管「上次进程退出时正在跑」的会话**：插件在 `turn/start` 写运行标记、`turn/end` 删除，
+  启动时按标记逐个校验磁盘日志。正常收尾的会话、没在跑的会话不会因为启动就被叫醒——不会批量拉起
+  历史会话。
+- 会话被打开时才走 `interrupted` 判定；没被标记覆盖的旧中断会话（插件装上之前就断掉的）仍按老路径：
+  点开时续跑。
+- 启动扫描在宿主装配完成约 2.5 秒后跑一次，不轮询；标记目录 `<DSH_HOME>/graceful-inject/running/`
+  每个会话一个文件，文件名就是会话 id。
+- 接管失败时，只有「会话真的不存在」（`session/not-found`）才删标记；`gateway/internal`、
+  `agent-busy`、`writer-held` 等瞬态失败保留标记，下次启动再试。
+- 同一份 `DSH_HOME` 下多个 dsh 进程并存时，标记里 pid 还活着会被跳过，避免抢别人正在跑的会话；
+  pid 判断是 best-effort（新进程恰好复用了旧标记的 pid 时，用标记时间早于本进程启动来区分）。
 - 同一进程内每个会话只续跑一次。进程再次崩溃重启后，新产生的中断会再续一次。
 - 续跑投递失败只记一条 warn，不重试，避免和崩溃循环互相喂饭。
 - 两条注入文本都固定为中文。要按界面语言区分（英文发 `continue` / `report progress`）
@@ -175,10 +200,12 @@ npm test
 # = node test/smoke.mjs && node test/client-smoke.mjs
 ```
 
-- `test/smoke.mjs`：宿主端，用假 ctx 驱动 `createResumeController` 与两个 handler，覆盖
-  turn/end 读取、恢复判定、运行中跳过、去重、超时放弃、方法/会话 id/无 Agent/不可信页面的
-  拒绝面、`connection.isTrusted` 与 loopback 回落、state 快照（含 HEAD）、两种消息的正文与
-  来源标记、Config 默认值，以及 `apply` 的装配面（四个开关组合各注册哪些端点与监听）。
+- `test/smoke.mjs`：宿主端，用假 ctx 驱动 `createResumeController`、启动扫描与两个 handler，覆盖
+  turn/end 读取、恢复判定、运行中跳过、去重、超时放弃、运行标记读写（临时 `DSH_HOME` 隔离）、
+  启动扫描的接管/跳过面（未收尾、已收尾、已归档、子代理、本进程/活进程标记、读日志失败、接管失败）、
+  方法/会话 id/无 Agent/不可信页面的拒绝面、`connection.isTrusted` 与 loopback 回落、state 快照
+  （含 HEAD）、两种消息的正文与来源标记（含共用来源前缀）、Config 默认值，以及 `apply` 的装配面
+  （四个开关组合各注册哪些端点与监听，含热重载补记运行标记）。
 - `test/client-smoke.mjs`：浏览器端，在 vm 沙箱里加载工厂包装的 `lib/client.js`。除了槽位
   注册、`sessionId` 注入、端点构造、失败文案映射、开关探测（含失败降级、不缓存），还用
   一个最小 hooks 运行时**真的渲染组件**：开关放行后画按钮、点击发一次 POST、成功变绿、
@@ -187,7 +214,7 @@ npm test
 ## 文件
 
 - `lib/index.js`：装配两个模块 + `Config` 开关。
-- `lib/resume.js`：功能一（事件监听 + followup 投递）。
+- `lib/resume.js`：功能一（事件监听 + 运行标记 + 启动扫描 + followup 投递）。
 - `lib/supervise.js`：功能二（消息构造 + 两个端点 handler）。
 - `lib/source.js`：两个功能共用的 `source.kind = 'graceful-inject'`。
 - `lib/client.js`：浏览器端秒表按钮。
