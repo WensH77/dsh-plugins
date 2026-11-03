@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.1
+
+- **修：正常重启（Ctrl-C / SIGTERM）后不触发续跑**。dsh 收到信号后先 dispose 整棵 fiber 树
+  （`profile-boot` 里 `createProcessShutdown(dispose)`），agent 会给正在跑的轮次补一条
+  `turn/end`，reason 是 `{ kind: 'aborted', reason: { kind: 'disposed' } }`，然后才退出。
+  旧版插件把这个收尾当成「这一轮结束了」：`session/event` 监听器删掉运行标记，启动扫描
+  又要求磁盘日志停在未闭合轮次上（`hasOpenTurn`），于是正常重启既没有标记也没有未闭合轮次，
+  什么都不做——只有被 `kill -9` 的崩溃才会续跑。
+- 新增 `isDisposedTurnEnd()` / `lastTurnEndedByDispose()`：把 dispose 补的收尾和
+  「跑完了」「用户按了停止」区分开。`session/event` 收到这种 `turn/end` 时**保留**运行标记；
+  启动扫描接受两种「没跑完」的形态（未闭合轮次、disposed 收尾）。
+- 启动扫描接管成功后**直接向控制器登记投递**，不再依赖 `agent/created` 的 `interrupted` 判定：
+  disposed 收尾的会话在 resume 时不会补 `interrupted` 收尾，等 `agent/created` 就是干等。
+  已被用户提前点开的会话也补这一条（未闭合轮次的会话仍由 `agent/created` 接管，不重复）。
+- 用户主动停止（`aborted` 但 reason 不是 `disposed`）、正常完成（`completed`）仍然不续跑。
+
 ## 0.8.0
 
 - **续跑不再需要先点开会话**：上次进程崩溃 / 被强杀 / 关闭超时退出时正在跑的那一轮，会在宿主启动后

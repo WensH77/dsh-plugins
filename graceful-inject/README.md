@@ -4,7 +4,7 @@
 
 | 功能 | 开关 | 做什么 |
 |---|---|---|
-| **续跑**（resume） | `resume` | DSH 因崩溃、被强杀或关闭超时退出后，本轮被补记为 `interrupted` 的会话自动投递一条「这条通知来自插件「优雅注入」…，继续」；宿主启动时还会扫描上次运行中的会话并在后台接管，**不需要先点开那个会话** |
+| **续跑**（resume） | `resume` | 上一轮没跑完的会话在宿主启动后自动投递一条「这条通知来自插件「优雅注入」…，继续」。两种没跑完的形态都认：被强杀 / 崩溃留下的未闭合轮次，以及正常重启（Ctrl-C / SIGTERM）时宿主 dispose 补的 `aborted/disposed` 收尾。宿主启动时会后台接管这些会话，**不需要先点开那个会话** |
 | **监工**（supervise） | `supervise` | 会话标题栏出现一个秒表图标，点一下往当前会话注入「这条通知来自插件「优雅注入」…，不要停止你现在手头的事情，汇报当前任务进度」 |
 
 两者共用一条通道：宿主往会话里投递一条**带自定义来源**的消息，聊天里能看出它不是用户
@@ -78,16 +78,21 @@
 
 1. 插件在每一轮开始/结束时维护一份运行标记：`<DSH_HOME>/graceful-inject/running/<sessionId>`，
    `turn/start` 写，`turn/end` 删。内容 `{ pid, at }`，写入用「临时文件 + rename」，崩溃时不会留下半个 JSON。
+   例外：`turn/end` 的 reason 是 `{ kind: 'aborted', reason: { kind: 'disposed' } }` 时**不删**——
+   那是宿主退出时 dispose 整棵树补的收尾，不是「这一轮跑完了」（见下节）。
 2. **宿主启动**约 2.5 秒后（等 `sessionController` / `sessionPersistence` 装配完）扫描这些标记：
-   - 读该会话的磁盘日志，只有确实停在一轮中间（有 `turn/start` 没有 `turn/end`）才接管；
+   - 读该会话的磁盘日志，两种「没跑完」都接管：有 `turn/start` 没有 `turn/end`（被强杀 / 崩溃），
+     或最后一条 `turn/end` 是 dispose 补的收尾（正常重启）；
    - 用 `sessionController.resolveAgent(id)` 后台恢复 Agent——和用户点开会话走同一条入口，
-     模型 / preset 的组装不用插件重做；随后 `agent/created` 监听投递续跑消息；
+     模型 / preset 的组装不用插件重做；接管成功后直接向续跑控制器登记投递，不再等
+     `agent/created`（disposed 收尾的会话在 resume 时不会补 `interrupted`，等不到）；
    - 已收尾的标记直接删掉；删之前会比对标记内容（pid + at），避免扫描读日志的间隙里用户
      刚好点开、新轮把标记改写了却被误删。已归档、子代理、以及标记里的 pid 还活着（同一份
      DSH_HOME 下另一个 dsh 进程正在跑它）的会话跳过——前者防误叫醒，后者防跨进程抢会话。
 3. **会话被打开/恢复时**（`agent/created`）：直接读该会话在内存里的事件（`session.ownEvents()`），
    取最后一条 `turn/end` 的 reason。
-4. 只有 reason 是 `interrupted` 时才投递一条消息，正文和监工共用同一句来源说明：
+4. 只有 reason 是 `interrupted` 时才投递一条消息（`agent/created` 这条路；启动扫描那条路还认
+   `aborted/disposed`，见上节），正文和监工共用同一句来源说明：
 
    ```js
    agent.followup(createUserMessage({
@@ -100,6 +105,26 @@
 
 标记在进程正常退出时**也不清**——它本来就是写给下一次启动看的；轮次正常收尾（`turn/end`）才会删。
 插件在会话运行中被加载 / 热重载时没有新的 `turn/start`，所以装配时会补记当前未收尾的会话。
+
+### 正常重启为什么也算「没跑完」
+
+dsh 收到 `SIGINT` / `SIGTERM` 后不是直接 `exit`：它先 dispose 整棵 fiber 树（`profile-boot` 里的
+`createProcessShutdown(dispose)`，信号处理走 `interrupt()`），agent 随之给正在跑的轮次补一条
+`turn/end`，reason 是 `{ kind: 'aborted', reason: { kind: 'disposed' } }`，写进磁盘后才退出。
+
+所以**正常重启不会留下未闭合的轮次**。0.8.0 及以前只认未闭合轮次（和 `interrupted` 判据），
+Ctrl-C 重启后启动扫描判定「上次没在跑」，什么都不做；只有 `kill -9` 那种硬杀才续跑。
+0.8.1 起把 dispose 收尾也当成「这一轮没跑完」：标记留到下一次启动，扫描据此接管并投递。
+
+区分三种收尾：
+
+| 收尾 | 谁写的 | 重启后 |
+|---|---|---|
+| `completed` | 轮次正常跑完 | 不续跑 |
+| `aborted` + `user` / `parent` | 用户按停止 / 父代理取消 | 不续跑 |
+| `aborted` + `disposed` | 宿主拆整棵树（信号退出、配置热重载） | 续跑 |
+
+配置热重载也会 dispose 一次，但它在同一个进程里紧接着会重建 Agent，标记被新轮改写，不会误投。
 
 ### 为什么续跑判定不放在 session/event 里
 
@@ -182,6 +207,9 @@ dsh plugin --profile web add ./graceful-inject
 - 同一份 `DSH_HOME` 下多个 dsh 进程并存时，标记里 pid 还活着会被跳过，避免抢别人正在跑的会话；
   pid 判断是 best-effort（新进程恰好复用了旧标记的 pid 时，用标记时间早于本进程启动来区分）。
 - 同一进程内每个会话只续跑一次。进程再次崩溃重启后，新产生的中断会再续一次。
+- 配置热重载（改 `cordis.patch.yml`、或插件源码被 HMR 重载）也会 dispose 一次 Agent，那一轮被记成
+  `aborted/disposed`。同一个进程里紧接着会重建 Agent、新轮改写标记，所以不会在下次启动被误投；
+  但如果那一轮之后一直没有新轮，标记会留到下一次启动，届时补一条续跑。
 - 续跑投递失败只记一条 warn，不重试，避免和崩溃循环互相喂饭。
 - 两条注入文本都固定为中文。要按界面语言区分（英文发 `continue` / `report progress`）
   需要改宿主侧来源，目前没做。
@@ -202,10 +230,11 @@ npm test
 
 - `test/smoke.mjs`：宿主端，用假 ctx 驱动 `createResumeController`、启动扫描与两个 handler，覆盖
   turn/end 读取、恢复判定、运行中跳过、去重、超时放弃、运行标记读写（临时 `DSH_HOME` 隔离）、
-  启动扫描的接管/跳过面（未收尾、已收尾、已归档、子代理、本进程/活进程标记、读日志失败、接管失败）、
+  启动扫描的接管/跳过面（未收尾、disposed 收尾、已收尾、已归档、子代理、本进程/活进程标记、
+  读日志失败、接管失败，以及「会话已被用户提前点开」时补投）、
   方法/会话 id/无 Agent/不可信页面的拒绝面、`connection.isTrusted` 与 loopback 回落、state 快照
   （含 HEAD）、两种消息的正文与来源标记（含共用来源前缀）、Config 默认值，以及 `apply` 的装配面
-  （四个开关组合各注册哪些端点与监听，含热重载补记运行标记）。
+  （四个开关组合各注册哪些端点与监听，含热重载补记运行标记、disposed 收尾保留标记）。
 - `test/client-smoke.mjs`：浏览器端，在 vm 沙箱里加载工厂包装的 `lib/client.js`。除了槽位
   注册、`sessionId` 注入、端点构造、失败文案映射、开关探测（含失败降级、不缓存），还用
   一个最小 hooks 运行时**真的渲染组件**：开关放行后画按钮、点击发一次 POST、成功变绿、

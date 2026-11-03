@@ -1,21 +1,22 @@
 /**
  * 优雅注入 · 功能一：续跑（resume）。
  *
- * 崩溃、被强杀或关闭超时退出后，本轮被补记为 `interrupted` 的那个会话，在**恢复时**
- * 自动接着跑：宿主投递一条带来源标记的「继续」。
+ * 崩溃、被强杀，或**正常重启**（Ctrl-C / SIGTERM，宿主先 dispose 整棵树再退出）之后，
+ * 那一轮没跑完的会话在恢复时自动接着跑：宿主投递一条带来源标记的「继续」。
  *
  * 两个触发面：
  *
  *   1. 会话被打开/恢复时（`agent/created`）：读该会话在内存里的事件（`ownEvents()`），
  *      看最后一条 `turn/end` 的 reason。`interrupted` 只会在恢复未闭合轮次时出现——
- *      运行中的 Agent 循环从不现场发它——所以这个判断天然幂等：续跑本身会开出新的
- *      一轮，把「最后一条 turn/end」推进到 completed，下次恢复就不会再触发。
+ *      运行中的 Agent 循环从不现场发它——所以这个判断天然幂等。
  *
- *   2. 宿主启动时：上次进程崩溃/被强杀时正在跑的那一轮会留在磁盘上（有 `turn/start`
- *      没有 `turn/end`）。插件在每一轮开始/结束时维护一份运行标记
+ *   2. 宿主启动时：插件在每一轮开始/结束时维护一份运行标记
  *      （`<DSH_HOME>/graceful-inject/running/<sessionId>`），启动后扫描这些标记，
- *      读磁盘日志确认确实停在一轮中间，再交给 `sessionController.resolveAgent`
- *      把会话后台接管起来——用户不需要先点开那个会话。
+ *      读磁盘日志确认上一轮确实没跑完，再交给 `sessionController.resolveAgent`
+ *      把会话后台接管起来并登记投递——用户不需要先点开那个会话。
+ *      「没跑完」有两种形态：被强杀留下的未闭合轮次，以及正常重启时宿主 dispose
+ *      补的 `aborted / disposed` 收尾（见 {@link isDisposedTurnEnd}）。后者是关键：
+ *      正常重启不会留下未闭合的轮次，只认前者的话重启后永远不会续跑。
  *
  * 为什么不在 `session/event` 里判断中断：崩溃遗留轮次的收尾是 agent-loop 在 resume 时
  * 直接追加到持久化文件、并以 seed 形式建进 Session 的（见 dsh-agent-loop 的 resume 流程），
@@ -248,6 +249,50 @@ function hasOpenTurn(events) {
   return open;
 }
 
+/**
+ * 单条 `turn/end` 是不是「宿主拆整棵树」时补的收尾。
+ *
+ * dsh 收到 SIGINT / SIGTERM 后先 dispose 整棵 fiber 树（`dsh` 的 profile-boot 里
+ * `createProcessShutdown(dispose)`，信号处理走 `interrupt()`），agent 随之给正在跑的
+ * 这一轮补一条 `turn/end`，reason 形如
+ * `{ kind: 'aborted', reason: { kind: 'disposed' } }`。
+ *
+ * 也就是说**正常重启（Ctrl-C / kill TERM）不会留下「有 turn/start 没有 turn/end」的
+ * 日志**，只会留下这条 disposed 收尾。必须把它和「跑完了」「用户按了停止」区分开，
+ * 否则重启后既没有未闭合的轮次、也没有 `interrupted` 判据，优雅注入永远不触发。
+ *
+ * @param event - 一条事件。
+ * @returns 是否是 dispose 补的收尾。
+ */
+function isDisposedTurnEnd(event) {
+  const reason = event?.data?.reason;
+  return reason?.kind === 'aborted' && reason?.reason?.kind === 'disposed';
+}
+
+/**
+ * 事件序列的最后一轮是不是以 dispose 收尾（后面没有再开新轮）。
+ *
+ * 与 {@link hasOpenTurn} 互补：被强杀留下「未闭合的轮次」，正常重启留下「disposed 收尾」，
+ * 两者都表示「这一轮没跑完，进程就没了」，都该续跑。
+ *
+ * @param events - 事件数组（磁盘日志或 `ownEvents()`）。
+ * @returns 最后一轮是否以 dispose 收尾。
+ */
+function lastTurnEndedByDispose(events) {
+  if (!Array.isArray(events)) return false;
+  let open = false;
+  let last;
+  for (const event of events) {
+    if (event?.type === 'turn/start') open = true;
+    else if (event?.type === 'turn/end') {
+      open = false;
+      last = event;
+    }
+  }
+  if (open || last === undefined) return false;
+  return isDisposedTurnEnd(last);
+}
+
 /** pid 是否还活着。拿不到权限（EPERM）也算活着；0/非整数当死进程。 */
 function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -376,17 +421,21 @@ async function readStoredLog(persistence, sessionId) {
 /**
  * 启动扫描：处理上次进程留下的运行标记。
  *
- * 每个标记都要过一遍磁盘日志：只有确实停在 `turn/start` 之后（没有 `turn/end`）的会话才
- * 交给宿主接管。已经收尾的标记直接删掉，避免每次启动都重新检查。
+ * 每个标记都要过一遍磁盘日志：上一轮没跑完的才交给宿主接管，其余标记直接删掉，避免每次
+ * 启动都重新检查。「没跑完」有两种形态，见 {@link hasOpenTurn} 与 {@link lastTurnEndedByDispose}：
+ *   - 被强杀 / 崩溃：日志停在 `turn/start` 之后，没有配对的 `turn/end`；
+ *   - 正常重启（Ctrl-C / SIGTERM）：宿主 dispose 整棵树，给这一轮补了 disposed 收尾。
  *
  * 跳过的情况：
- *   - 本进程已经有同名 Agent（可能是客户端刚把它打开，或插件热重载）；
  *   - 标记是本进程本轮写的（插件热重载；pid 相同但时间早于本进程启动的，按 pid 复用处理）；
  *   - 写标记的 pid 还活着（同一份 DSH_HOME 下另一个 dsh 进程正在跑它）；
  *   - 会话已归档（用户明确收进归档，不该被叫醒）。
  *
+ * 本进程已经有同名 Agent（客户端在扫描前就把它打开了）时不重复交给宿主接管，但 disposed
+ * 收尾的会话仍要补登记投递——那种会话不会再出现 `interrupted`，`agent/created` 不会接它。
+ *
  * @param ctx - 宿主上下文。
- * @param controller - 续跑控制器（这里不直接用；投递仍由 `agent/created` 触发）。
+ * @param controller - 续跑控制器；接管成功的会话直接在这里登记投递（见下）。
  * @param markers - {@link createMarkerStore} 的返回值。
  * @returns `{ scanned, resumed }`：扫描了几个标记、接管了几个会话。
  */
@@ -403,7 +452,6 @@ async function scanLeftoverMarkers(ctx, controller, markers) {
   const resumed = [];
   for (const entry of entries) {
     const sessionId = entry.sessionId;
-    if (ctx.agents.get(sessionId) !== undefined) continue;
     // 本进程本轮写的标记（热重载）跳过；同一个 pid 但早于本进程启动的，是 pid 复用，按上次进程处理。
     const writtenByThisRun = entry.pid === process.pid && (entry.at === 0 || entry.at >= processStartedAt());
     if (writtenByThisRun) continue;
@@ -427,8 +475,18 @@ async function scanLeftoverMarkers(ctx, controller, markers) {
       ctx.logger.warn('graceful-inject: 启动扫描读不到会话 ' + sessionId + ' 的日志（保留标记）: ' + String(error?.message ?? error));
       continue;
     }
-    if (stored.header?.origin === 'subagent' || stored.header?.cwd === undefined || !hasOpenTurn(stored.events)) {
+    // 上一轮没跑完的两种形态：被强杀留下未闭合的轮次；正常重启（dispose）留下 disposed 收尾。
+    const openTurn = hasOpenTurn(stored.events);
+    const disposedTurn = lastTurnEndedByDispose(stored.events);
+    if (stored.header?.origin === 'subagent' || stored.header?.cwd === undefined || (!openTurn && !disposedTurn)) {
       markers.unmarkIfUnchanged(entry);
+      continue;
+    }
+    // 这个进程里已经有人把它打开了（用户在扫描前点开了会话）：
+    // 未闭合的轮次由宿主 resume 补 interrupted、再由 `agent/created` 接管；
+    // disposed 收尾不会再补 interrupted，这里补登记。
+    if (ctx.agents.get(sessionId) !== undefined) {
+      if (disposedTurn) controller.arm(sessionId);
       continue;
     }
     try {
@@ -444,6 +502,9 @@ async function scanLeftoverMarkers(ctx, controller, markers) {
       // 标记先留着：续跑会开新的一轮，等它的 turn/end 再删；万一这中间又崩了，
       // 下一次启动还能凭这个标记接着接管。
       resumed.push(sessionId);
+      // 未闭合的轮次：宿主 resume 时补 interrupted 收尾，`agent/created` 会登记投递，这里重复
+      // 登记也无害（arm 去重）。disposed 收尾的会话不会再补 interrupted，必须靠这里登记。
+      controller.arm(sessionId);
       ctx.logger.info('graceful-inject: 启动扫描已接管上次运行中的会话 ' + sessionId + '，等待自动续跑');
     } catch (error) {
       // 抛错同样按瞬态处理：保留标记，下次启动再试。
@@ -479,7 +540,11 @@ function mountResume(ctx) {
     try {
       if (session?.header?.origin === 'subagent') return;
       if (event?.type === 'turn/start') markers.mark(session.id);
-      else if (event?.type === 'turn/end') markers.unmark(session.id);
+      else if (event?.type === 'turn/end') {
+        // dispose 补的收尾不是「这一轮结束了」，而是「进程正在退出」：标记必须留着，
+        // 否则重启后启动扫描看不到它，正常重启就永远不续跑。
+        if (!isDisposedTurnEnd(event)) markers.unmark(session.id);
+      }
     } catch (error) {
       ctx.logger.warn('graceful-inject: 运行标记更新失败（不影响当前轮次）: ' + String(error?.message ?? error));
     }
@@ -527,8 +592,10 @@ export {
   createResumeController,
   dshHomePath,
   hasOpenTurn,
+  isDisposedTurnEnd,
   isProcessAlive,
   lastTurnEndReason,
+  lastTurnEndedByDispose,
   MARKER_DIR,
   markerDirectory,
   mountResume,

@@ -20,8 +20,10 @@ import {
   createResumeController,
   dshHomePath,
   hasOpenTurn,
+  isDisposedTurnEnd,
   isProcessAlive,
   lastTurnEndReason,
+  lastTurnEndedByDispose,
   MARKER_DIR,
   markerDirectory,
   scanLeftoverMarkers,
@@ -98,6 +100,8 @@ function drain(timers, rounds = 50) {
 /** 事件构造简写。 */
 const start = (turn) => ({ type: 'turn/start', data: { turn } });
 const end = (turn, kind) => ({ type: 'turn/end', data: { turn, reason: { kind } } });
+/** 正常重启时宿主 dispose 整棵树给这一轮补的收尾。 */
+const endDisposed = (turn) => ({ type: 'turn/end', data: { turn, reason: { kind: 'aborted', reason: { kind: 'disposed' } } } });
 
 /** 假 session：带上要断言的事件序列。 */
 function makeSession(events, header = {}) {
@@ -272,6 +276,13 @@ function makeAgent({ events = [], header = {}, status = 'idle', seen } = {}) {
   check('收尾后又开一轮 → true', hasOpenTurn([start(1), end(1, 'interrupted'), start(2)]) === true);
   check('空日志 → false', hasOpenTurn([]) === false);
   check('非数组 → false', hasOpenTurn(undefined) === false);
+  check('单条 disposed 收尾识别', isDisposedTurnEnd(endDisposed(1)) === true && isDisposedTurnEnd(end(1, 'aborted')) === false && isDisposedTurnEnd(end(1, 'completed')) === false);
+  check('disposed 收尾不是未闭合轮次', hasOpenTurn([start(1), endDisposed(1)]) === false);
+  check('最后以 disposed 收尾 → true', lastTurnEndedByDispose([start(1), endDisposed(1)]) === true);
+  check('最后以 completed 收尾 → false', lastTurnEndedByDispose([start(1), end(1, 'completed')]) === false);
+  check('最后以用户停止收尾 → false', lastTurnEndedByDispose([start(1), end(1, 'aborted')]) === false);
+  check('disposed 之后又开新轮 → false', lastTurnEndedByDispose([start(1), endDisposed(1), start(2)]) === false);
+  check('空日志/非数组的 disposed 判定 → false', lastTurnEndedByDispose([]) === false && lastTurnEndedByDispose(undefined) === false);
   check('当前 pid 活着', isProcessAlive(process.pid) === true);
   check('父进程 pid 活着', isProcessAlive(process.ppid) === true);
   check('pid 0 当死进程', isProcessAlive(0) === false);
@@ -345,12 +356,13 @@ function fakePersistence(logs) {
   };
 }
 
-/** 假 sessionController：记录接管了哪些会话。 */
-function fakeController(resolved, error) {
+/** 假 sessionController：记录接管了哪些会话；`onAgent` 用来把 resolveAgent 建出的 Agent 放进 agents 表。 */
+function fakeController(resolved, error, onAgent) {
   return {
     resolveAgent: async (id) => {
       resolved.push(id);
-      return error === undefined ? { agent: { id } } : { error };
+      if (error !== undefined) return { error };
+      return { agent: onAgent?.(id) ?? { id } };
     }
   };
 }
@@ -381,6 +393,58 @@ const DEAD_PID = 2147483647;
   });
   const result = await scanLeftoverMarkers(ctx, createResumeController(ctx), createMarkerStore(ctx, directory));
   check('启动扫描：已收尾的会话不接管并删标记', result.resumed.length === 0 && resolved.length === 0 && existsSync(join(directory, 's-done')) === false, JSON.stringify({ result, resolved }));
+}
+
+{
+  // 正常重启（SIGINT / SIGTERM）：宿主 dispose 补了 disposed 收尾，日志里没有未闭合轮次。
+  const directory = join(markerHome, 'scan-disposed', MARKER_DIR);
+  writeMarkerFile(directory, 's-disposed', DEAD_PID);
+  const resolved = [];
+  const { ctx, seen, agents } = makeCtx({
+    sessionController: fakeController(resolved, undefined, (id) => {
+      const agent = makeAgent({ events: [start(1), endDisposed(1)], seen });
+      agent.id = id;
+      agents.set(id, agent);
+      return agent;
+    }),
+    sessionPersistence: fakePersistence({ 's-disposed': { events: [start(1), endDisposed(1)] } })
+  });
+  const result = await scanLeftoverMarkers(ctx, createResumeController(ctx), createMarkerStore(ctx, directory));
+  await Promise.resolve();
+  await Promise.resolve();
+  check('启动扫描：正常重启留下 disposed 收尾的会话也接管', result.resumed.includes('s-disposed') && resolved.includes('s-disposed'), JSON.stringify({ result, resolved }));
+  check('启动扫描：disposed 收尾的会话不依赖 agent/created 就登记投递', seen.followups.length === 1 && seen.followups[0]?.content?.[0]?.text === BODY, JSON.stringify(seen.followups));
+  check('启动扫描：disposed 收尾的标记留到新轮次结束', existsSync(join(directory, 's-disposed')));
+}
+
+{
+  // 用户在扫描前就把会话点开了：不能再 resolveAgent，但 disposed 收尾的会话仍要补投。
+  const directory = join(markerHome, 'scan-disposed-live', MARKER_DIR);
+  writeMarkerFile(directory, 's-disposed-live', DEAD_PID);
+  const resolved = [];
+  const { ctx, seen, agents } = makeCtx({
+    sessionController: fakeController(resolved),
+    sessionPersistence: fakePersistence({ 's-disposed-live': { events: [start(1), endDisposed(1)] } })
+  });
+  agents.set('s-disposed-live', makeAgent({ events: [start(1), endDisposed(1)], seen }));
+  const result = await scanLeftoverMarkers(ctx, createResumeController(ctx), createMarkerStore(ctx, directory));
+  await Promise.resolve();
+  await Promise.resolve();
+  check('启动扫描：已被打开的会话不重复接管', result.resumed.length === 0 && resolved.length === 0, JSON.stringify({ result, resolved }));
+  check('启动扫描：已被打开的 disposed 会话仍补一条续跑', seen.followups.length === 1 && seen.followups[0]?.source?.kind === SOURCE_KIND, JSON.stringify(seen.followups));
+}
+
+{
+  // 用户自己按停止（aborted/user）：不是「没跑完」，不续跑、删标记。
+  const directory = join(markerHome, 'scan-userabort', MARKER_DIR);
+  writeMarkerFile(directory, 's-userabort', DEAD_PID);
+  const resolved = [];
+  const { ctx } = makeCtx({
+    sessionController: fakeController(resolved),
+    sessionPersistence: fakePersistence({ 's-userabort': { events: [start(1), end(1, 'aborted')] } })
+  });
+  const result = await scanLeftoverMarkers(ctx, createResumeController(ctx), createMarkerStore(ctx, directory));
+  check('启动扫描：用户主动停止的会话不接管并删标记', result.resumed.length === 0 && resolved.length === 0 && existsSync(join(directory, 's-userabort')) === false, JSON.stringify({ result, resolved }));
 }
 
 {
@@ -833,6 +897,12 @@ function makePluginCtx() {
     check('session/event：turn/start 写运行标记', existsSync(join(eventsHome, MARKER_DIR, 'sess-ev')));
     listener.handler({ id: 'sess-ev', header: {} }, { type: 'turn/end' });
     check('session/event：turn/end 删运行标记', existsSync(join(eventsHome, MARKER_DIR, 'sess-ev')) === false);
+    // 正常重启时宿主 dispose 补的收尾：标记必须留着，否则重启后没人知道这一轮没跑完。
+    listener.handler({ id: 'sess-ev-disposed', header: {} }, { type: 'turn/start' });
+    listener.handler({ id: 'sess-ev-disposed', header: {} }, endDisposed(1));
+    check('session/event：dispose 补的收尾保留运行标记', existsSync(join(eventsHome, MARKER_DIR, 'sess-ev-disposed')));
+    listener.handler({ id: 'sess-ev-disposed', header: {} }, end(1, 'completed'));
+    check('session/event：disposed 之后正常收尾才删标记', existsSync(join(eventsHome, MARKER_DIR, 'sess-ev-disposed')) === false);
     listener.handler({ id: 'sess-sub-ev', header: { origin: 'subagent' } }, { type: 'turn/start' });
     check('session/event：子代理会话不写标记', existsSync(join(eventsHome, MARKER_DIR, 'sess-sub-ev')) === false);
     listener.handler({ id: 'sess-other-ev', header: {} }, { type: 'step/start' });
