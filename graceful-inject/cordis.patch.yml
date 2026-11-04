@@ -3,7 +3,8 @@
 # 两个功能各自可插拔，由下面的 config 开关控制（默认都开）：
 #   resume    true = 崩溃/被强杀/关闭超时后本轮被补记为 interrupted 的会话自动续跑；
 #                    宿主启动时还会扫描上次运行中的会话并后台接管（不需要先点开）
-#   supervise true = 会话标题栏出现秒表按钮，点击注入「汇报当前任务进度」
+#   supervise true = 会话标题栏出现秒表按钮，点击打断当前步骤、注入「汇报当前任务进度」，
+#                    再自动排一条续跑把被打断的任务接回去
 # 关掉 supervise 时宿主不注册 /graceful-inject/supervise，浏览器端也不会画按钮。
 - insert:
     - id: graceful-inject

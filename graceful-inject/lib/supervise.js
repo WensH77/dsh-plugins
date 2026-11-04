@@ -3,12 +3,16 @@
  *
  * 会话标题栏的秒表按钮点一下，宿主就往当前会话注入一条：
  *
- *   「不要停止你现在手头的事情，汇报当前任务进度」
+ *   「汇报当前任务进度」
  *
- * 走 `agent.steer(...)` 而不是 `followup(...)`：监工的对象通常**正在跑**，`followup`
- * 要等这一轮结束才轮到，用户点了半天看不到汇报；`steer` 在最近一个步骤边界被取走，
- * 当前轮不中断。Agent 空闲时 `steer` 也会直接开一轮（宿主文档：an idle driver starts
- * a turn）。
+ * 运行中的 Agent 先 `cancel` 再注入：`steer` 只在步骤边界被取走，正卡在长等待工具里
+ * 就等不到汇报。但 `cancel` 中止的是**整轮**，只排汇报的话任务会停在半路，所以打断
+ * 之后还要再排一条 `followup`（{@link AFTER_REPORT_TEXT}）把工作接回去。
+ *
+ * 这条 followup **等汇报那一轮跑完再排**（见 `scheduleResume`）：取消当下就排的话，宿主
+ * 会把它改投到「下一轮」队列，聊天里显示成输入框上方一条待发送的排队消息。
+ *
+ * Agent 空闲时没有可打断的步骤：只 `steer`，不 `cancel`、也不排续跑。
  *
  * 消息带自定义来源（`source.kind = graceful-inject` + `form: 'notice'`），聊天里是
  * 触发条目而不是用户气泡——用户没说过这句话，是插件说的。
@@ -20,7 +24,16 @@ import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SOURCE_KIND } from './source.js';
 
 /** 注入文本，逐字对应这个功能要表达的意思。 */
-const SUPERVISE_TEXT = '不要停止你现在手头的事情，汇报当前任务进度';
+const SUPERVISE_TEXT = '汇报当前任务进度';
+/**
+ * 打断后自动接回任务的那条消息正文。
+ *
+ * `cancel` 中止的是**整轮**，不只是当前步骤：只排一条「汇报进度」，模型汇报完这一轮
+ * 就以 `aborted` 收尾，被打断的工作没有人接。这条 followup 在汇报那一轮结束后开新一轮，
+ * 把任务接回去；被打断的工具调用落盘成 `tool call aborted` 的错误结果（跑没跑完不确定），
+ * 所以明说那一步没做完就重做。
+ */
+const AFTER_REPORT_TEXT = '接着执行刚才被监工打断的任务：被打断的那一步没做完就继续做完，已经做完就只回一句结论，不要等我确认。';
 /**
  * 注入正文开头的来源说明。
  *
@@ -40,6 +53,40 @@ function superviseMessage(text = SUPERVISE_TEXT) {
     content: [{ type: 'text', text: body }],
     source: { kind: SOURCE_KIND, form: 'notice', summary: boundContextSummary(body) }
   });
+}
+
+/** 组装打断后那条续跑消息。导出一份便于测试直接断言。 */
+function afterReportMessage(text = AFTER_REPORT_TEXT) {
+  const body = NOTICE_PREFIX + text;
+  return createUserMessage({
+    content: [{ type: 'text', text: body }],
+    source: { kind: SOURCE_KIND, form: 'notice', summary: boundContextSummary(body) }
+  });
+}
+
+/**
+ * 会话里是否有「有调用、没结果」的工具调用。
+ *
+ * 监工打断时，这一步可能只是模型在吐文字（还没挑工具），也可能真的在跑一个工具。
+ * 前者没有「半路的工作」可接：汇报那一轮会自然接着往下做，再排一次续跑只会多出一轮
+ * 空转（用户看到的就是两条「收到执行请求」）。所以只有后者才排续跑。
+ *
+ * @param session - 会话对象（需要 `ownEvents()`）。
+ * @returns 是否有跑到一半的工具调用。
+ */
+function hasPendingToolCall(session) {
+  if (typeof session?.ownEvents !== 'function') return false;
+  const pending = new Set();
+  for (const event of session.ownEvents()) {
+    if (event?.type === 'tool/call') {
+      const id = event.data?.callId;
+      if (typeof id === 'string') pending.add(id);
+    } else if (event?.type === 'tool/result') {
+      const id = event.data?.message?.toolCallId;
+      if (typeof id === 'string') pending.delete(id);
+    }
+  }
+  return pending.size > 0;
 }
 
 function sendJson(res, status, body) {
@@ -131,6 +178,39 @@ function createStateHandler(options) {
 function createSuperviseHandler(ctx, options) {
   /** 每个会话上一次成功注入的时间戳；窗口外的键顺手清理，Map 不会无界增长。 */
   const lastInjectedAt = new Map();
+  /** 正在等「汇报那一轮」跑完的会话：连点时不重复排续跑。 */
+  const pendingResume = new Set();
+  /**
+   * 汇报那一轮跑完之后再排续跑。
+   *
+   * 不能在打断的当下排：`cancel` 之后提交的任何唤醒输入都会被宿主改投到「下一轮」队列，
+   * 聊天里显示成输入框上方一条待发送的排队消息，用户会以为没发出去。等 `whenIdle()`
+   * 落定（汇报那一轮结束、宿主收敛到空闲）再 `followup`，它就成为自己那一轮唯一的普通
+   * 消息，Chat 里是正常触发条目。
+   *
+   * @param agent - 本次注入的 Agent。
+   * @param sessionId - 会话 id。
+   * @returns 是否已经登记（同一会话重复点击返回 false）。
+   */
+  function scheduleResume(agent, sessionId) {
+    if (pendingResume.has(sessionId)) return false;
+    pendingResume.add(sessionId);
+    void (async () => {
+      try {
+        // 没有 whenIdle 的宿主（测试、精简组合）：立刻排，行为退化成「下一轮」队列。
+        if (typeof agent.whenIdle === 'function') await agent.whenIdle();
+        agent.followup(afterReportMessage());
+        await ctx.sessions.flush(agent.session);
+        ctx.logger.info('graceful-inject: 监工汇报结束，已为会话 ' + sessionId + ' 排上续跑');
+      } catch (error) {
+        // 汇报已经注入了，续跑失败不能连累这次点击：报出来，下次再点。
+        ctx.logger.warn('graceful-inject: 打断后未能排上续跑（汇报照常注入）: ' + String(error?.message ?? error));
+      } finally {
+        pendingResume.delete(sessionId);
+      }
+    })();
+    return true;
+  }
   return async (req, res) => {
     try {
       if (req.method !== 'POST') {
@@ -180,16 +260,24 @@ function createSuperviseHandler(ctx, options) {
       // `keepInbox` 保住已排队的输入，随后的 `steer` 作为唤醒输入在取消收敛后开新一轮。
       // 代价是当前工具被中止（AbortSignal），它可能需要重新发起——这正是「不等待」的交换。
       const interrupted = agent.status === 'running' && typeof agent.cancel === 'function';
+      // 要在 cancel 之前判定：取消会把跑着的工具落盘成「已中止」的结果，之后就分不清了。
+      const hadWork = interrupted && hasPendingToolCall(agent.session);
       if (interrupted) agent.cancel({ kind: 'user' }, { keepInbox: true });
+      // 先排汇报：取消会丢弃排队中的 steer，所以必须在 cancel 之后提交。
       agent.steer(superviseMessage(text));
+      // 再排续跑：`cancel` 中止的是整轮，没有这条 followup 任务就停在半路。但它不能在这里
+      // 直接排：取消后提交的唤醒输入会被宿主改投到「下一轮」队列，聊天里会显示成输入框上方
+      // 一条可编辑的排队消息（用户看到的就是「没发出去」）。改成等汇报那一轮跑完（`whenIdle`）
+      // 再 followup，宿主会为它单独开一轮，Chat 里是正常的触发条目。
+      const resumed = hadWork ? scheduleResume(agent, sessionId) : false;
       // 先记时间再 flush：flush 失败时消息其实已经投出去了，不能放行第二次。
       lastInjectedAt.set(sessionId, now);
       for (const [id, at] of lastInjectedAt) {
         if (now - at >= THROTTLE_MS) lastInjectedAt.delete(id);
       }
       await ctx.sessions.flush(agent.session);
-      ctx.logger.info('graceful-inject: 已向会话 ' + sessionId + ' 注入监工（agent=' + String(agent.status) + (interrupted ? '，已打断当前步骤' : '') + '）');
-      sendJson(res, 200, { ok: true, mode: interrupted ? 'interrupt' : 'steer', summary: NOTICE_PREFIX + text });
+      ctx.logger.info('graceful-inject: 已向会话 ' + sessionId + ' 注入监工（agent=' + String(agent.status) + (interrupted ? '，已打断当前步骤' : '') + (resumed ? '，汇报结束后续跑' : '') + '）');
+      sendJson(res, 200, { ok: true, mode: interrupted ? 'interrupt' : 'steer', resume: resumed, summary: NOTICE_PREFIX + text });
     } catch (error) {
       ctx.logger.warn('graceful-inject: 监工注入失败: ' + String(error?.message ?? error));
       // 响应可能已经在发送途中（例如 flush 之后），再写一次只会多一条
@@ -199,4 +287,4 @@ function createSuperviseHandler(ctx, options) {
   };
 }
 
-export { createStateHandler, createSuperviseHandler, isLoopbackRequest, NOTICE_PREFIX, sendJson, SESSION_ID, superviseMessage, SUPERVISE_TEXT, THROTTLE_MS, trustedRequest };
+export { AFTER_REPORT_TEXT, afterReportMessage, createStateHandler, createSuperviseHandler, hasPendingToolCall, isLoopbackRequest, NOTICE_PREFIX, sendJson, SESSION_ID, superviseMessage, SUPERVISE_TEXT, THROTTLE_MS, trustedRequest };

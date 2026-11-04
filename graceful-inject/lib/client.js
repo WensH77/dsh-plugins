@@ -1,7 +1,7 @@
 // dsh-plugin-graceful-inject — 浏览器端。
 //
 // 「优雅注入」的功能二「监工」的按钮：会话标题栏 actions 区里一个秒表图标，点一下
-// 让宿主往当前会话注入「不要停止你现在手头的事情，汇报当前任务进度」。
+// 让宿主往当前会话注入「汇报当前任务进度」。
 //
 // 按钮是否出现由宿主开关决定：每次挂载 GET /graceful-inject/state，`supervise: true`
 // 才画。开关写在 profile 的 cordis.patch.yml（见 README「配置」），浏览器端不重复

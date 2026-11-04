@@ -29,7 +29,7 @@ import {
   scanLeftoverMarkers,
   TEXT as RESUME_TEXT
 } from '../lib/resume.js';
-import { createStateHandler, createSuperviseHandler, isLoopbackRequest, NOTICE_PREFIX, superviseMessage, SUPERVISE_TEXT, trustedRequest } from '../lib/supervise.js';
+import { AFTER_REPORT_TEXT, afterReportMessage, createStateHandler, createSuperviseHandler, hasPendingToolCall, isLoopbackRequest, NOTICE_PREFIX, superviseMessage, SUPERVISE_TEXT, trustedRequest } from '../lib/supervise.js';
 import { SOURCE_KIND } from '../lib/source.js';
 
 // 运行标记会写到 <DSH_HOME>/graceful-inject/running：整个 smoke 用临时目录隔离真实 ~/.dsh。
@@ -48,7 +48,7 @@ function check(name, condition, detail) {
 
 /** 假 ctx：可控的 agents 表、记录、以及手动推进的 timer 队列。 */
 function makeCtx(services = {}) {
-  const seen = { followups: [], steers: [], cancels: [], flushes: 0, warns: [], infos: [] };
+  const seen = { followups: [], steers: [], cancels: [], flushes: 0, warns: [], infos: [], order: [] };
   const timers = [];
   const agents = new Map();
   const ctx = {
@@ -102,21 +102,41 @@ const start = (turn) => ({ type: 'turn/start', data: { turn } });
 const end = (turn, kind) => ({ type: 'turn/end', data: { turn, reason: { kind } } });
 /** 正常重启时宿主 dispose 整棵树给这一轮补的收尾。 */
 const endDisposed = (turn) => ({ type: 'turn/end', data: { turn, reason: { kind: 'aborted', reason: { kind: 'disposed' } } } });
+/** 一个还在跑的工具调用（有 call、没 result）：打断它才有「半路的工作」。 */
+const pendingCall = (id = 'call-1') => ({ type: 'tool/call', data: { turn: 1, step: 1, callId: id } });
+/** 一个已经有结果的工具调用。 */
+const settledCall = (id = 'call-1') => [
+  pendingCall(id),
+  { type: 'tool/result', data: { turn: 1, step: 1, message: { toolCallId: id } } }
+];
 
 /** 假 session：带上要断言的事件序列。 */
 function makeSession(events, header = {}) {
   return { id: 'fake-session', header, ownEvents: () => events };
 }
 
+/** 让 scheduleResume 的后台任务跑完（它挂在 whenIdle 的 then 上）。 */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 /** 假 agent：followup / steer / cancel 分开记录，断言「用错了入口」时不会被掩盖。 */
 function makeAgent({ events = [], header = {}, status = 'idle', seen } = {}) {
   return {
     id: 's1',
     status,
+    whenIdle: () => Promise.resolve(),
     session: makeSession(events, header),
-    followup: (message) => seen?.followups.push(message),
-    steer: (message) => seen?.steers.push(message),
-    cancel: (cause, options) => seen?.cancels.push({ cause, options })
+    followup: (message) => {
+      seen?.followups.push(message);
+      seen?.order.push('followup');
+    },
+    steer: (message) => {
+      seen?.steers.push(message);
+      seen?.order.push('steer');
+    },
+    cancel: (cause, options) => {
+      seen?.cancels.push({ cause, options });
+      seen?.order.push('cancel');
+    }
   };
 }
 
@@ -152,9 +172,9 @@ function makeAgent({ events = [], header = {}, status = 'idle', seen } = {}) {
   check('续跑带 notice 摘要', resume?.source?.form === 'notice' && resume?.source?.summary === BODY);
 
   const supervise = superviseMessage();
-  check('监工正文逐字匹配', supervise?.content?.[0]?.text === NOTICE_PREFIX + '不要停止你现在手头的事情，汇报当前任务进度', JSON.stringify(supervise?.content));
+  check('监工正文逐字匹配', supervise?.content?.[0]?.text === NOTICE_PREFIX + '汇报当前任务进度', JSON.stringify(supervise?.content));
   check('监工正文开头声明来源', supervise?.content?.[0]?.text?.startsWith('这条通知来自插件「优雅注入」'), JSON.stringify(supervise?.content?.[0]?.text));
-  check('监工正文常量一致', SUPERVISE_TEXT === '不要停止你现在手头的事情，汇报当前任务进度');
+  check('监工正文常量一致', SUPERVISE_TEXT === '汇报当前任务进度');
   check('监工来源是 graceful-inject', supervise?.source?.kind === SOURCE_KIND, JSON.stringify(supervise?.source));
   check('监工带 notice 摘要', supervise?.source?.form === 'notice' && typeof supervise?.source?.summary === 'string');
 }
@@ -594,22 +614,28 @@ const DEAD_PID = 2147483647;
   check('启动扫描：子代理会话不接管并删标记', result.resumed.length === 0 && resolved.length === 0 && existsSync(join(directory, 's-sub')) === false);
 }
 
-// ── 9. supervise · 运行中注入：打断当前步骤 + steer + flush + 200 ──────────
+// ── 9. supervise · 运行中注入：打断 → steer 汇报 → followup 接回任务 ──────
 {
   const { ctx, seen, agents } = makeCtx();
-  agents.set('sess-1', makeAgent({ status: 'running', seen }));
+  agents.set('sess-1', makeAgent({ status: 'running', events: [start(1), pendingCall()], seen }));
   const handler = createSuperviseHandler(ctx, { supervise: true, superviseText: '运行时改过的监工文本' });
   const { req, res, out } = makeExchange('POST', '/graceful-inject/supervise?session=sess-1');
   await handler(req, res);
   check('监工返回 200', out.status === 200, String(out.status));
+  await settle();
   check('运行中回 mode=interrupt', out.body?.ok === true && out.body?.mode === 'interrupt', JSON.stringify(out.body));
   check('运行中先打断当前步骤（可能卡在长等待工具）', seen.cancels.length === 1, String(seen.cancels.length));
   check('打断原因是用户点击', seen.cancels[0]?.cause?.kind === 'user', JSON.stringify(seen.cancels[0]?.cause));
   check('打断时保留已排队输入', seen.cancels[0]?.options?.keepInbox === true, JSON.stringify(seen.cancels[0]?.options));
-  check('监工走 steer 不排队到下一轮', seen.steers.length === 1 && seen.followups.length === 0, JSON.stringify({ steers: seen.steers.length, followups: seen.followups.length }));
+  check('汇报走 steer（步骤边界取走，不排队到下一轮）', seen.steers.length === 1, String(seen.steers.length));
   check('注入正文用配置文本', seen.steers[0]?.content?.[0]?.text === NOTICE_PREFIX + '运行时改过的监工文本', JSON.stringify(seen.steers[0]?.content));
+  check('打断后自动排一条续跑，任务不会停在半路', seen.followups.length === 1, String(seen.followups.length));
+  check('续跑正文是「接着做完被打断的那一步」', seen.followups[0]?.content?.[0]?.text === NOTICE_PREFIX + AFTER_REPORT_TEXT, JSON.stringify(seen.followups[0]?.content));
+  check('续跑也带 graceful-inject 来源', seen.followups[0]?.source?.kind === SOURCE_KIND && seen.followups[0]?.source?.form === 'notice');
+  check('顺序：先打断，再排汇报，最后排续跑', seen.order.join(',') === 'cancel,steer,followup', JSON.stringify(seen.order));
+  check('200 说明已经排了续跑', out.body?.resume === true, JSON.stringify(out.body));
   check('200 的 summary 反映实际注入正文', out.body?.summary === NOTICE_PREFIX + '运行时改过的监工文本', JSON.stringify(out.body));
-  check('注入后落盘', seen.flushes === 1, String(seen.flushes));
+  check('注入与续跑各落盘一次', seen.flushes === 2, String(seen.flushes));
 }
 {
   // 空闲时不打断，直接 steer 开一轮。
@@ -620,7 +646,62 @@ const DEAD_PID = 2147483647;
   await handler(req, res);
   check('空闲时回 mode=steer', out.body?.mode === 'steer', JSON.stringify(out.body));
   check('空闲时不打断', seen.cancels.length === 0, String(seen.cancels.length));
+  check('空闲时没有被打断的任务，不排续跑', seen.followups.length === 0 && out.body?.resume === false, JSON.stringify({ followups: seen.followups.length, resume: out.body?.resume }));
   check('没配文本时注入默认那句', seen.steers[0]?.content?.[0]?.text === NOTICE_PREFIX + SUPERVISE_TEXT, JSON.stringify(seen.steers[0]?.content));
+}
+{
+  // 打断时这一步只是模型在吐文字（没有工具在飞）：没有半路的工作，不排续跑。
+  const { ctx, seen, agents } = makeCtx();
+  agents.set('sess-1', makeAgent({ status: 'running', events: [start(1), ...settledCall()], seen }));
+  const handler = createSuperviseHandler(ctx, { supervise: true });
+  const { req, res, out } = makeExchange('POST', '/graceful-inject/supervise?session=sess-1');
+  await handler(req, res);
+  await settle();
+  check('打断时没有跑一半的工具调用就只汇报', seen.cancels.length === 1 && seen.followups.length === 0, JSON.stringify({ cancels: seen.cancels.length, followups: seen.followups.length }));
+  check('这种情况响应回 resume=false', out.body?.resume === false, JSON.stringify(out.body));
+}
+{
+  check('hasPendingToolCall 认没结果的那次调用', hasPendingToolCall({ ownEvents: () => [start(1), pendingCall()] }) === true);
+  check('hasPendingToolCall 不认已有结果的调用', hasPendingToolCall({ ownEvents: () => [start(1), ...settledCall()] }) === false);
+  check('hasPendingToolCall 空日志为假', hasPendingToolCall({ ownEvents: () => [] }) === false);
+  check('hasPendingToolCall 没有 ownEvents 时为假', hasPendingToolCall({}) === false);
+}
+{
+  // 续跑等到「汇报那一轮跑完」（whenIdle 落定）才排，期间不在队列里露面。
+  const { ctx, seen, agents } = makeCtx();
+  const agent = makeAgent({ status: 'running', events: [start(1), pendingCall()], seen });
+  let release;
+  agent.whenIdle = () => new Promise((resolve) => {
+    release = resolve;
+  });
+  agents.set('sess-1', agent);
+  const handler = createSuperviseHandler(ctx, { supervise: true });
+  const { req, res, out } = makeExchange('POST', '/graceful-inject/supervise?session=sess-1');
+  await handler(req, res);
+  await settle();
+  check('whenIdle 未落定时不排续跑', seen.followups.length === 0, String(seen.followups.length));
+  check('这种情况下响应仍说明会续跑', out.body?.resume === true, JSON.stringify(out.body));
+  release();
+  await settle();
+  check('whenIdle 落定后补上续跑', seen.followups.length === 1, String(seen.followups.length));
+  check('续跑正文与打断时一致', seen.followups[0]?.content?.[0]?.text === NOTICE_PREFIX + AFTER_REPORT_TEXT, JSON.stringify(seen.followups[0]?.content));
+  check('续跑之后落盘', seen.flushes === 2, String(seen.flushes));
+}
+{
+  // 续跑排不上（例如宿主版本没有 followup）不能连累这次点击：汇报照常注入，回 200 只是 resume=false。
+  const { ctx, seen, agents } = makeCtx();
+  const agent = makeAgent({ status: 'running', events: [start(1), pendingCall()], seen });
+  agent.followup = () => {
+    throw new Error('no followup');
+  };
+  agents.set('sess-1', agent);
+  const handler = createSuperviseHandler(ctx, { supervise: true });
+  const { req, res, out } = makeExchange('POST', '/graceful-inject/supervise?session=sess-1');
+  await handler(req, res);
+  await settle();
+  check('续跑排失败仍回 200 且汇报已注入', out.status === 200 && seen.steers.length === 1, JSON.stringify({ status: out.status, steers: seen.steers.length }));
+  check('续跑排失败不影响响应里的续跑承诺', out.body?.resume === true, JSON.stringify(out.body));
+  check('续跑排失败记一条 warn', seen.warns.some((text) => text.includes('未能排上续跑')), JSON.stringify(seen.warns));
 }
 
 // ── 10. supervise · 开关关闭 → 409，不注入 ─────────────────────────────────
