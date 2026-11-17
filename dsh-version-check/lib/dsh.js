@@ -454,6 +454,38 @@ async function listUserPlugins(ctx) {
   return out.slice(0, 40)
 }
 
+/**
+ * 启用了但没挂上的条目（enabled=true 而 fiber 未进入 active）——「当前版本到底能不能启用」的直接证据。
+ * 与升级分析无关，所以每次请求都按当前进程现算，不随判定一起持久化：它覆盖任何加载失败原因
+ * （子路径导出被删、服务缺失、apply 抛错），而不只是宿主模块消失这一种。
+ *
+ * 只收「确定不会自己好」的状态：
+ *   · fiber 根本不存在（null）——模块 import 失败时条目压根没建出 fiber，theseus-crew 就是这种；
+ *   · failed —— apply 抛错；
+ *   · DISPOSED（映射为 null）——已经被销毁。
+ * pending / loading / unloading 是瞬态，跳过：本函数在状态灯轮询时现算，把它们算进来会在启动或 HMR
+ * 期间刷出一串假「未挂载」。
+ */
+const STUCK_FIBER_PHASES = new Set(['failed', null])
+
+function listStuckEntries(ctx) {
+  const stuck = []
+  try {
+    for (const entry of listEntries(ctx)) {
+      if (!entry.enabled) continue
+      if (entry.fiberPhase === 'active') continue
+      if (!STUCK_FIBER_PHASES.has(entry.fiberPhase)) continue
+      stuck.push({
+        rowId: entry.rowId,
+        moduleName: entry.moduleName,
+        entryId: entry.entryId,
+        fiberPhase: entry.fiberPhase,
+      })
+    }
+  } catch {}
+  return stuck
+}
+
 // ── dsh 升级 L1 本地插件契约扫描（机器判定，先于 LLM 分析） ───────────────────
 
 /** npm registry 精确版本清单缓存：key = name@version，TTL 30 分钟。 */
@@ -1085,7 +1117,7 @@ async function analyzeDshUpdate(ctx) {
   }
 }
 
-export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, dshTargetVersion, dshSameTarget, dshVerdictReusable }
+export { DSH_CHECK_INTERVAL_MS, dshStateCache, checkDshUpdate, analyzeDshUpdate, rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, dshTargetVersion, dshSameTarget, dshVerdictReusable, listStuckEntries }
 
 /** 仅供 test/smoke.mjs 抽取真实实现驱动：重试链是模块私有函数，测试要么整段复制源码
  *  （会在重构时悄悄失去守护力），要么拿这组出口直接跑真实实现——后者才是有效护栏。 */

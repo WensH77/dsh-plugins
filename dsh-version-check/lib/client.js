@@ -97,6 +97,10 @@ window.__ModuleLoader__.load({
 			dshReportScanKindMedium: "中",
 			dshReportScanKindInfo: "提示",
 			dshReportInstallHint: "升级命令",
+			dshStuckShort: "未挂载",
+			dshStuckTitle: "启用了但没挂上：{count} 个插件在当前 dsh 上没能加载",
+			dshStuckIntro: "这些条目在配置里是启用的，但模块没有进入运行状态，插件当前不生效。它与升级无关，是此刻的状态。",
+			dshStuckHint: "排查方向：启动日志里搜 “failed to import” 或 “did not activate”，看该插件引用核心包的方式（尤其子路径导出）。",
 			copy: "复制",
 			copied: "已复制",
 		};
@@ -133,6 +137,10 @@ window.__ModuleLoader__.load({
 			dshReportScanKindMedium: "medium",
 			dshReportScanKindInfo: "info",
 			dshReportInstallHint: "Upgrade",
+			dshStuckShort: "not loaded",
+			dshStuckTitle: "{count} plugin(s) enabled but not loaded on this dsh",
+			dshStuckIntro: "These entries are enabled in the profile but never reached the running state, so the plugin is inactive right now. This is a current-state fact, unrelated to upgrades.",
+			dshStuckHint: "Where to look: search the startup log for \"failed to import\" / \"did not activate\", and check how the plugin imports the core package (subpath exports in particular).",
 			copy: "Copy",
 			copied: "Copied",
 		};
@@ -247,6 +255,11 @@ window.__ModuleLoader__.load({
 						state = "ok"; text = d.installed ? "v" + d.installed : "";
 					}
 					statusEl.dataset.state = state;
+					// 启用了却没挂上的条目数：不管版本状态是什么都拼到灯上，否则用户只看到「已是最新」，
+					// 而实际上某个插件根本没生效（这几条在弹窗里可以点开看清单）
+					const stuckCount = d && Array.isArray(d.stuck) ? d.stuck.length : 0;
+					if (stuckCount > 0) text += (text === "" ? "" : " · ") + stuckCount + " " + t("dshStuckShort");
+					statusEl.dataset.stuck = stuckCount > 0 ? "true" : "false";
 					statusEl.title = ""; // 不显示 hover 文案
 					const ver = statusEl.querySelector(".pm-dshselfVersion");
 					if (ver) ver.textContent = text;
@@ -279,6 +292,33 @@ window.__ModuleLoader__.load({
 					title.className = "pm-modalTitle";
 					const body = document.createElement("div");
 					body.className = "pm-modalBody";
+					// 「启用了没挂上」的清单：与版本判定无关，是此刻就在发生的问题，放在弹窗最上面。
+					// 标题由分支决定（只有它时才拿它当标题），这里只放正文，避免两处重复同一句话。
+					const stuck = d && Array.isArray(d.stuck) ? d.stuck : [];
+					const stuckBlock = document.createElement("div");
+					if (stuck.length > 0) {
+						const intro = document.createElement("p");
+						intro.className = "pm-modalText";
+						intro.style.opacity = "0.75";
+						intro.style.fontSize = "12px";
+						intro.textContent = t("dshStuckIntro");
+						stuckBlock.appendChild(intro);
+						const ul = document.createElement("ul");
+						ul.className = "pm-reviewRisks";
+						stuck.forEach((s) => {
+							const li = document.createElement("li");
+							li.textContent = String(s && s.moduleName ? s.moduleName : "?")
+								+ (s && s.fiberPhase ? "（fiber: " + s.fiberPhase + "）" : "");
+							ul.appendChild(li);
+						});
+						stuckBlock.appendChild(ul);
+						const hint = document.createElement("p");
+						hint.className = "pm-modalText";
+						hint.style.opacity = "0.7";
+						hint.style.fontSize = "12px";
+						hint.textContent = t("dshStuckHint");
+						stuckBlock.appendChild(hint);
+					}
 					if (d && (d.verdict === "safe" || d.verdict === "breaking")) {
 						title.textContent = d.verdict === "breaking" ? tpl(t("dshBreaking"), { version: d.latest ?? "?" }) : tpl(t("dshHasUpdate"), { version: d.latest ?? "?" });
 						if (d.verdict === "breaking") title.classList.add("danger");
@@ -482,7 +522,14 @@ window.__ModuleLoader__.load({
 							body.appendChild(p);
 						}
 					} else {
-						title.textContent = analysisError !== "" ? t("dshAnalyzeFailed") : t("dshUnknown");
+						// 只有「启用了没挂上」也会走到这里（绿灯点开时没有版本判定，也没有分析失败）：
+						// 此时给标题设成挂载失败，正文不再重复一句「无法检查更新」
+						const stuckOnly = analysisError === "" && stuck.length > 0;
+						title.textContent = analysisError !== ""
+							? t("dshAnalyzeFailed")
+							: stuckOnly
+								? tpl(t("dshStuckTitle"), { count: String(stuck.length) })
+								: t("dshUnknown");
 						if (analysisError !== "") title.classList.add("danger");
 						if (analysisErrorCode !== "") {
 							const code = document.createElement("p");
@@ -491,11 +538,14 @@ window.__ModuleLoader__.load({
 							code.textContent = t("dshErrorCode") + "：" + analysisErrorCode;
 							body.appendChild(code);
 						}
-						const p = document.createElement("p");
-						p.className = "pm-modalText";
-						p.textContent = analysisError !== "" ? analysisError : t("dshUnknown");
-						body.appendChild(p);
+						if (!stuckOnly) {
+							const p = document.createElement("p");
+							p.className = "pm-modalText";
+							p.textContent = analysisError !== "" ? analysisError : t("dshUnknown");
+							body.appendChild(p);
+						}
 					}
+					if (stuck.length > 0) body.insertBefore(stuckBlock, body.firstChild);
 					const row = document.createElement("div");
 					row.className = "pm-modalRow";
 					if (analysisError !== "") {
@@ -575,9 +625,13 @@ window.__ModuleLoader__.load({
 							})
 							.catch(() => fetchState());
 					} else {
-						// 绿/灰：手动重检
+						// 绿/灰：手动重检。重检后如果还有「启用了没挂上」的条目就把清单弹出来——
+						// 否则用户点完绿灯什么都没看到，而那个插件一直是死的
 						call("/dsh-version-check/dsh-version/check", {})
-							.then((d) => paint(d))
+							.then((d) => {
+								paint(d);
+								if (d && Array.isArray(d.stuck) && d.stuck.length > 0) showDshReport(d);
+							})
 							.catch(() => fetchState());
 					}
 				};

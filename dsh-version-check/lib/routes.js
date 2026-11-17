@@ -1,5 +1,5 @@
 import { collectBody, errMsg, isLoopback, sendError, sendJson } from './util.js'
-import { analyzeDshUpdate, checkDshUpdate, dshStateCache } from './dsh.js'
+import { analyzeDshUpdate, checkDshUpdate, dshStateCache, listStuckEntries } from './dsh.js'
 
 const ROUTE_PREFIX = '/dsh-version-check'
 
@@ -17,19 +17,20 @@ const asHandler = (run) => async (ctx, body, res) => {
 // dsh 自更新状态（侧边栏状态灯）：返回已装/远端版本 + 判定
 const handleDshVersion = asHandler(async (ctx, body, res) => {
   const state = dshStateCache ?? await checkDshUpdate(ctx)
-  sendJson(res, 200, { ok: true, ...state })
+  // stuck 是「此刻的挂载状态」，按请求现算：缓存里的判定可以复用，挂载状态不行
+  sendJson(res, 200, { ok: true, ...state, stuck: listStuckEntries(ctx) })
 })
 
 // 强制重新检测 dsh 更新（点击绿灯/灰灯时手动重检）
 const handleDshVersionCheck = asHandler(async (ctx, body, res) => {
   const state = await checkDshUpdate(ctx)
-  sendJson(res, 200, { ok: true, ...state })
+  sendJson(res, 200, { ok: true, ...state, stuck: listStuckEntries(ctx) })
 })
 
 // 点击状态灯：后台直连 LLM（默认模型）分析升级内容与破坏性更新，不建会话
 const handleDshVersionAnalyze = asHandler(async (ctx, body, res) => {
   const result = await analyzeDshUpdate(ctx)
-  sendJson(res, 200, result)
+  sendJson(res, 200, { ...result, stuck: listStuckEntries(ctx) })
 })
 
 // 路由分发表：method 为 null 表示不限制方法（与原实现 pathname-only 分支一致）。

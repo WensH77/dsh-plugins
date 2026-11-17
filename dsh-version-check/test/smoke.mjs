@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { githubRepoInfo, compareVersions, makeQueue, readJsonFile, writeJsonFile } from '../lib/util.js'
 import { readPatchState } from '../lib/patch.js'
 import { ROUTES } from '../lib/routes.js'
-import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, dshTargetVersion, dshSameTarget, dshVerdictReusable, __test } from '../lib/dsh.js'
+import { rangeBreakFinding, scanFindingTag, pluginMachineLevel, dshBreakingGuard, closureFromManifest, closureWithTransitiveHostModules, classifyClosureGap, buildScanPromptSection, dshTargetVersion, dshSameTarget, dshVerdictReusable, listStuckEntries, __test } from '../lib/dsh.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LIB_ROUTES = join(__dirname, '..', 'lib', 'routes.js')
@@ -756,6 +756,57 @@ console.log('\n[路由表契约]')
   const orphans = refs.map((p) => p.replace(/^\/dsh-version-check/u, '')).filter((p) => !serverSet.has(p))
   assertEq(orphans, [], 'client.js 引用的路径 ⊆ 服务端全集（孤儿：' + JSON.stringify(orphans) + '）')
   console.log('      共 ' + refs.length + ' 个去重引用路径')
+}
+
+// 当前挂载状态护栏（listStuckEntries）：enabled=true 却没进 active 的条目必须被点名。
+// 这正是 theseus-crew 0.37.2 在 dsh 0.2.2-rc.3 上的形态——配置里是启用的，模块却没加载。
+{
+  console.log('\n[当前挂载状态 ← listStuckEntries]')
+  const FIBER = { PENDING: 0, LOADING: 1, ACTIVE: 2, FAILED: 3, DISPOSED: 4, UNLOADING: 5 }
+  const makeCtx = (entries) => ({ loader: { entries: () => entries } })
+  const entry = (id, name, disabled, state) => ({
+    id,
+    options: { name },
+    disabled,
+    fiber: state === undefined ? undefined : { state },
+  })
+
+  assertEq(
+    listStuckEntries(makeCtx([
+      entry('include', 'cordis:include', false, FIBER.ACTIVE),
+      entry('include:crew', 'dsh-plugin-theseus-crew', false, FIBER.FAILED),
+      entry('include:tools', '@deepseek-ai/dsh-tools', false, FIBER.ACTIVE),
+      entry('include:off', 'some-disabled-plugin', true, undefined),
+      entry('include:pending', 'just-declared-plugin', false, undefined),
+    ])).map((s) => [s.rowId, s.moduleName, s.fiberPhase]),
+    [['crew', 'dsh-plugin-theseus-crew', 'failed'], ['pending', 'just-declared-plugin', null]],
+    '只点名「启用但没 active」的条目（已停用的、已 active 的都不算），未开始加载的记 null 而不是当正常',
+  )
+
+  assertEq(
+    listStuckEntries(makeCtx([{ id: 'grp', options: { name: 'grp', group: 'x' }, disabled: false, fiber: undefined }])),
+    [],
+    'group 条目跳过（它们不是真实的插件行）',
+  )
+
+  assertEq(listStuckEntries({}), [], 'ctx 没有 loader 时不抛错，返回空清单')
+
+  assertEq(
+    listStuckEntries(makeCtx([entry('include:disposed', 'disposed-plugin', false, FIBER.DISPOSED)])).map((s) => s.fiberPhase),
+    [null],
+    'DISPOSED 映射为 null，同样算「没挂上」——不能用 null 当正常态',
+  )
+
+  // 瞬态不算：状态灯在轮询时现算，把 pending/loading/unloading 算进来会在启动或 HMR 期间刷假警报
+  assertEq(
+    listStuckEntries(makeCtx([
+      entry('include:a', 'pending-plugin', false, FIBER.PENDING),
+      entry('include:b', 'loading-plugin', false, FIBER.LOADING),
+      entry('include:c', 'unloading-plugin', false, FIBER.UNLOADING),
+    ])),
+    [],
+    'pending / loading / unloading 是瞬态，不报（否则启动期间整片条目都会被误报）',
+  )
 }
 
 // client.js 语法护栏：浏览器脚本不经 node 加载，只有 --check 能提前拦截语法错误（P4 起）

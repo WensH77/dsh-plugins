@@ -4,6 +4,12 @@
 
 > 0.17.0 之前的条目沿用当时的旧名 `dsh-plugin-market` / `plugin-market`（历史事实原样保留）。
 
+## 0.17.2
+
+- **feat：状态灯点名「启用了但没挂上」的插件。** 新增 `listStuckEntries(ctx)`（`lib/dsh.js`）：遍历 loader 条目，`enabled === true` 而 fiber 没进 `active` 的收进清单；三条 `/dsh-version-check/*` 接口把 `stuck` 拼进响应；侧边栏状态灯文案追加「N 未挂载」，点灯（绿灯也点）弹出的弹窗把清单放在最上面。这是「当前版本到底能不能启用」的直接证据，与升级判定无关——它覆盖任何加载失败原因（子路径导出被删、服务缺失、apply 抛错），而 L1 契约扫描只比对包名，抓不到 `@deepseek-ai/dsh-subagent/internal` 这类**子路径**消失：`dsh-subagent` 包还在，`./internal` 被移出 exports，扫描照样判 clean，而 theseus-crew 0.37.2 在 dsh 0.2.2-rc.3 上就是整块没挂上（`enabled=true`、`fiberPhase=null`，启动日志 `ERR_PACKAGE_PATH_NOT_EXPORTED`）。
+- **`stuck` 不写进持久化状态。** `checkDshUpdate` 在插件挂载时就会跑，那一刻别的条目可能还在 `pending` / `loading`；把它写成持久化字段会在启动与 HMR 期间刷出一串假「未挂载」。因此按请求现算，只收「确定不会自己好」的状态（fiber 根本不存在、`failed`、`DISPOSED`），`pending` / `loading` / `unloading` 三个瞬态跳过。判定缓存照旧复用，挂载状态不复用。
+- **test**：smoke 新增 `[当前挂载状态 ← listStuckEntries]` 5 条——只点名启用但没 active 的条目（已停用、已 active 都不算）、group 条目跳过、ctx 没有 loader 不抛错、`DISPOSED` 映射为 `null` 同样算没挂上、三个瞬态不报。断言总数 189 → 194。
+
 ## 0.17.1
 
 - **fix：版本号没变时不再重新生成报告。** 旧实现的两条复用判据都留了口子。一是要求逐版本明细数组非空（`hasPerVersion`），线上状态文件恰好是 `versions: []`（那次拉 release 列表被 GitHub 限流，摘要里写明了），于是同版本再走一次 analyze 就会重跑一遍 LLM；二是给「明细为空」补了 `Date.now() - state.analyzedAt < 10 * 60 * 1000` 的短窗口，超窗即重跑。更常见的是第一条之外的那类：每小时检测一旦拿不到远端版本（GitHub 限流且 `git ls-remote` 回退也失败），`latest` 变 `null`，`sameTarget` 判假，`verdict / summary / changes / affectedPlugins / versions / details / sessionId / analyzedAt / scan / error / errorCode` 被整份清空回「待分析」，下次点击就重新分析——版本号根本没变。现在拆成三个纯函数（从 `lib/dsh.js` 导出，smoke 直接驱动真实实现）：`dshSameTarget(prev, installed, target)` 决定缓存能否原样复用（远端目标版本 + 本机已装版本 + 判定口径都没变，且是带逐版本明细数组的新格式），`dshVerdictReusable(state)` 决定要不要重新跑 LLM（有结论 + 有分析时间 + 口径一致 + 新格式），`dshTargetVersion(prev, latest)` 在本次检测失败时沿用上一次的目标版本。逐版本明细为空不再触发重跑；检测失败时判定原样保留，只把 `checked` 置 `false`。
